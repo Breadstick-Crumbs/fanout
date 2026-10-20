@@ -8,6 +8,6 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - run: npm test
-      - run: node skills/fanout/check-plan.mjs examples/plan.md
+      - run: node skills/fanout/fanout.mjs check examples/plan.md
       - name: Clash example must fail
-        run: "! node skills/fanout/check-plan.mjs examples/plan-with-clash.md"
+        run: "! node skills/fanout/fanout.mjs check examples/plan-with-clash.md"
