@@ -1,0 +1,8 @@
+{
+  "name": "fanout",
+  "owner": { "name": "Breadstick-Crumbs" },
+  "metadata": { "description": "Parallel Claude Code sessions without merge chaos." },
+  "plugins": [
+    { "name": "fanout", "source": "./", "description": "Parallel Claude Code sessions without merge chaos." }
+  ]
+}

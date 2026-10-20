@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // fanout: plan parallel sessions, check for overlap, verify branches, guard edits.
-//   fanout check  <plan.md> [--cwd dir]
-//   fanout verify <plan.md> --session <name> [--base main] [--head HEAD] [--cwd dir]
-//   fanout guard  [<plan.md>]        (PreToolUse hook; env FANOUT_SESSION, FANOUT_PLAN)
+//   fanout check  [plan.md]                         plan defaults to .fanout/plan.md in the main checkout
+//   fanout verify [--session name] [--base main]    session defaults to the fanout/<name> branch
+//   fanout guard                                    PreToolUse hook (installed by the plugin)
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { resolve, relative, isAbsolute } from "node:path";
@@ -108,45 +108,62 @@ export const verify = (session, changed) => changed.filter((f) => !ownsFile(sess
 
 const arg = (argv, flag, dflt) => { const i = argv.indexOf(flag); return i >= 0 ? argv[i + 1] : dflt; };
 
+// Sessions work on branch fanout/<name>; the plan lives in the main checkout at .fanout/plan.md.
+// Both can be found from inside any worktree, so nothing needs configuring.
+const BRANCH_PREFIX = "fanout/";
+function currentSession(cwd) {
+  try {
+    const b = git(["branch", "--show-current"], cwd).trim();
+    return b.startsWith(BRANCH_PREFIX) ? b.slice(BRANCH_PREFIX.length) : null;
+  } catch { return null; }
+}
+function defaultPlan(cwd) {
+  try {
+    const common = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd).trim();
+    return resolve(common, "..", ".fanout", "plan.md");
+  } catch { return resolve(cwd, ".fanout", "plan.md"); }
+}
+const explicitPlan = (argv) => (argv[1] && !argv[1].startsWith("--") ? argv[1] : null);
+
 function main(argv) {
-  const [cmd, planPath] = argv;
+  const cmd = argv[0];
   if (cmd === "guard") return guard(argv);
-  if (!cmd || !planPath) { console.error("usage: fanout check|verify <plan.md> | guard"); return 2; }
-  const sessions = parsePlan(readFileSync(planPath, "utf8"));
+  if (cmd !== "check" && cmd !== "verify") { console.error("usage: fanout check [plan.md] | verify [--session name] [--base main] | guard"); return 2; }
   const cwd = resolve(arg(argv, "--cwd", process.cwd()));
+  const planPath = explicitPlan(argv) ?? defaultPlan(cwd);
+  let text;
+  try { text = readFileSync(planPath, "utf8"); } catch { console.error(`No plan at ${planPath}`); return 2; }
+  const sessions = parsePlan(text);
   if (cmd === "check") {
     const { problems, order } = check(sessions, cwd);
     problems.forEach((p) => console.log(p));
     console.log("Merge order:", order.join(" -> "));
     return problems.length ? 1 : 0;
   }
-  if (cmd === "verify") {
-    const name = arg(argv, "--session");
-    const s = sessions.find((x) => x.name === name);
-    if (!s) { console.error(`No session "${name}" in plan`); return 2; }
-    const base = arg(argv, "--base", "main"), head = arg(argv, "--head", "HEAD");
-    const changed = git(["diff", "--name-only", `${base}...${head}`], cwd).split("\n").filter(Boolean);
-    const out = verify(s, changed);
-    out.forEach((f) => console.log(`OUT OF LANE ${name}: ${f}`));
-    console.log(`${name}: ${changed.length} changed, ${out.length} outside its owns`);
-    return out.length ? 1 : 0;
-  }
-  console.error("unknown command " + cmd);
-  return 2;
+  const name = arg(argv, "--session") ?? currentSession(cwd);
+  const s = sessions.find((x) => x.name === name);
+  if (!s) { console.error(`No session "${name}" in plan. Pass --session or run from a fanout/<name> branch.`); return 2; }
+  const base = arg(argv, "--base", "main"), head = arg(argv, "--head", "HEAD");
+  const changed = git(["diff", "--name-only", `${base}...${head}`], cwd).split("\n").filter(Boolean);
+  const out = verify(s, changed);
+  out.forEach((f) => console.log(`OUT OF LANE ${name}: ${f}`));
+  console.log(`${name}: ${changed.length} changed, ${out.length} outside its owns`);
+  return out.length ? 1 : 0;
 }
 
 // PreToolUse hook: blocks Write/Edit/NotebookEdit outside the session's owns.
-// Does nothing unless FANOUT_SESSION is set, so it is safe to install globally.
-function guard(argv) {
-  const session = process.env.FANOUT_SESSION;
-  const plan = argv[1] ?? process.env.FANOUT_PLAN;
-  if (!session || !plan) return 0;
+// Active only on a fanout/<name> branch with a plan present, so it does nothing in normal work.
+function guard() {
   let input = {};
   try { input = JSON.parse(readFileSync(0, "utf8")); } catch { return 0; }
   const target = input.tool_input?.file_path ?? input.tool_input?.notebook_path;
   if (!target) return 0;
   const cwd = input.cwd ?? process.cwd();
-  const s = parsePlan(readFileSync(plan, "utf8")).find((x) => x.name === session);
+  const session = currentSession(cwd);
+  if (!session) return 0;
+  let text;
+  try { text = readFileSync(defaultPlan(cwd), "utf8"); } catch { return 0; }
+  const s = parsePlan(text).find((x) => x.name === session);
   if (!s) return 0;
   let root = cwd;
   try { root = git(["rev-parse", "--show-toplevel"], cwd).trim(); } catch { /* not a repo */ }

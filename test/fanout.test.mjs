@@ -67,20 +67,46 @@ test("verify finds out-of-lane files in a branch", () => {
   assert.deepEqual(verify({ owns: ["mine/**"] }, ["mine/a.ts"]), []);
 });
 
-test("guard blocks edits outside owns, allows inside, no-op without a session", () => {
+test("guard: blocks out-of-lane edits on a fanout/<name> branch, silent elsewhere", () => {
   const d = dir();
-  execFileSync("git", ["init", "-q"], { cwd: d });
-  const plan = join(d, "plan.md");
-  writeFileSync(plan, "## s\nowns: mine/**\n");
-  const call = (file, env) => run(["guard", plan], {
-    cwd: d,
-    env: { ...process.env, ...env },
-    input: JSON.stringify({ tool_name: "Edit", cwd: d, tool_input: { file_path: file } }),
-  });
-  assert.equal(call(join(d, "mine/a.ts"), { FANOUT_SESSION: "s" }).status, 0);
-  const bad = call(join(d, "other/a.ts"), { FANOUT_SESSION: "s" });
+  const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(d, "x.txt"), "1"); g("add", "-A"); g("commit", "-qm", "init");
+  mkdirSync(join(d, ".fanout"));
+  writeFileSync(join(d, ".fanout/plan.md"), "## s\nowns: mine/**\n");
+  const call = (file) => run(["guard"], { cwd: d, input: JSON.stringify({ tool_name: "Edit", cwd: d, tool_input: { file_path: file } }) });
+  assert.equal(call(join(d, "other/a.ts")).status, 0); // on main: no-op
+  g("checkout", "-qb", "fanout/s");
+  assert.equal(call(join(d, "mine/a.ts")).status, 0);
+  const bad = call(join(d, "other/a.ts"));
   assert.equal(bad.status, 2);
   assert.match(bad.stderr, /does not own other\/a\.ts/);
-  assert.equal(call(join(d, "other/a.ts"), { FANOUT_SESSION: "" }).status, 0);
-  assert.equal(call(join(tmpdir(), "elsewhere.txt"), { FANOUT_SESSION: "s" }).status, 0);
+  assert.equal(call(join(tmpdir(), "elsewhere.txt")).status, 0);
+});
+
+test("guard finds the plan from a linked worktree", () => {
+  const d = dir();
+  const g = (cwd, ...a) => execFileSync("git", a, { cwd, stdio: "ignore" });
+  g(d, "init", "-q", "-b", "main"); g(d, "config", "user.email", "t@t"); g(d, "config", "user.name", "t");
+  writeFileSync(join(d, "x.txt"), "1"); g(d, "add", "-A"); g(d, "commit", "-qm", "init");
+  mkdirSync(join(d, ".fanout"));
+  writeFileSync(join(d, ".fanout/plan.md"), "## s\nowns: mine/**\n");
+  const wt = join(dir(), "wt");
+  g(d, "worktree", "add", "-q", "-b", "fanout/s", wt);
+  const r = run(["guard"], { cwd: wt, input: JSON.stringify({ tool_name: "Write", cwd: wt, tool_input: { file_path: join(wt, "nope.ts") } }) });
+  assert.equal(r.status, 2);
+});
+
+test("verify uses the branch name and the default plan", () => {
+  const d = dir();
+  const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(d, "x.txt"), "1"); g("add", "-A"); g("commit", "-qm", "init");
+  mkdirSync(join(d, ".fanout"));
+  writeFileSync(join(d, ".fanout/plan.md"), "## s\nowns: mine/**\n");
+  g("checkout", "-qb", "fanout/s");
+  writeFileSync(join(d, "x.txt"), "2"); g("add", "-A"); g("commit", "-qm", "w");
+  const r = run(["verify"], { cwd: d });
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /OUT OF LANE s: x\.txt/);
 });

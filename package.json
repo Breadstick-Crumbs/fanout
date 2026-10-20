@@ -1,6 +1,6 @@
 {
   "name": "fanout",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Claude Code skill and checker for splitting work into parallel git-worktree sessions without file overlap",
   "license": "MIT",
   "type": "module",

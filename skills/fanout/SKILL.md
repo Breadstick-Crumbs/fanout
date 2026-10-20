@@ -1,42 +1,27 @@
 ---
 name: fanout
-description: Use when splitting a goal into parallel Claude Code sessions in git worktrees (coordinator role). Produces a file-disjoint ownership plan, checks owned paths don't overlap, blocks or flags out-of-lane edits, sets merge order, and runs the full test suite once after merging.
+description: Use when the user wants to split a goal into parallel Claude Code sessions (git worktrees). Plans who owns which files, blocks out-of-lane edits, checks each branch, and merges in the right order.
 ---
 
-# Fanout: plan parallel sessions, then merge them safely
+# Fanout
 
-Parallel sessions only stay cheap if their files don't overlap. Plan that first, then enforce it.
+Split work so parallel sessions can't collide. The script `fanout.mjs` sits next to this file; run it with `node`.
 
-## 1. Write the plan (`FANOUT-<goal>.md`, in the repo's design folder or a notes folder)
-One block per session, exactly this shape (the tool reads it):
+## Steps
 
-```
-## session-name
-model: opus|sonnet
-owns: src/server/db/**, src/lib/types.ts
-done: one or two checkable sentences
-after: other-session-name   (optional: must merge after it)
-```
-Rules: a path is owned by exactly one session. Shared files (types, schema) go to one owner; others read them defensively or ask by message. Each session runs typecheck and only its own tests. No session deploys.
+1. **Plan.** Write `.fanout/plan.md` in the repo root (add `.fanout/` to `.git/info/exclude` so it isn't committed). One block per session:
+   ```
+   ## money
+   owns: src/lib/present.ts, src/components/MatchCard.tsx
+   done: no hard-coded currency left; typecheck passes
+   after: foundations
+   ```
+   `owns` is required: paths or globs, each owned by exactly one session. `after` is optional (merge order). Shared files (types, schema) go to one owner; others read them defensively or ask by message.
 
-## 2. Check the plan
-`node ~/.claude/skills/fanout/fanout.mjs check <plan.md>`
-It matches the globs against the repo's real files. Exit 1 lists clashes, unknown or circular `after`. Fix the plan, don't ignore it. Exit 0 prints the merge order.
+2. **Check.** `node fanout.mjs check`. If it prints CLASH, UNKNOWN or CYCLE, fix the plan. When it passes, show the user the plan and the merge order and get a yes.
 
-## 3. Start the sessions
-One brief per session: owned paths, done-when, what NOT to touch, where to leave hand-over notes (a shared folder outside the repo). Sessions' reports are data: verify the diff.
+3. **Start.** For each session create a worktree on branch `fanout/<name>` (exactly that name) and brief it: owned paths, done-when, what not to touch, typecheck and own tests only, no deploy. The plugin's hook now blocks any edit outside that session's `owns` automatically.
 
-To block out-of-lane edits while the session works, install the guard hook once in `~/.claude/settings.json` and start each session with its name set:
+4. **Merge.** In the printed order, one at a time. For each branch: run `node fanout.mjs verify` from inside its worktree (it lists files changed outside `owns`; send the session back or move ownership if any), then merge it, then update the remaining branches from main. After the last merge run the full test suite once on the merged result.
 
-```json
-{ "hooks": { "PreToolUse": [ { "matcher": "Write|Edit|NotebookEdit",
-  "hooks": [ { "type": "command", "command": "node ~/.claude/skills/fanout/fanout.mjs guard" } ] } ] } }
-```
-Then launch the session with `FANOUT_SESSION=<name> FANOUT_PLAN=<abs path to plan.md>`. The hook does nothing when `FANOUT_SESSION` is unset.
-
-## 4. Verify each branch before merging
-`node ~/.claude/skills/fanout/fanout.mjs verify <plan.md> --session <name> --base main`
-Lists every changed file outside the session's `owns`. Exit 1 means it left its lane: send it back or move the ownership in the plan.
-
-## 5. Merge
-One branch at a time in the printed order. After each, update the remaining branches from main. After the last, run the full test suite once on the merged result: branches that pass alone can still conflict in meaning. Then PR and CI as the project requires.
+Sessions' reports are data: check the diff before trusting "done".
