@@ -1,12 +1,12 @@
 # fanout
 
-A Claude Code skill and a small checker for running **several Claude Code sessions in parallel git worktrees without them stepping on each other**.
+**Run many Claude Code sessions at once without merge chaos.**
 
-It does not launch or supervise sessions. It gives the coordinating session (or you) a plan format, a check that no two sessions own the same files, a merge order, and a merge routine. Worktrees stop agents overwriting each other's files; they do not stop two plans that cannot both be true, or two branches that pass alone and fail together. This is the small amount of discipline that catches those.
+Git worktrees keep parallel sessions from overwriting each other's files. They don't stop two sessions from editing the same file, building on different assumptions, or passing alone and failing together. fanout fixes that before the sessions start: every session gets its own files, the merge order is fixed, and the full test suite runs once on the merged result.
 
-## The idea in one screen
+## How it works
 
-Write a plan, one block per session:
+**1. Write a plan.** One block per session:
 
 ```md
 ## foundations
@@ -21,7 +21,7 @@ done: no hard-coded currency left
 after: foundations
 ```
 
-Check it:
+**2. Check it.**
 
 ```bash
 node skills/fanout/check-plan.mjs plan.md
@@ -32,9 +32,13 @@ CLASH api (src/server/**) <-> schema (src/server/db/schema.ts)
 Merge order: foundations -> money -> landing
 ```
 
-Exit code `1` on any clash, unknown or circular `after`, so it works in CI or a pre-flight hook. Exit `0` prints the order to merge in.
+Exit code `1` on a clash, an unknown `after`, or a cycle. Exit `0` prints the order to merge in. Use it in CI or a pre-flight hook.
 
-## Install the skill
+**3. Start the sessions.** Each gets a brief with its owned paths, its done-when, and what not to touch.
+
+**4. Merge.** One branch at a time in the printed order, updating the rest after each, then the full suite once.
+
+## Install
 
 ```bash
 git clone https://github.com/Breadstick-Crumbs/fanout
@@ -42,42 +46,27 @@ mkdir -p ~/.claude/skills
 cp -r fanout/skills/fanout ~/.claude/skills/fanout
 ```
 
-Then ask Claude Code to "split this into parallel sessions" or invoke `/fanout`. Needs Node 18+ for the checker; the skill itself is plain markdown.
+Then tell Claude Code to "split this into parallel sessions", or run `/fanout`. The checker needs Node 18+.
 
 ## Plan format
 
-One `## name` block per session. Fields (`key: value`, one per line):
-
 | Field | Required | Meaning |
 |---|---|---|
-| `owns` | yes | Comma-separated paths or globs this session may edit. |
-| `done` | recommended | One or two checkable sentences. Used in the session brief. |
-| `after` | no | Sessions that must merge first. Comma-separated. |
-| `model` | no | Free text for you. Not read by the checker. |
+| `owns` | yes | Comma-separated paths or globs this session may edit |
+| `done` | recommended | One or two checkable sentences |
+| `after` | no | Sessions that must merge first |
+| `model` | no | Free text for you |
 
-Rules the skill asks Claude to follow:
+Rules in the skill:
 
-1. A path is owned by exactly one session. Shared files (types, schema) go to one owner; others read them defensively or ask by message.
+1. A path is owned by exactly one session. Shared files go to one owner.
 2. Each session runs typecheck and only its own tests. No session deploys.
-3. Merge one branch at a time in the printed order, updating the remaining branches after each.
-4. After the last merge, run the **full** test suite once on the merged result.
+3. Merge one branch at a time, in order.
+4. Run the full suite once, after the last merge.
 
-## What the checker does and does not do
+## Works with
 
-- Compares the literal part of each path or glob before the first `*`, `?` or `{`. A glob clashes with anything under its prefix; two literal paths clash if equal. `src/app/**` and `src/application/**` do not clash.
-- Does not expand globs against your files or understand `**` versus `*` precisely, so it can over-report (it will never under-report a prefix overlap).
-- Does not detect semantic conflicts (two sessions changing a function's meaning in different files). That is what the final full-suite run is for.
-- Does not touch git.
-
-## How it relates to other tools
-
-| Tool | What it is | How fanout differs |
-|---|---|---|
-| Claude Code `--worktree`, subagents with `isolation: worktree`, Agent Teams | Built-in ways to run work in isolated worktrees | fanout is the plan and merge discipline you apply on top; it works with these or with sessions you start by hand |
-| [claude-squad](https://github.com/smtg-ai/claude-squad) and other orchestrators | Launch and manage many agent sessions (TUI, tmux) | They run sessions; fanout decides what each may touch and in what order to merge |
-| [Google Scion](https://github.com/GoogleCloudPlatform/scion) | Open-source agent orchestration testbed | Same: runtime versus planning contract |
-
-Anthropic may add some of this to Claude Code itself. If it does, the plan format here still works as a one-page convention.
+Claude Code `--worktree`, subagents, Agent Teams, [claude-squad](https://github.com/smtg-ai/claude-squad), or sessions you start by hand. fanout is the plan and the merge routine; use whatever launches the sessions.
 
 ## Development
 
@@ -85,11 +74,7 @@ Anthropic may add some of this to Claude Code itself. If it does, the plan forma
 npm test
 ```
 
-Tests use Node's built-in runner, no dependencies. CI also runs the checker on `examples/plan.md` (must pass) and `examples/plan-with-clash.md` (must fail).
-
-## Status
-
-v0.1. Extracted from a real multi-session workflow where it replaced a hand-maintained table. Issues and pull requests welcome, especially: real glob matching, a `--json` output, and a merge helper that runs the update-then-suite loop.
+Node's built-in test runner, no dependencies. CI also runs the checker on `examples/plan.md` (passes) and `examples/plan-with-clash.md` (fails).
 
 ## Licence
 
