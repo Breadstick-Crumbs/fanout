@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-    <img src="assets/logo.svg" alt="fanout" width="320">
+    <img src="assets/logo.svg" alt="fanout" width="352">
   </picture>
 </p>
 
