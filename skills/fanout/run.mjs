@@ -98,7 +98,7 @@ function runOnce({ agent = "claude", cwd, prompt, model, budget, plugin = false,
   const t0 = Date.now();
   let cmd;
   if (agent === "claude") {
-    const tools = ["Read", "Edit", "Write", "Glob", "Grep", "Bash(node:*)", "Bash(npm:*)",...READ_ONLY_BASH, ...(allowGit ? ["Bash(git:*)"] : [])];
+    const tools = ["Read", "Edit", "Write", "Glob", "Grep", "Bash(node:*)", "Bash(npm:*)", ...READ_ONLY_BASH, ...(allowGit ? ["Bash(git:*)"] : [])];
     const sources = settingSources(userSettings);
     cmd = [bin("claude"), "-p", ...(resume ? ["--resume", resume] : []), "--tools", CLAUDE_TOOLS, "--permission-mode", "acceptEdits", "--allowedTools", q(tools.join(",")), "--output-format", "stream-json", "--verbose",
       "--strict-mcp-config", ...sources, ...guardSettings(), ...(model ? ["--model", model] : []), ...(budget ? ["--max-budget-usd", budget] : [])].join(" ");
@@ -318,8 +318,10 @@ export async function cli(argv) {
   const agentFor = (s) => s.agent || defaultAgent;
   log(`starting ${sessions.length} sessions: ${sessions.map((s) => `${s.name} (${agentFor(s)})`).join(", ")}`);
   const ahead = (s) => Number(git(root, "rev-list", "--count", `${base}..fanout/${s.name}`).out.trim()) || 0;
-  // One agent run per attempt; a run that errors, or leaves no commit beyond the base, is tried once more
-  // with the same brief. Partial work from a failed lane is not committed.
+  // An agent run that errors (crash, budget, non-zero exit) is tried once more with the same brief; its
+  // partial work is not committed. A run that ends cleanly but changes nothing is only flagged: a session
+  // can genuinely have nothing to do. If no session changed anything, though, the run stops rather than
+  // report success (that is how a blocked agent shows up: it ends cleanly and edits nothing).
   const runLane = async (s) => {
     if (ahead(s) > 0) { log(`${s.name}: already has commits, not started again`); return { sessionId: null, seconds: 0, skipped: true }; }
     let r;
@@ -327,9 +329,9 @@ export async function cli(argv) {
       r = track("lane", s.name, await runAgent({ agent: agentFor(s), cwd: wt[s.name], prompt: brief(s, sessions, regen, test, "", root), model: modelFor(s), budget }));
       if (!r.error) {
         const { reverted } = commitLane(wt[s.name], sessions, s, regen, `fanout: ${s.name}`);
-        log(`${s.name}: done in ${r.seconds}s${r.fellBack ? ", ran with your user settings (a project-only start failed)" : ""}${reverted.length ? `, reverted out-of-lane: ${reverted.join(", ")}` : ""}`);
-        if (ahead(s) > 0) return r;
-        r.error = "no changes";
+        r.noChanges = ahead(s) === 0;
+        log(`${s.name}: done in ${r.seconds}s${r.fellBack ? ", ran with your user settings (a project-only start failed)" : ""}${reverted.length ? `, reverted out-of-lane: ${reverted.join(", ")}` : ""}${r.noChanges ? ", made no changes" : ""}`);
+        return r;
       }
       log(`${s.name}: agent failed (${r.error})${attempt ? "" : ", trying once more"}`);
     }
@@ -340,6 +342,10 @@ export async function cli(argv) {
   if (failed) {
     log(`stopped: ${failed.name} agent failed twice. Its work is in .fanout/lanes/${failed.name}; run again to retry unfinished sessions.`);
     return finish(1, `stopped: ${failed.name} agent failed`);
+  }
+  if (lanes.every((l) => l.noChanges || l.skipped) && !lanes.some((l) => l.skipped)) {
+    log("stopped: no session changed anything. If that's unexpected, the agents may have been blocked from editing; run again with FANOUT_TRACE_DIR set to see their tool calls.");
+    return finish(1, "stopped: no changes");
   }
   const session = Object.fromEntries(sessions.map((s, i) => [s.name, lanes[i].sessionId]));
 

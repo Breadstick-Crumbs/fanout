@@ -225,13 +225,23 @@ test("a session agent that errors is retried once, then the run stops", () => {
   assert.equal(execFileSync("git", ["rev-list", "--count", "main..fanout/b"], { cwd: repo, encoding: "utf8" }).trim(), "0");
 });
 
-test("a session that changes nothing counts as failed: retried once, then the run stops", () => {
+test("a session with nothing to change is flagged, not retried, and the run goes on", () => {
+  useFake();
+  const repo = mkRepo(PLAN_AB);
+  const r = runCli(repo, { FAKE_NOWRITE: "a" });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(callsFor("a"), 1);
+  assert.match(r.stdout, /a: done in \d+s, made no changes/);
+});
+
+test("if no session changed anything, the run stops instead of reporting success", () => {
   useFake();
   const repo = mkRepo(PLAN_A);
   const r = runCli(repo, { FAKE_NOWRITE: "a" });
   assert.equal(r.status, 1, r.stdout + r.stderr);
-  assert.equal(callsFor("a"), 2);
-  assert.match(runLog(repo), /stopped: a agent failed/);
+  assert.equal(callsFor("a"), 1);
+  assert.match(r.stdout, /stopped: no session changed anything/);
+  assert.match(runLog(repo), /stopped: no changes/);
 });
 
 test("session agents may not run npx", async () => {

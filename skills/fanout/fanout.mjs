@@ -7,7 +7,7 @@
 //   fanout install-git-hook [--force]               same rules as a git pre-commit hook, for agents outside Claude Code
 //   fanout run ["goal"] [--yes] [--agent claude|codex|"<cmd>"]   do the whole fan-out: plan, agents, rehearse, fix, merge (see run.mjs)
 //   fanout status [--base main]                     one table: each session's branch, commits, files, worktree, verify flags, last run and rehearse
-//   fanout log [--last 20]                         past runs and rehearsals from .fanout/log.jsonl: time, cost, fixes, test runs
+//   fanout log [--last 20]                          past runs and rehearsals from .fanout/log.jsonl: time, cost, fixes, test runs
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, chmodSync, existsSync, realpathSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { resolve, relative, isAbsolute, join, dirname } from "node:path";
@@ -307,7 +307,7 @@ function showStatus(cwd, base) {
   }
   return 0;
 }
-const explicitPlan =(argv) => (argv[1] && !argv[1].startsWith("--") ? argv[1] : null);
+const explicitPlan = (argv) => (argv[1] && !argv[1].startsWith("--") ? argv[1] : null);
 
 function main(argv) {
   const cmd = argv[0];

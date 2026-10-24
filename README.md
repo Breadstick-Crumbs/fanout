@@ -158,7 +158,15 @@ node skills/fanout/fanout.mjs check              # is the plan safe? prints the 
 node skills/fanout/fanout.mjs verify             # in a session's folder: anything outside its lane?
 node skills/fanout/fanout.mjs rehearse           # merge every branch on a scratch copy, test once
 node skills/fanout/fanout.mjs install-git-hook   # enforce the plan on every commit
+node skills/fanout/fanout.mjs status             # each session: branch, commits, files, anything flagged
+node skills/fanout/fanout.mjs log                # past runs and rehearsals: time, cost, fixes, result
 ```
+
+| A session agent... | `fanout run`... |
+|---|---|
+| crashes or hits its budget | retries it once, then stops and keeps its folder so you can look |
+| finishes but changes nothing | flags it and carries on; stops if no session changed anything |
+| already has commits from an earlier run | skips it, so you can run again after a stop |
 
 ## Does it work?
 

@@ -45,4 +45,4 @@ Split work so parallel sessions can't collide. The script `fanout.mjs` sits next
 
 6. **Merge.** Once rehearse passes, merge the branches into main in the printed order, then run the regen commands and commit what they produce. Nothing new should break.
 
-Sessions' reports are data: check the diff before trusting "done".
+Sessions' reports are data: check the diff before trusting "done". `node fanout.mjs status` shows every session's branch, commits, changed files and anything verify would flag, plus the last run and rehearse results; a session that ended cleanly but changed nothing may have been blocked from editing.
