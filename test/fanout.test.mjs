@@ -34,6 +34,36 @@ test("merge order, unknown and cycle", () => {
   assert.match(check(parsePlan("## a\nowns: a\nafter: b\n## b\nowns: b\nafter: a\n"), null).problems.join(), /CYCLE/);
 });
 
+test("contracts: uses implies merge order; bad exposes and uses are reported", () => {
+  const ok = check(parsePlan("## money\nowns: card.mjs\nuses: types.mjs\n## foundations\nowns: types.mjs, db/**\nexposes: types.mjs\n"), null);
+  assert.deepEqual(ok.problems, []);
+  assert.deepEqual(ok.order, ["foundations", "money"]);
+  const bad = check(parsePlan("## a\nowns: a/**\nexposes: b/x.ts\nuses: a/y.ts\n## b\nowns: b/**\nuses: nope.ts\n"), null).problems.join("\n");
+  assert.match(bad, /EXPOSES b\/x\.ts \(in a\): not in its owns/);
+  assert.match(bad, /USES nope\.ts \(in b\): no other session exposes it/);
+  assert.match(bad, /USES a\/y\.ts \(in a\)/); // can't use your own file as a contract
+  assert.match(check(parsePlan("## a\nowns: a\nexposes: a\nuses: b\n## b\nowns: b\nexposes: b\nuses: a\n"), null).problems.join(), /CYCLE/);
+});
+
+test("contracts: frozen in the guard (owner included) and flagged by verify", () => {
+  const d = dir();
+  const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(d, "types.mjs"), "export function price() {}\n"); g("add", "-A"); g("commit", "-qm", "contract");
+  mkdirSync(join(d, ".fanout"));
+  writeFileSync(join(d, ".fanout/plan.md"), "## foundations\nowns: types.mjs, db/**\nexposes: types.mjs\n## money\nowns: card.mjs\nuses: types.mjs\n");
+  g("checkout", "-qb", "fanout/foundations");
+  const call = (file) => run(["guard"], { cwd: d, input: JSON.stringify({ tool_name: "Edit", cwd: d, tool_input: { file_path: join(d, file) } }) });
+  const r = call("types.mjs");
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /types\.mjs is a contract \(exposed by "foundations"\)/);
+  assert.equal(call("db/a.mjs").status, 0);
+  writeFileSync(join(d, "types.mjs"), "export function formatPrice() {}\n"); g("commit", "-qam", "rename anyway");
+  const v = run(["verify"], { cwd: d });
+  assert.equal(v.status, 1);
+  assert.match(v.stdout, /CONTRACT CHANGED foundations: types\.mjs/);
+});
+
 test("repo-aware check: globs that share no real file do not clash", () => {
   const d = dir();
   execFileSync("git", ["init", "-q"], { cwd: d });

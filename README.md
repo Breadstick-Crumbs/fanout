@@ -19,6 +19,7 @@ Tell Claude Code:
 Claude writes the plan, checks it, shows you who owns what, and starts the sessions. From then on:
 
 - A session that tries to edit a file it doesn't own is stopped, with a message telling it to ask.
+- Shared interfaces (types, API signatures) are written on main first and frozen, so sessions build against the real thing instead of guessing, and nobody can quietly change one under the others.
 - Before each merge, fanout lists any file a branch changed outside its lane.
 - Before anything merges, fanout rehearses: it merges every branch in order on a scratch worktree and runs your tests after each one. Branches that merge with no conflict but break each other are caught and pinned to the branch that broke things.
 - The failing session gets the short report and fixes its branch; only then do branches merge into main.
@@ -34,19 +35,22 @@ test: npm test
 
 ## foundations
 owns: src/lib/types.ts, src/server/db/**
+exposes: src/lib/types.ts
 done: per-country visibility works; typecheck passes
 
 ## money
 owns: src/lib/present.ts, src/components/MatchCard.tsx
+uses: src/lib/types.ts
 done: no hard-coded currency left
-after: foundations
 ```
+
+`exposes` marks a contract; `uses` says who depends on it and puts that session later in the merge order.
 
 ## Commands (Claude runs these; you can too)
 
 ```bash
 node skills/fanout/fanout.mjs check              # plan vs your repo: clashes, order
-node skills/fanout/fanout.mjs verify             # from a fanout/<name> worktree: files outside its lane
+node skills/fanout/fanout.mjs verify             # from a fanout/<name> worktree: files outside its lane, contracts changed
 node skills/fanout/fanout.mjs rehearse           # merge all branches on a scratch worktree, test after each
 ```
 

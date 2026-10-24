@@ -15,7 +15,7 @@ export function parsePlan(text) {
     const [name, ...rest] = block.split("\n");
     const get = (k) => (rest.find((l) => l.startsWith(k + ":")) ?? "").slice(k.length + 1).trim();
     const list = (k) => get(k).split(",").map((s) => s.trim()).filter(Boolean);
-    sessions.push({ name: name.trim(), owns: list("owns"), after: list("after") });
+    sessions.push({ name: name.trim(), owns: list("owns"), after: list("after"), exposes: list("exposes"), uses: list("uses") });
   }
   return sessions;
 }
@@ -56,6 +56,11 @@ export const matches = (glob, path) => {
   return globToRegex(g).test(norm(path));
 };
 export const ownsFile = (session, path) => session.owns.some((g) => matches(g, path));
+// Contracts: files a session exposes to others. They are committed to main before the
+// sessions start and stay frozen on every fanout branch, the owner's included.
+const exposes = (session, path) => (session.exposes ?? []).some((g) => g === path || matches(g, path));
+export const contractOwner = (sessions, path) => sessions.find((s) => exposes(s, path));
+export const contractChanges = (sessions, changed) => changed.filter((f) => contractOwner(sessions, f));
 
 const isGlob = (s) => /[*?{]/.test(s);
 const prefix = (g) => norm(g).split(/[*?{]/)[0];
@@ -95,11 +100,22 @@ export function check(sessions, cwd) {
           problems.push(`CLASH ${label}`);
         }
       }
+  // A session that uses a contract merges after the session exposing it.
+  const deps = new Map(sessions.map((s) => [s.name, [...s.after]]));
+  for (const s of sessions) {
+    for (const e of s.exposes ?? [])
+      if (!ownsFile(s, e)) problems.push(`EXPOSES ${e} (in ${s.name}): not in its owns`);
+    for (const u of s.uses ?? []) {
+      const owner = contractOwner(sessions.filter((x) => x !== s), u);
+      if (!owner) { problems.push(`USES ${u} (in ${s.name}): no other session exposes it`); continue; }
+      if (!deps.get(s.name).includes(owner.name)) deps.get(s.name).push(owner.name);
+    }
+  }
   const order = [], seen = new Set();
   const visit = (s, stack = []) => {
     if (seen.has(s.name)) return;
-    if (stack.includes(s.name)) { problems.push("CYCLE in after: " + [...stack, s.name].join(" -> ")); return; }
-    for (const d of s.after) {
+    if (stack.includes(s.name)) { problems.push("CYCLE in after/uses: " + [...stack, s.name].join(" -> ")); return; }
+    for (const d of deps.get(s.name)) {
       const t = sessions.find((x) => x.name === d);
       if (t) visit(t, [...stack, s.name]); else problems.push(`UNKNOWN after: ${d} (in ${s.name})`);
     }
@@ -192,13 +208,14 @@ function main(argv) {
   if (!s) { console.error(`No session "${name}" in plan. Pass --session or run from a fanout/<name> branch.`); return 2; }
   const base = arg(argv, "--base", "main"), head = arg(argv, "--head", "HEAD");
   const changed = git(["diff", "--name-only", `${base}...${head}`], cwd).split("\n").filter(Boolean);
-  const out = verify(s, changed);
+  const out = verify(s, changed), frozen = contractChanges(sessions, changed);
   out.forEach((f) => console.log(`OUT OF LANE ${name}: ${f}`));
-  console.log(`${name}: ${changed.length} changed, ${out.length} outside its owns`);
-  return out.length ? 1 : 0;
+  frozen.forEach((f) => console.log(`CONTRACT CHANGED ${name}: ${f} (exposed by ${contractOwner(sessions, f).name})`));
+  console.log(`${name}: ${changed.length} changed, ${out.length} outside its owns, ${frozen.length} contracts changed`);
+  return out.length || frozen.length ? 1 : 0;
 }
 
-// PreToolUse hook: blocks Write/Edit/NotebookEdit outside the session's owns.
+// PreToolUse hook: blocks Write/Edit/NotebookEdit outside the session's owns, and on any contract.
 // Active only on a fanout/<name> branch with a plan present, so it does nothing in normal work.
 function guard() {
   let input = {};
@@ -210,12 +227,17 @@ function guard() {
   if (!session) return 0;
   let text;
   try { text = readFileSync(defaultPlan(cwd), "utf8"); } catch { return 0; }
-  const s = parsePlan(text).find((x) => x.name === session);
+  const sessions = parsePlan(text), s = sessions.find((x) => x.name === session);
   if (!s) return 0;
   let root = cwd;
   try { root = git(["rev-parse", "--show-toplevel"], cwd).trim(); } catch { /* not a repo */ }
   const rel = norm(relative(root, isAbsolute(target) ? target : resolve(cwd, target)));
   if (rel.startsWith("..")) return 0; // outside the repo: not our business
+  const owner = contractOwner(sessions, rel);
+  if (owner) {
+    console.error(`fanout: ${rel} is a contract (exposed by "${owner.name}") and is frozen during the fan-out. Ask the coordinator to change it on main; sessions that use it will be told.`);
+    return 2;
+  }
   if (ownsFile(s, rel)) return 0;
   console.error(`fanout: session "${session}" does not own ${rel}. Owned: ${s.owns.join(", ")}. Ask the coordinator to change the plan.`);
   return 2;
