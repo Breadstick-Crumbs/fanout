@@ -97,6 +97,50 @@ test("guard finds the plan from a linked worktree", () => {
   assert.equal(r.status, 2);
 });
 
+test("rehearse: clean-merging lanes that break together are pinned to the second branch", () => {
+  const d = dir();
+  const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(d, "types.mjs"), "export function price(m) { return m.cents / 100 }\n");
+  writeFileSync(join(d, "card.mjs"), "\n"); // nothing calls price() on main yet
+  g("add", "-A"); g("commit", "-qm", "base");
+  mkdirSync(join(d, ".fanout"));
+  writeFileSync(join(d, ".fanout/plan.md"), "test: node card.mjs\n\n## foundations\nowns: types.mjs\n\n## money\nowns: card.mjs\nafter: foundations\n");
+  assert.equal(run(["rehearse"], { cwd: d }).status, 0); // no branches yet: all skipped
+  g("checkout", "-qb", "fanout/foundations");
+  writeFileSync(join(d, "types.mjs"), "export function formatPrice(m) { return m.cents / 100 }\n");
+  g("commit", "-qam", "rename");
+  g("checkout", "-q", "main"); g("checkout", "-qb", "fanout/money");
+  writeFileSync(join(d, "card.mjs"), 'import { price } from "./types.mjs"\nprice({ cents: 5 }) + " USD"\n');
+  g("commit", "-qam", "currency");
+  g("checkout", "-q", "main");
+  const r = run(["rehearse"], { cwd: d });
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /OK after foundations/);
+  assert.match(r.stdout, /BROKE after money/);
+  assert.match(r.stdout, /does not provide an export named 'price'/);
+  assert.equal(execFileSync("git", ["worktree", "list"], { cwd: d, encoding: "utf8" }).trim().split("\n").length, 1);
+  assert.equal(execFileSync("git", ["rev-parse", "HEAD"], { cwd: d, encoding: "utf8" }), execFileSync("git", ["rev-parse", "main"], { cwd: d, encoding: "utf8" }));
+});
+
+test("rehearse: reports a textual conflict and the files", () => {
+  const d = dir();
+  const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(d, "x.txt"), "1"); g("add", "-A"); g("commit", "-qm", "init");
+  mkdirSync(join(d, ".fanout"));
+  writeFileSync(join(d, ".fanout/plan.md"), "## a\nowns: a/**\n## b\nowns: b/**\n");
+  for (const b of ["a", "b"]) {
+    g("checkout", "-q", "main"); g("checkout", "-qb", "fanout/" + b);
+    writeFileSync(join(d, "x.txt"), b); g("commit", "-qam", b);
+  }
+  g("checkout", "-q", "main");
+  const r = run(["rehearse"], { cwd: d });
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /MERGED a/);
+  assert.match(r.stdout, /CONFLICT merging b: x\.txt/);
+});
+
 test("verify uses the branch name and the default plan", () => {
   const d = dir();
   const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });

@@ -2,10 +2,11 @@
 // fanout: plan parallel sessions, check for overlap, verify branches, guard edits.
 //   fanout check  [plan.md]                         plan defaults to .fanout/plan.md in the main checkout
 //   fanout verify [--session name] [--base main]    session defaults to the fanout/<name> branch
+//   fanout rehearse [plan.md] [--base main] [--test cmd]   merge every branch in order on a scratch worktree, test after each
 //   fanout guard                                    PreToolUse hook (installed by the plugin)
 import { readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
-import { resolve, relative, isAbsolute } from "node:path";
+import { execFileSync, spawnSync } from "node:child_process";
+import { resolve, relative, isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export function parsePlan(text) {
@@ -18,6 +19,10 @@ export function parsePlan(text) {
   }
   return sessions;
 }
+
+// Plan-wide settings sit above the first "## " block, e.g. "test: npm test".
+export const planSetting = (text, key) =>
+  (text.split(/^## /m)[0].split("\n").find((l) => l.startsWith(key + ":")) ?? "").slice(key.length + 1).trim();
 
 const norm = (p) => p.replaceAll("\\", "/").replace(/^\.\//, "");
 
@@ -117,18 +122,53 @@ function currentSession(cwd) {
     return b.startsWith(BRANCH_PREFIX) ? b.slice(BRANCH_PREFIX.length) : null;
   } catch { return null; }
 }
-function defaultPlan(cwd) {
+function mainRoot(cwd) {
+  try { return resolve(git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd).trim(), ".."); }
+  catch { return cwd; }
+}
+const defaultPlan = (cwd) => resolve(mainRoot(cwd), ".fanout", "plan.md");
+
+// Merges the branches in plan order on a throwaway worktree and runs the test command after
+// each merge, so a break is caught before pushing and pinned to the branch that caused it.
+// The worktree sits in .fanout/ inside the main checkout so node_modules etc. still resolve.
+// Output is a few lines plus the tail of a failing run: cheap for an agent to read and act on.
+export function rehearse(order, { cwd, base = "main", test, tail = 20 }) {
+  const log = [], root = mainRoot(cwd), wt = join(root, ".fanout", "rehearse");
+  const sh = (cmd) => spawnSync(cmd, { cwd: wt, shell: true, encoding: "utf8" });
+  const g = (...a) => execFileSync("git", ["-c", "user.name=fanout", "-c", "user.email=fanout@local", ...a],
+    { cwd: wt, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const drop = () => { try { git(["worktree", "remove", "--force", wt], root); } catch { /* not there */ } };
+  drop();
+  git(["worktree", "add", "--detach", wt, base], root);
+  let ok = true;
   try {
-    const common = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd).trim();
-    return resolve(common, "..", ".fanout", "plan.md");
-  } catch { return resolve(cwd, ".fanout", "plan.md"); }
+    for (const name of order) {
+      const branch = BRANCH_PREFIX + name;
+      try { git(["rev-parse", "--verify", "--quiet", branch], root); }
+      catch { log.push(`SKIP ${name}: no branch ${branch}`); continue; }
+      try { g("merge", "--no-ff", "--no-edit", branch); }
+      catch {
+        const files = g("diff", "--name-only", "--diff-filter=U").split("\n").filter(Boolean);
+        log.push(`CONFLICT merging ${name}: ${files.join(", ")}`);
+        ok = false; break;
+      }
+      if (!test) { log.push(`MERGED ${name}`); continue; }
+      const r = sh(test);
+      if (r.status === 0) { log.push(`OK after ${name}`); continue; }
+      const out = `${r.stdout ?? ""}${r.stderr ?? ""}`.trimEnd().split("\n").slice(-tail).join("\n");
+      log.push(`BROKE after ${name}: \`${test}\` exited ${r.status}`, out);
+      ok = false; break;
+    }
+  } finally { drop(); }
+  if (ok) log.push(test ? "All branches merge and pass together." : "All branches merge cleanly (no test command: add `test:` to the plan).");
+  return { ok, log };
 }
 const explicitPlan = (argv) => (argv[1] && !argv[1].startsWith("--") ? argv[1] : null);
 
 function main(argv) {
   const cmd = argv[0];
   if (cmd === "guard") return guard(argv);
-  if (cmd !== "check" && cmd !== "verify") { console.error("usage: fanout check [plan.md] | verify [--session name] [--base main] | guard"); return 2; }
+  if (!["check", "verify", "rehearse"].includes(cmd)) { console.error("usage: fanout check [plan.md] | verify [--session name] [--base main] | rehearse [--base main] [--test cmd] | guard"); return 2; }
   const cwd = resolve(arg(argv, "--cwd", process.cwd()));
   const planPath = explicitPlan(argv) ?? defaultPlan(cwd);
   let text;
@@ -139,6 +179,13 @@ function main(argv) {
     problems.forEach((p) => console.log(p));
     console.log("Merge order:", order.join(" -> "));
     return problems.length ? 1 : 0;
+  }
+  if (cmd === "rehearse") {
+    const { problems, order } = check(sessions, cwd);
+    if (problems.length) { problems.forEach((p) => console.log(p)); console.log("Fix the plan first (fanout check)."); return 1; }
+    const { ok, log } = rehearse(order, { cwd, base: arg(argv, "--base", "main"), test: arg(argv, "--test") ?? planSetting(text, "test") });
+    log.forEach((l) => console.log(l));
+    return ok ? 0 : 1;
   }
   const name = arg(argv, "--session") ?? currentSession(cwd);
   const s = sessions.find((x) => x.name === name);

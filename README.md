@@ -20,7 +20,8 @@ Claude writes the plan, checks it, shows you who owns what, and starts the sessi
 
 - A session that tries to edit a file it doesn't own is stopped, with a message telling it to ask.
 - Before each merge, fanout lists any file a branch changed outside its lane.
-- Branches merge in dependency order, then the full test suite runs once.
+- Before anything merges, fanout rehearses: it merges every branch in order on a scratch worktree and runs your tests after each one. Branches that merge with no conflict but break each other are caught and pinned to the branch that broke things.
+- The failing session gets the short report and fixes its branch; only then do branches merge into main.
 
 That's it. No config, no environment variables.
 
@@ -29,6 +30,8 @@ That's it. No config, no environment variables.
 Claude writes this to `.fanout/plan.md`; you only read and approve it.
 
 ```md
+test: npm test
+
 ## foundations
 owns: src/lib/types.ts, src/server/db/**
 done: per-country visibility works; typecheck passes
@@ -44,6 +47,7 @@ after: foundations
 ```bash
 node skills/fanout/fanout.mjs check              # plan vs your repo: clashes, order
 node skills/fanout/fanout.mjs verify             # from a fanout/<name> worktree: files outside its lane
+node skills/fanout/fanout.mjs rehearse           # merge all branches on a scratch worktree, test after each
 ```
 
 ## How it works
