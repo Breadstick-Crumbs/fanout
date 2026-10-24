@@ -98,7 +98,7 @@ function runOnce({ agent = "claude", cwd, prompt, model, budget, plugin = false,
   const t0 = Date.now();
   let cmd;
   if (agent === "claude") {
-    const tools = ["Read", "Edit", "Write", "Glob", "Grep", "Bash(node:*)", "Bash(npm:*)", "Bash(npx:*)", ...READ_ONLY_BASH, ...(allowGit ? ["Bash(git:*)"] : [])];
+    const tools = ["Read", "Edit", "Write", "Glob", "Grep", "Bash(node:*)", "Bash(npm:*)",...READ_ONLY_BASH, ...(allowGit ? ["Bash(git:*)"] : [])];
     const sources = settingSources(userSettings);
     cmd = [bin("claude"), "-p", ...(resume ? ["--resume", resume] : []), "--tools", CLAUDE_TOOLS, "--permission-mode", "acceptEdits", "--allowedTools", q(tools.join(",")), "--output-format", "stream-json", "--verbose",
       "--strict-mcp-config", ...sources, ...guardSettings(), ...(model ? ["--model", model] : []), ...(budget ? ["--max-budget-usd", budget] : [])].join(" ");
@@ -203,7 +203,18 @@ const log = (...a) => console.log("fanout:", ...a);
 // to write the contracts.
 export function plannerPrompt({ goal, base, root, extra = "" }) {
   const files = git(root, "ls-files").out.split("\n").filter(Boolean);
-  const list = files.slice(0, 300).join("\n") + (files.length > 300 ? `\n… and ${files.length - 300} more` : "");
+  let list = files.join("\n");
+  if (files.length > 300) {
+    // Too many to list: one line per folder with its file count, then the top-level files.
+    const counts = new Map(), top = [];
+    for (const f of files) {
+      const i = f.lastIndexOf("/");
+      if (i < 0) top.push(f); else counts.set(f.slice(0, i), (counts.get(f.slice(0, i)) ?? 0) + 1);
+    }
+    const byPath = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+    list = `${files.length} files, summarised by folder:\n` + [...counts].sort(([a], [b]) => byPath(a, b)).map(([d, n]) => `${d}/ (${n} files)`).join("\n")
+      + `\nTop-level files:\n` + top.sort(byPath).join("\n");
+  }
   return `Plan a parallel fan-out for the goal below, then stop. The fanout script is ${SCRIPT} (run it with node).
 
 1. Write .fanout/plan.md in exactly this shape:
@@ -295,6 +306,7 @@ export async function cli(argv) {
 
   // 3. Lanes
   sh(`node "${SCRIPT}" install-git-hook`, root);
+  git(root, "worktree", "prune");
   const wt = Object.fromEntries(sessions.map((s) => [s.name, join(root, ".fanout", "lanes", s.name)]));
   for (const s of sessions) {
     if (!existsSync(wt[s.name])) {
@@ -305,13 +317,31 @@ export async function cli(argv) {
   }
   const agentFor = (s) => s.agent || defaultAgent;
   log(`starting ${sessions.length} sessions: ${sessions.map((s) => `${s.name} (${agentFor(s)})`).join(", ")}`);
-  const lanes = await staggered(sessions, (s) => runAgent({ agent: agentFor(s), cwd: wt[s.name], prompt: brief(s, sessions, regen, test, "", root), model: modelFor(s), budget }));
-  sessions.forEach((s, i) => track("lane", s.name, lanes[i]));
+  const ahead = (s) => Number(git(root, "rev-list", "--count", `${base}..fanout/${s.name}`).out.trim()) || 0;
+  // One agent run per attempt; a run that errors, or leaves no commit beyond the base, is tried once more
+  // with the same brief. Partial work from a failed lane is not committed.
+  const runLane = async (s) => {
+    if (ahead(s) > 0) { log(`${s.name}: already has commits, not started again`); return { sessionId: null, seconds: 0, skipped: true }; }
+    let r;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      r = track("lane", s.name, await runAgent({ agent: agentFor(s), cwd: wt[s.name], prompt: brief(s, sessions, regen, test, "", root), model: modelFor(s), budget }));
+      if (!r.error) {
+        const { reverted } = commitLane(wt[s.name], sessions, s, regen, `fanout: ${s.name}`);
+        log(`${s.name}: done in ${r.seconds}s${r.fellBack ? ", ran with your user settings (a project-only start failed)" : ""}${reverted.length ? `, reverted out-of-lane: ${reverted.join(", ")}` : ""}`);
+        if (ahead(s) > 0) return r;
+        r.error = "no changes";
+      }
+      log(`${s.name}: agent failed (${r.error})${attempt ? "" : ", trying once more"}`);
+    }
+    return { ...r, failed: true };
+  };
+  const lanes = await staggered(sessions, runLane);
+  const failed = sessions.find((s, i) => lanes[i].failed);
+  if (failed) {
+    log(`stopped: ${failed.name} agent failed twice. Its work is in .fanout/lanes/${failed.name}; run again to retry unfinished sessions.`);
+    return finish(1, `stopped: ${failed.name} agent failed`);
+  }
   const session = Object.fromEntries(sessions.map((s, i) => [s.name, lanes[i].sessionId]));
-  sessions.forEach((s, i) => {
-    const { reverted } = commitLane(wt[s.name], sessions, s, regen, `fanout: ${s.name}`);
-    log(`${s.name}: done in ${lanes[i].seconds}s${lanes[i].fellBack ? ", ran with your user settings (a project-only start failed)" : ""}${lanes[i].error ? `, agent error: ${lanes[i].error}` : ""}${reverted.length ? `, reverted out-of-lane: ${reverted.join(", ")}` : ""}`);
-  });
 
   phase("sessions");
 

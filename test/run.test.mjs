@@ -13,9 +13,12 @@ const dir = mkdtempSync(join(tmpdir(), "fanout-run-"));
 const logFile = join(dir, "calls.jsonl");
 const fake = join(dir, "fake.mjs");
 writeFileSync(fake, `
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2), stdin = readFileSync(0, "utf8");
 appendFileSync(${JSON.stringify(logFile)}, JSON.stringify({ args, stdin }) + "\\n");
+const who = stdin.match(/session "(\\w+)"/)?.[1];
+if (who && process.env.FAKE_FAIL_SESSION === who) { console.log(JSON.stringify({ is_error: true, result: "crashed", num_turns: 3 })); process.exit(1); }
+if (who && process.env.FAKE_WRITE && process.env.FAKE_NOWRITE !== who) writeFileSync(who + ".txt", "x");
 const resuming = args.includes("--resume") || args.includes("resume");
 if (resuming && process.env.FAKE_FAIL_RESUME) { console.log(JSON.stringify({ is_error: true, result: "no such session" })); process.exit(1); }
 if (process.env.FAKE_FAIL_LEAN && args.includes("--setting-sources")) { console.log(JSON.stringify({ is_error: true, result: "auth failed", num_turns: Number(process.env.FAKE_FAIL_LEAN) - 1 || undefined })); process.exit(1); }
@@ -33,7 +36,24 @@ const useFake = () => {
   delete process.env.FAKE_FAIL_RESUME;
   delete process.env.FAKE_FAIL_LEAN;
   delete process.env.FANOUT_USER_SETTINGS;
+  delete process.env.FAKE_FAIL_SESSION;
+  delete process.env.FAKE_NOWRITE;
+  process.env.FAKE_WRITE = "1"; // session agents write <name>.txt, so they leave a change to commit
 };
+const mkRepo = (plan) => {
+  const repo = mkdtempSync(join(tmpdir(), "fanout-rr-"));
+  const g = (...a) => execFileSync("git", a, { cwd: repo, stdio: "ignore" });
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(repo, "x.txt"), "1"); g("add", "-A"); g("commit", "-qm", "init");
+  mkdirSync(join(repo, ".fanout"));
+  writeFileSync(join(repo, ".fanout/plan.md"), plan);
+  return repo;
+};
+const runCli = (repo, env = {}) => spawnSync(process.execPath, [join(import.meta.dirname, "../skills/fanout/fanout.mjs"), "run", "--yes", "--no-merge"],
+  { cwd: repo, encoding: "utf8", env: { ...process.env, FANOUT_STAGGER_MS: "0", ...env } });
+const PLAN_A = "## a\nowns: a.txt\ntask: a\n", PLAN_AB = PLAN_A + "\n## b\nowns: b.txt\ntask: b\n";
+const callsFor = (n) => calls().filter((c) => c.stdin.includes(`session "${n}"`)).length;
+const runLog = (repo) => readFileSync(join(repo, ".fanout/log.jsonl"), "utf8");
 
 test("claude run records session id and uses the slim tool set", async () => {
   useFake();
@@ -192,4 +212,61 @@ test("fanout run uses each session's model, then --session-model, for session ag
   assert.equal(r.status, 0, r.stdout + r.stderr);
   const models = Object.fromEntries(calls().map((c) => [c.stdin.match(/session "(\w+)"/)?.[1], c.args[c.args.indexOf("--model") + 1]]));
   assert.deepEqual(models, { a: "haiku", b: "sonnet" });
+});
+
+test("a session agent that errors is retried once, then the run stops", () => {
+  useFake();
+  const repo = mkRepo(PLAN_AB);
+  const r = runCli(repo, { FAKE_FAIL_SESSION: "b" });
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  assert.equal(callsFor("b"), 2);
+  assert.equal(callsFor("a"), 1);
+  assert.match(runLog(repo), /stopped: b agent failed/);
+  assert.equal(execFileSync("git", ["rev-list", "--count", "main..fanout/b"], { cwd: repo, encoding: "utf8" }).trim(), "0");
+});
+
+test("a session that changes nothing counts as failed: retried once, then the run stops", () => {
+  useFake();
+  const repo = mkRepo(PLAN_A);
+  const r = runCli(repo, { FAKE_NOWRITE: "a" });
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  assert.equal(callsFor("a"), 2);
+  assert.match(runLog(repo), /stopped: a agent failed/);
+});
+
+test("session agents may not run npx", async () => {
+  useFake();
+  await runAgent({ agent: "claude", cwd: dir, prompt: "x" });
+  const [c] = calls();
+  const allowed = c.args[c.args.indexOf("--allowedTools") + 1];
+  assert.ok(allowed.includes("Bash(npm:*)"));
+  assert.ok(!allowed.includes("npx"));
+});
+
+test("planner prompt summarises a repo of more than 300 files by folder", () => {
+  const root = mkdtempSync(join(tmpdir(), "fanout-big-"));
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  for (const d of ["zeta", "alpha/sub"]) mkdirSync(join(root, d), { recursive: true });
+  for (let i = 0; i < 200; i++) writeFileSync(join(root, "zeta", `f${i}.js`), "");
+  for (let i = 0; i < 150; i++) writeFileSync(join(root, "alpha/sub", `g${i}.js`), "");
+  writeFileSync(join(root, "README.md"), "");
+  execFileSync("git", ["add", "-A"], { cwd: root });
+  const p = plannerPrompt({ goal: "g", base: "main", root });
+  assert.ok(!p.includes("f17.js"));
+  assert.match(p, /alpha\/sub\/ \(150 files\)/);
+  assert.match(p, /zeta\/ \(200 files\)/);
+  assert.ok(p.indexOf("alpha/sub/") < p.indexOf("zeta/"));
+  assert.match(p, /Top-level files:\nREADME\.md/);
+});
+
+test("running again after a stop reuses branches and skips finished sessions", () => {
+  useFake();
+  const repo = mkRepo(PLAN_AB);
+  assert.equal(runCli(repo, { FAKE_FAIL_SESSION: "b" }).status, 1);
+  writeFileSync(logFile, "");
+  const r = runCli(repo);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(callsFor("a"), 0);
+  assert.equal(callsFor("b"), 1);
+  assert.match(r.stdout, /a: already has commits/);
 });
