@@ -16,12 +16,12 @@ import { spawn, execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, existsSync, appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { join, dirname } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { parsePlan, parseRegen, planSetting, check, rehearse, blockReason, mainRoot, appendLog } from "./fanout.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "fanout.mjs");
-const PLUGIN_ROOT = join(HERE, "..", "..");
 const WIN = process.platform === "win32";
 
 const git = (cwd, ...a) => {
@@ -63,8 +63,22 @@ const CLAUDE_TOOLS = "Read,Edit,Write,Glob,Grep,Bash";
 const READ_ONLY_BASH = ["cd", "ls", "cat", "head", "tail", "grep", "wc", "pwd", "echo"].map((c) => `Bash(${c}:*)`);
 // Session agents start with the project's settings only, not the user's own: personal hooks and plugins
 // run on every agent and tool call (measured here: a trivial call went from 9s to 15s and doubled its
-// tokens). fanout's guard is loaded directly with --plugin-dir instead. FANOUT_USER_SETTINGS=1 keeps them.
-const settingSources = (userSettings) => (process.env.FANOUT_USER_SETTINGS || userSettings ? [] : ["--setting-sources", "project,local", "--plugin-dir", q(PLUGIN_ROOT)]);
+// tokens). FANOUT_USER_SETTINGS=1 keeps them.
+const settingSources = (userSettings) => (process.env.FANOUT_USER_SETTINGS || userSettings ? [] : ["--setting-sources", "project,local"]);
+
+// fanout's edit guard, as a plain hook in a settings file passed with --settings, so every session agent
+// has it whatever the user has installed. (Loading fanout with --plugin-dir would also bring the guard,
+// but Claude Code then protects the plugin's own files: agents working on a checkout of fanout itself
+// could not edit anything, and said nothing.)
+let guardFile = null;
+function guardSettings() {
+  if (!guardFile) {
+    guardFile = join(tmpdir(), `fanout-guard-${process.pid}.json`);
+    const hook = { type: "command", command: `node "${SCRIPT.replaceAll("\\", "/")}" guard` };
+    writeFileSync(guardFile, JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Write|Edit|NotebookEdit|apply_patch", hooks: [hook] }] } }));
+  }
+  return ["--settings", q(guardFile.replaceAll("\\", "/"))];
+}
 
 // Some setups keep what Claude needs to run at all in the user's settings (Bedrock or Vertex, a proxy, an
 // API key helper). If a lean start fails before doing any work, run once more with the user's settings.
@@ -87,8 +101,7 @@ function runOnce({ agent = "claude", cwd, prompt, model, budget, plugin = false,
     const tools = ["Read", "Edit", "Write", "Glob", "Grep", "Bash(node:*)", "Bash(npm:*)", "Bash(npx:*)", ...READ_ONLY_BASH, ...(allowGit ? ["Bash(git:*)"] : [])];
     const sources = settingSources(userSettings);
     cmd = [bin("claude"), "-p", ...(resume ? ["--resume", resume] : []), "--tools", CLAUDE_TOOLS, "--permission-mode", "acceptEdits", "--allowedTools", q(tools.join(",")), "--output-format", "stream-json", "--verbose",
-      "--strict-mcp-config", ...sources, ...(model ? ["--model", model] : []), ...(budget ? ["--max-budget-usd", budget] : []),
-      ...((plugin || userSettings) && !sources.length ? ["--plugin-dir", q(PLUGIN_ROOT)] : [])].join(" ");
+      "--strict-mcp-config", ...sources, ...guardSettings(), ...(model ? ["--model", model] : []), ...(budget ? ["--max-budget-usd", budget] : [])].join(" ");
   } else if (agent === "codex") {
     cmd = [bin("codex"), "exec", "--json", "-s", "workspace-write", "--skip-git-repo-check", "-C", q(cwd), ...(model ? ["-m", model] : []),
       ...(resume ? ["resume", resume] : [])].join(" ");

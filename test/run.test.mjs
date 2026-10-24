@@ -95,7 +95,13 @@ test("claude agents start lean: project settings only, fanout's guard loaded dir
   await runAgent({ agent: "claude", cwd: dir, prompt: "x" });
   const [lean] = calls();
   assert.equal(lean.args[lean.args.indexOf("--setting-sources") + 1], "project,local");
-  assert.ok(lean.args.includes("--plugin-dir"));
+  // The guard comes from a settings file with a plain hook, not --plugin-dir (which would make Claude Code
+  // protect fanout's own files from edits).
+  assert.ok(!lean.args.includes("--plugin-dir"));
+  const settings = JSON.parse(readFileSync(lean.args[lean.args.indexOf("--settings") + 1], "utf8"));
+  const [hook] = settings.hooks.PreToolUse;
+  assert.match(hook.matcher, /Edit/);
+  assert.match(hook.hooks[0].command, /fanout\.mjs" guard$/);
   assert.ok(lean.args[lean.args.indexOf("--allowedTools") + 1].includes("Bash(tail:*)"));
   useFake();
   process.env.FANOUT_USER_SETTINGS = "1";
@@ -113,7 +119,7 @@ test("a lean start that fails before doing anything retries with the user's sett
   const [first, second] = calls();
   assert.ok(first.args.includes("--setting-sources"));
   assert.ok(!second.args.includes("--setting-sources"));
-  assert.ok(second.args.includes("--plugin-dir"), "the guard still loads on the fallback");
+  assert.ok(second.args.includes("--settings"), "the guard still loads on the fallback");
   assert.equal(second.stdin, "brief");
 });
 
