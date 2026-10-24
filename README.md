@@ -32,7 +32,7 @@ flowchart TD
         a2["Agent 2<br/>fanout/money"]
         a3["Agent 3<br/>fanout/landing"]
     end
-    rehearse["<b>Rehearse</b><br/>merge every branch on a scratch copy<br/>and run tests after each merge"]
+    rehearse["<b>Rehearse</b><br/>merge every branch on a scratch copy<br/>and test once; find the culprit only if it fails"]
     fix["The agent that broke it gets a short report<br/>and fixes its own branch"]
     merged(["main: merged in the right order, nothing new breaks"])
 
@@ -80,7 +80,7 @@ Ask your agent:
 1. It shows you a plan: who owns which files, and the merge order. You approve it. That's the only question you get.
 2. Shared interfaces (types, function signatures) are committed first, so every agent builds against the real thing.
 3. Each agent works on its own branch in its own folder. If it touches a file it doesn't own, it's stopped.
-4. fanout rehearses: it merges every branch on a scratch copy and runs your tests after each merge. If something breaks, the agent that broke it gets a short report and fixes it.
+4. fanout rehearses: it merges every branch on a scratch copy and runs your tests once. If something breaks, it finds the branch that did it, and that agent gets a short report and fixes it.
 5. Everything merges into `main` in order.
 
 You only hear about problems if the same agent fails twice.
@@ -148,6 +148,7 @@ done: no hard-coded currency left
 | A session edits a generated file | Blocked. It's rebuilt after merging. |
 | Branches merge cleanly but break together | `rehearse` reports `BROKE after money` with the failing output. |
 | A real merge conflict | `rehearse` reports `CONFLICT merging b: x.txt` before `main`. |
+| A flaky test, or tests that already fail on `main` | `rehearse` reruns before blaming anyone and reports `FLAKY` or `BASE FAILS` instead of pointing at an innocent branch. |
 | An agent without hooks (Cursor, scripts) | The git pre-commit hook refuses the commit. |
 
 Your agent runs the checks. You can too:
@@ -155,7 +156,7 @@ Your agent runs the checks. You can too:
 ```bash
 node skills/fanout/fanout.mjs check              # is the plan safe? prints the merge order
 node skills/fanout/fanout.mjs verify             # in a session's folder: anything outside its lane?
-node skills/fanout/fanout.mjs rehearse           # merge every branch on a scratch copy, test after each
+node skills/fanout/fanout.mjs rehearse           # merge every branch on a scratch copy, test once
 node skills/fanout/fanout.mjs install-git-hook   # enforce the plan on every commit
 ```
 

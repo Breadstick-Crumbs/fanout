@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync, execFileSync } from "node:child_process";
-import { writeFileSync, mkdtempSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdtempSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -132,6 +132,23 @@ test("guard: blocks out-of-lane edits on a fanout/<name> branch, silent elsewher
   assert.equal(call(join(tmpdir(), "elsewhere.txt")).status, 0);
 });
 
+test("guard finds the lane from the edited file, even when the agent's cwd is the main checkout", () => {
+  const d = dir();
+  const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(d, "x.txt"), "1"); g("add", "-A"); g("commit", "-qm", "init");
+  mkdirSync(join(d, ".fanout"));
+  writeFileSync(join(d, ".fanout/plan.md"), "## s\nowns: mine/**\n");
+  const lane = join(d, ".fanout", "lanes", "s");
+  g("worktree", "add", "-q", "-b", "fanout/s", lane);
+  const call = (file) => run(["guard"], { cwd: d, input: JSON.stringify({ tool_name: "Write", cwd: d, tool_input: { file_path: file } }) });
+  assert.equal(call(join(lane, "mine", "new", "a.ts")).status, 0);
+  const bad = call(join(lane, "other.ts"));
+  assert.equal(bad.status, 2);
+  assert.match(bad.stderr, /does not own other\.ts/);
+  assert.equal(call(join(d, "other.ts")).status, 0); // main checkout itself: not a lane
+});
+
 test("guard reads Codex apply_patch edits", () => {
   assert.deepEqual(editTargets({ command: "*** Begin Patch\n*** Update File: a.ts\n@@\n-x\n+y\n*** Add File: b/c.ts\n+z\n*** Delete File: d.ts\n*** End Patch\n" }), ["a.ts", "b/c.ts", "d.ts"]);
   assert.deepEqual(editTargets({ command: ["ls", "-la"] }), []);
@@ -189,6 +206,59 @@ test("rehearse: clean-merging lanes that break together are pinned to the second
   assert.equal(execFileSync("git", ["rev-parse", "HEAD"], { cwd: d, encoding: "utf8" }), execFileSync("git", ["rev-parse", "main"], { cwd: d, encoding: "utf8" }));
 });
 
+test("rehearse: one test run when everything passes, a short bisect when not", () => {
+  const d = dir(), counter = join(dir(), "runs.txt");
+  const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  // The test counts its own runs and fails once lane c's file exists.
+  writeFileSync(join(d, "test.mjs"), `import { appendFileSync, existsSync } from "node:fs";\nappendFileSync(${JSON.stringify(counter)}, process.cwd() + ";");\nif (existsSync("c.txt")) process.exit(1);\n`);
+  g("add", "-A"); g("commit", "-qm", "init");
+  mkdirSync(join(d, ".fanout"));
+  for (const l of ["a", "b", "c", "d"]) {
+    g("checkout", "-q", "main"); g("checkout", "-qb", "fanout/" + l);
+    writeFileSync(join(d, l + ".ok"), l); g("add", "-A"); g("commit", "-qm", l);
+  }
+  g("checkout", "-q", "main");
+  writeFileSync(join(d, ".git/info/exclude"), ".fanout/\n");
+  const runs = () => (existsSync(counter) ? readFileSync(counter, "utf8").split(";").length - 1 : 0);
+  writeFileSync(join(d, ".fanout/plan.md"), "test: node test.mjs\n## a\nowns: a.ok\n## b\nowns: b.ok\n## c\nowns: c.ok\n## d\nowns: d.ok\n");
+  const ok = run(["rehearse"], { cwd: d });
+  assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+  assert.equal(runs(), 1);
+  g("checkout", "-q", "fanout/c"); writeFileSync(join(d, "c.txt"), "boom"); g("add", "-A"); g("commit", "-qm", "break"); g("checkout", "-q", "main");
+  const r = run(["rehearse"], { cwd: d });
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /BROKE after c/);
+  assert.ok(runs() - 1 <= 4, `bisect used ${runs() - 1} test runs`); // full run, 2 halvings, 1 rerun to rule out flakiness
+});
+
+test("rehearse: tests already failing on main, and flaky tests, blame no branch", () => {
+  const d = dir(), counter = join(dir(), "runs.txt");
+  const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(d, ".git/info/exclude"), ".fanout/\n");
+  writeFileSync(join(d, "test.mjs"), "process.exit(1)\n");
+  g("add", "-A"); g("commit", "-qm", "init");
+  for (const l of ["a", "b"]) {
+    g("checkout", "-q", "main"); g("checkout", "-qb", "fanout/" + l);
+    writeFileSync(join(d, l + ".ok"), l); g("add", "-A"); g("commit", "-qm", l);
+  }
+  g("checkout", "-q", "main");
+  mkdirSync(join(d, ".fanout"));
+  writeFileSync(join(d, ".fanout/plan.md"), "test: node test.mjs\n## a\nowns: a.ok\n## b\nowns: b.ok\n");
+  const broken = run(["rehearse"], { cwd: d });
+  assert.equal(broken.status, 1);
+  assert.match(broken.stdout, /BASE FAILS: `node test\.mjs` already fails on main/);
+  assert.doesNotMatch(broken.stdout, /BROKE after/);
+  // Fails on its first run only: a flaky test.
+  writeFileSync(join(d, "test.mjs"), `import { appendFileSync, existsSync } from "node:fs";\nconst f = ${JSON.stringify(counter)};\nconst first = !existsSync(f);\nappendFileSync(f, "x");\nif (first) process.exit(1);\n`);
+  g("add", "-A"); g("commit", "-qm", "flaky test");
+  const flaky = run(["rehearse"], { cwd: d });
+  assert.equal(flaky.status, 1);
+  assert.match(flaky.stdout, /FLAKY: `node test\.mjs` failed, then passed on a rerun/);
+  assert.doesNotMatch(flaky.stdout, /BROKE after/);
+});
+
 test("rehearse: reports a textual conflict and the files", () => {
   const d = dir();
   const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
@@ -203,7 +273,6 @@ test("rehearse: reports a textual conflict and the files", () => {
   g("checkout", "-q", "main");
   const r = run(["rehearse"], { cwd: d });
   assert.equal(r.status, 1);
-  assert.match(r.stdout, /MERGED a/);
   assert.match(r.stdout, /CONFLICT merging b: x\.txt/);
 });
 

@@ -2,7 +2,7 @@
 // fanout: plan parallel sessions, check for overlap, verify branches, guard edits.
 //   fanout check  [plan.md]                         plan defaults to .fanout/plan.md in the main checkout
 //   fanout verify [--session name] [--base main]    session defaults to the fanout/<name> branch
-//   fanout rehearse [plan.md] [--base main] [--test cmd]   merge every branch in order on a scratch worktree, test after each
+//   fanout rehearse [plan.md] [--base main] [--test cmd]   merge every branch in order on a scratch worktree, test once (bisect on failure)
 //   fanout guard                                    PreToolUse hook (installed by the plugin)
 //   fanout install-git-hook [--force]               same rules as a git pre-commit hook, for agents outside Claude Code
 //   fanout run ["goal"] [--yes] [--agent claude|codex|"<cmd>"]   do the whole fan-out: plan, agents, rehearse, fix, merge (see run.mjs)
@@ -179,8 +179,9 @@ export function mainRoot(cwd) {
 }
 const defaultPlan = (cwd) => resolve(mainRoot(cwd), ".fanout", "plan.md");
 
-// Merges the branches in plan order on a throwaway worktree and runs the test command after
-// each merge, so a break is caught before pushing and pinned to the branch that caused it.
+// Merges the branches in plan order on a throwaway worktree, then rebuilds generated files and runs the
+// test command once. Only if that fails does it bisect over the merge order (about log2(n) more runs)
+// to name the branch whose merge broke things, so a passing rehearsal costs one test run, not n.
 // The worktree sits in .fanout/ inside the main checkout so node_modules etc. still resolve.
 // Output is a few lines plus the tail of a failing run: cheap for an agent to read and act on.
 export function rehearse(order, { cwd, base = "main", test, regen = [], tail = 20 }) {
@@ -194,6 +195,7 @@ export function rehearse(order, { cwd, base = "main", test, regen = [], tail = 2
   git(["worktree", "add", "--detach", wt, base], root);
   let ok = true;
   try {
+    const merged = [[base, g("rev-parse", "HEAD").trim()]]; // [name, commit]: merged[k] = state after k merges
     for (const name of order) {
       const branch = BRANCH_PREFIX + name;
       try { git(["rev-parse", "--verify", "--quiet", branch], root); }
@@ -204,15 +206,41 @@ export function rehearse(order, { cwd, base = "main", test, regen = [], tail = 2
         log.push(`CONFLICT merging ${name}: ${files.join(", ")}`);
         ok = false; break;
       }
-      // Rebuild generated files and commit them, as the real merge into main will.
-      const failed = regen.filter((x) => x.cmd).map((x) => [x.cmd, sh(x.cmd)]).find(([, r]) => r.status !== 0);
-      if (failed) { log.push(`REGEN FAILED after ${name}: \`${failed[0]}\` exited ${failed[1].status}`, tailOf(failed[1])); ok = false; break; }
-      if (regen.length) { g("add", "-A"); try { g("commit", "-qm", "regen"); } catch { /* nothing changed */ } }
-      if (!test) { log.push(`MERGED ${name}`); continue; }
+      merged.push([name, g("rev-parse", "HEAD").trim()]);
+    }
+    // State after the first k merges: rebuild generated files (as the real merge will), then test.
+    const probe = (k) => {
+      g("reset", "-q", "--hard", merged[k][1]); g("clean", "-fdq");
+      for (const x of regen.filter((x) => x.cmd)) {
+        const r = sh(x.cmd);
+        if (r.status !== 0) return { pass: false, lines: [`REGEN FAILED after ${merged[k][0]}: \`${x.cmd}\` exited ${r.status}`, tailOf(r)] };
+      }
+      if (!test) return { pass: true };
       const r = sh(test);
-      if (r.status === 0) { log.push(`OK after ${name}`); continue; }
-      log.push(`BROKE after ${name}: \`${test}\` exited ${r.status}`, tailOf(r));
-      ok = false; break;
+      return { pass: r.status === 0, lines: [`BROKE after ${merged[k][0]}: \`${test}\` exited ${r.status}`, tailOf(r)] };
+    };
+    const n = merged.length - 1;
+    if (ok && n) {
+      const full = probe(n);
+      if (full.pass) log.push(...(test ? [`OK after ${merged[n][0]} (all ${n} merged)`] : merged.slice(1).map(([name]) => `MERGED ${name}`)));
+      else {
+        // Invariant: state lo passes (the base is assumed to until checked below), state hi fails.
+        let lo = 0, hi = n, bad = full;
+        while (hi - lo > 1) {
+          const mid = (lo + hi) >> 1, r = probe(mid);
+          if (r.pass) { lo = mid; log.push(`OK after ${merged[mid][0]}`); } else { hi = mid; bad = r; }
+        }
+        // Before blaming a branch: the same code failing again rules out a flaky test, and when the
+        // first branch is blamed, the base itself must pass. Each costs a run only on this failure path.
+        const baseRun = () => (hi === 1 ? probe(0) : { pass: true });
+        let b;
+        if (probe(hi).pass) {
+          log.push(`FLAKY: \`${test}\` failed, then passed on a rerun of the same code (after ${merged[hi][0]}). No branch is blamed; fix or quarantine the flaky test.`, bad.lines[1]);
+        } else if (!(b = baseRun()).pass) {
+          log.push(`BASE FAILS: \`${test}\` already fails on ${base} before any branch is merged. Fix ${base} first.`, b.lines[1]);
+        } else log.push(...bad.lines);
+        ok = false;
+      }
     }
   } finally { drop(); }
   if (ok) log.push(test ? "All branches merge and pass together." : "All branches merge cleanly (no test command: add `test:` to the plan).");
@@ -290,14 +318,20 @@ function guard() {
   const targets = editTargets(input.tool_input);
   if (!targets.length) return 0;
   const cwd = input.cwd ?? process.cwd();
-  const ctx = loadSession(cwd);
-  if (!ctx) return 0;
-  let root = cwd;
-  try { root = git(["rev-parse", "--show-toplevel"], cwd).trim(); } catch { /* not a repo */ }
-  const why = targets
-    .map((t) => norm(relative(root, isAbsolute(t) ? t : resolve(cwd, t))))
-    .filter((rel) => !rel.startsWith("..")) // outside the repo: not our business
-    .map((rel) => blockReason(ctx.sessions, ctx.s, ctx.regen, rel)).filter(Boolean);
+  // The session comes from the checkout the file is in, not the agent's cwd, so a subagent or
+  // parallel session working from the main checkout is still held to its lane's plan.
+  const why = targets.map((t) => {
+    const abs = isAbsolute(t) ? t : resolve(cwd, t);
+    let dir = dirname(abs);
+    while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
+    const ctx = loadSession(dir);
+    if (!ctx) return null;
+    let root = dir;
+    try { root = git(["rev-parse", "--show-toplevel"], dir).trim(); } catch { /* not a repo */ }
+    const rel = norm(relative(root, abs));
+    if (rel.startsWith("..")) return null; // outside the repo: not our business
+    return blockReason(ctx.sessions, ctx.s, ctx.regen, rel);
+  }).filter(Boolean);
   why.forEach((w) => console.error("fanout: " + w));
   return why.length ? 2 : 0;
 }

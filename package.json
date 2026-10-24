@@ -1,6 +1,6 @@
 {
   "name": "fanout",
-  "version": "0.10.0",
+  "version": "0.12.0",
   "description": "Run many coding agents (Claude Code, Codex) in parallel without merge chaos",
   "license": "MIT",
   "type": "module",

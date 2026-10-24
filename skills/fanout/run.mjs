@@ -210,8 +210,14 @@ export async function cli(argv) {
     const head = r.log.find((l) => /^(BROKE after|CONFLICT merging|REGEN FAILED after) /.test(l)) ?? "";
     const name = head.match(/(?:after|merging) ([^\s:]+)/)?.[1];
     const s = sessions.find((x) => x.name === name);
+    if (!s) {
+      // FLAKY or BASE FAILS: no lane caused it, so no agent is sent to fix it.
+      console.log(r.log.join("\n"));
+      log("stopped: rehearse found a problem no session caused (above). Fix it on " + base + ", then run again.");
+      return 1;
+    }
     log(`rehearse: ${head.split(":")[0]}`);
-    if (!s || (fixes[name] = (fixes[name] ?? 0) + 1) > maxFixes) {
+    if ((fixes[name] = (fixes[name] ?? 0) + 1) > maxFixes) {
       console.log(r.log.join("\n"));
       log(`stopped: ${name ?? "a lane"} still breaks after ${maxFixes} fixes. Its work is in .fanout/lanes/${name}; fix it there, then run again.`);
       return 1;
