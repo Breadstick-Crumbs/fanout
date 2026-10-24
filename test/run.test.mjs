@@ -163,10 +163,14 @@ test("staggered starts agents a gap apart, in order, and keeps results in order"
 test("scrub replaces temp and home folders in every spelling", () => {
   const dirs = [["C:\\Users\\pat\\AppData\\Local\\Temp", "<tmp>"], ["C:\\Users\\pat", "~"]];
   const text = String.raw`cd C:\Users\pat\AppData\Local\Temp\x; cat C:/Users/pat/notes; ls /c/Users/pat; "C:\\Users\\pat\\AppData\\Local\\Temp\\y"`;
-  const s = scrub(text, dirs);
+  const s = scrub(text, dirs, "pat");
   assert.doesNotMatch(s, /pat/);
   assert.match(s, /<tmp>\\x/);
   assert.match(s, /~\/notes/);
+  // Claude's own folder names encode paths with dashes; the user name is caught even in odd spellings.
+  const encoded = scrub("<tmp>/claude/C--Users-pat-AppData-Local-Temp-run/x and /home/pat-old/y", dirs, "pat");
+  assert.doesNotMatch(encoded, /pat/);
+  assert.equal(scrub("compatible pattern", dirs, "pat"), "compatible pattern"); // whole words only
 });
 
 test("fanout run uses each session's model, then --session-model, for session agents", () => {
