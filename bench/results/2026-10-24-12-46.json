@@ -1,0 +1,91 @@
+[
+  {
+    "condition": "fanout",
+    "agents": [
+      {
+        "role": "coordinator",
+        "lane": "-",
+        "kind": "claude",
+        "seconds": 89,
+        "costUsd": 0.2449916,
+        "inTokens": 569895,
+        "outTokens": 8915,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "currency",
+        "kind": "claude",
+        "seconds": 87,
+        "costUsd": 0.1302784,
+        "inTokens": 290774,
+        "outTokens": 3957,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "discounts",
+        "kind": "claude",
+        "seconds": 56,
+        "costUsd": 0.09431630000000002,
+        "inTokens": 205590,
+        "outTokens": 2305,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "receipt",
+        "kind": "claude",
+        "seconds": 58,
+        "costUsd": 0.09421589999999999,
+        "inTokens": 247512,
+        "outTokens": 2022,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "tax",
+        "kind": "claude",
+        "seconds": 62,
+        "costUsd": 0.0978668,
+        "inTokens": 247835,
+        "outTokens": 2316,
+        "error": null
+      },
+      {
+        "role": "fix",
+        "lane": "receipt",
+        "kind": "claude",
+        "seconds": 51,
+        "costUsd": 0.15526350000000003,
+        "inTokens": 522974,
+        "outTokens": 3625,
+        "error": null
+      },
+      {
+        "role": "fix",
+        "lane": "tax",
+        "kind": "claude",
+        "seconds": 56,
+        "costUsd": 0.10460760000000001,
+        "inTokens": 336168,
+        "outTokens": 1622,
+        "error": null
+      }
+    ],
+    "conflicts": [],
+    "brokeAfter": [],
+    "repairCommits": 2,
+    "rehearsals": [
+      "# skipped 0\n# todo 0\n# duration_ms 240.6143",
+      "# skipped 0\n# todo 0\n# duration_ms 272.5055",
+      "OK after receipt\nOK after tax\nAll branches merge and pass together."
+    ],
+    "blockedFiles": [
+      "receipt: src/index.mjs",
+      "tax: src/index.mjs"
+    ],
+    "plan": "test: npm test\nregen: src/index.mjs via npm run gen\n\n## currency\nowns: src/types.mjs, src/format.mjs, src/cart.mjs, src/money.mjs, test/cart.test.mjs, test/currency.test.mjs\nexposes: src/money.mjs\ndone: products are priceCents (integer) + currency (default \"USD\"); makeProduct(name, priceCents, currency); formatPrice(cents, currency); total(cart) returns integer cents minus discountFor(cart, subtotal) from ./discounts.mjs; existing behaviour and tests updated and passing\n\n## discounts\nowns: src/lib/coupons.mjs, src/discounts.mjs, test/discounts.test.mjs\nexposes: src/discounts.mjs\nuses: src/money.mjs\ndone: applyCoupon(cart, code) with SAVE10 and FLAT5 (never below zero), discountFor(cart, subtotalCents) implemented in src/lib/coupons.mjs; tests pass\n\n## receipt\nowns: src/receipt.mjs, test/receipt.test.mjs\nuses: src/money.mjs\ndone: receipt(cart) per spec using formatPrice and total; tests pass\n\n## tax\nowns: src/tax.mjs, test/tax.test.mjs\nuses: src/money.mjs\ndone: taxFor(cart, region) returns integer cents, CA 7.25%, NY 4%, else 0; tests pass\n",
+    "finalTestsPass": true
+  }
+]

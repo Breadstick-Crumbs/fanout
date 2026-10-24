@@ -1,0 +1,69 @@
+[
+  {
+    "condition": "fanout",
+    "agents": [
+      {
+        "role": "coordinator",
+        "lane": "-",
+        "kind": "claude",
+        "seconds": 64,
+        "costUsd": 0.1776519,
+        "inTokens": 405731,
+        "outTokens": 5509,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "currency",
+        "kind": "claude",
+        "seconds": 31,
+        "costUsd": 0.079954,
+        "inTokens": 162809,
+        "outTokens": 1506,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "discounts",
+        "kind": "claude",
+        "seconds": 44,
+        "costUsd": 0.1058082,
+        "inTokens": 248501,
+        "outTokens": 2662,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "receipt",
+        "kind": "claude",
+        "seconds": 38,
+        "costUsd": 0.0940928,
+        "inTokens": 246903,
+        "outTokens": 1820,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "tax",
+        "kind": "claude",
+        "seconds": 41,
+        "costUsd": 0.0919305,
+        "inTokens": 245674,
+        "outTokens": 1712,
+        "error": null
+      }
+    ],
+    "conflicts": [],
+    "brokeAfter": [],
+    "repairCommits": 0,
+    "rehearsals": [
+      "OK after receipt\nOK after tax\nAll branches merge and pass together."
+    ],
+    "blockedFiles": [
+      "receipt: src/index.mjs",
+      "tax: src/index.mjs"
+    ],
+    "plan": "test: npm test\nregen: src/index.mjs via npm run gen\n\n## currency\nowns: src/types.mjs, src/format.mjs, test/currency.test.mjs\nexposes: src/types.mjs, src/format.mjs\ndone: prices are integer cents plus ISO currency (default USD); makeProduct and formatPrice contracts hold; currency tests pass\n\n## discounts\nowns: src/cart.mjs, test/discounts.test.mjs\nuses: src/types.mjs\ndone: applyCoupon(cart, code) with SAVE10 and FLAT5; total(cart) returns integer cents after the coupon; tests pass\n\n## receipt\nowns: src/receipt.mjs, test/receipt.test.mjs\nuses: src/types.mjs, src/format.mjs\ndone: receipt(cart) returns item lines then a Total line using formatPrice; tests pass\n\n## tax\nowns: src/tax.mjs, test/tax.test.mjs\nuses: src/types.mjs\ndone: taxFor(cart, region) returns integer cents, CA 7.25%, NY 4%, else 0; tests pass\n",
+    "finalTestsPass": true
+  }
+]

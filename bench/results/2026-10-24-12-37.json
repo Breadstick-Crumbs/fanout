@@ -1,0 +1,88 @@
+[
+  {
+    "condition": "baseline",
+    "agents": [
+      {
+        "role": "lane",
+        "lane": "currency",
+        "kind": "claude",
+        "seconds": 65,
+        "costUsd": 0.1358005,
+        "inTokens": 208589,
+        "outTokens": 4537,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "discounts",
+        "kind": "claude",
+        "seconds": 62,
+        "costUsd": 0.1114508,
+        "inTokens": 206300,
+        "outTokens": 2816,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "receipt",
+        "kind": "claude",
+        "seconds": 48,
+        "costUsd": 0.09087409999999999,
+        "inTokens": 203646,
+        "outTokens": 1474,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "tax",
+        "kind": "claude",
+        "seconds": 54,
+        "costUsd": 0.1004935,
+        "inTokens": 246021,
+        "outTokens": 1747,
+        "error": null
+      },
+      {
+        "role": "integrator",
+        "lane": "-",
+        "kind": "claude",
+        "seconds": 73,
+        "costUsd": 0.1782951,
+        "inTokens": 451851,
+        "outTokens": 5515,
+        "error": null
+      }
+    ],
+    "conflicts": [
+      "discounts",
+      "tax"
+    ],
+    "brokeAfter": [
+      "receipt"
+    ],
+    "repairCommits": 4,
+    "finalTestsPass": true
+  },
+  {
+    "condition": "fanout",
+    "agents": [
+      {
+        "role": "coordinator",
+        "lane": "-",
+        "kind": "claude",
+        "seconds": 101,
+        "costUsd": 0.2363782,
+        "inTokens": 691783,
+        "outTokens": 6843,
+        "error": null
+      }
+    ],
+    "conflicts": [],
+    "brokeAfter": [],
+    "repairCommits": 0,
+    "rehearsals": [],
+    "blockedFiles": [],
+    "plan": "# Fanout plan\n# src/index.mjs is generated and owned by nobody: stub modules for receipt/tax are on main, so sessions never change it. The coordinator runs `npm run gen` after the last merge.\n\n## currency\nowns: src/types.mjs, src/format.mjs, test/cart.test.mjs, test/currency.test.mjs\ndone: makeProduct(name, priceCents, currency=\"USD\") and formatPrice(cents, currency=\"USD\") per CONTRACT.md; existing cart test updated to cents and passing; npm test passes\ntest: npm test\nregen: npm run gen\n\n## discounts\nowns: src/cart.mjs, test/discounts.test.mjs\ndone: applyCoupon(cart, code) with SAVE10/FLAT5; total(cart) returns integer cents after coupon, per CONTRACT.md; tests build products as literal {name, priceCents, currency} objects\nafter: currency\ntest: npm test\nregen: npm run gen\n\n## receipt\nowns: src/receipt.mjs, test/receipt.test.mjs\ndone: receipt(cart) implemented using formatPrice and total from the shop; npm test passes\nafter: currency, discounts\ntest: npm test\nregen: npm run gen\n\n## tax\nowns: src/tax.mjs, test/tax.test.mjs\ndone: taxFor(cart, region) returns integer cents, rounded per CONTRACT.md; npm test passes\nafter: discounts\ntest: npm test\nregen: npm run gen\n",
+    "error": "plan invalid: PLAN test: goes above the first \"##\" line, once for the whole plan, not inside currency\nPLAN regen: goes above the first \"##\" line, once for the whole plan, not inside currency\nPLAN test: goes above the first \"##\" line, once for the whole plan, not inside discounts\nPLAN regen: goes above the first \"##\" line, once for the whole plan, not inside discounts\nPLAN test: goes above the first \"##\" line, once for the whole plan, not inside receipt\nPLAN regen: goes above the first \"##\" line, once for the whole plan, not inside receipt\nPLAN test: goes above the first \"##\" line, once for the whole plan, not inside tax\nPLAN regen: goes above the first \"##\" line, once for the whole plan, not inside tax\nNOTE no \"test:\" line above the first \"##\": rehearse can only check that branches merge, not that they work together.\nMerge order: currency -> discounts -> receipt -> tax"
+  }
+]

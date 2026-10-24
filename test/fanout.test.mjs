@@ -64,6 +64,15 @@ test("contracts: frozen in the guard (owner included) and flagged by verify", ()
   assert.match(v.stdout, /CONTRACT CHANGED foundations: types\.mjs/);
 });
 
+test("check rejects plan-wide settings inside a session, unknown fields and missing owns", () => {
+  const bad = check(parsePlan("## a\nowns: a/**\ntest: npm test\nregen: npm run gen\nowner: me\n## b\ndone: x\n"), null).problems.join("\n");
+  assert.match(bad, /PLAN test: goes above the first "##" line/);
+  assert.match(bad, /PLAN regen: goes above/);
+  assert.match(bad, /PLAN unknown field "owner:" in a/);
+  assert.match(bad, /PLAN b has no owns/);
+  assert.deepEqual(check(parsePlan("test: npm test\n## a\nowns: a\nmodel: opus\ndone: ok\n"), null).problems, []);
+});
+
 test("repo-aware check: globs that share no real file do not clash", () => {
   const d = dir();
   execFileSync("git", ["init", "-q"], { cwd: d });

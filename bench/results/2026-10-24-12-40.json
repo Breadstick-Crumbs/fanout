@@ -1,0 +1,88 @@
+[
+  {
+    "condition": "baseline",
+    "agents": [
+      {
+        "role": "lane",
+        "lane": "currency",
+        "kind": "claude",
+        "seconds": 49,
+        "costUsd": 0.1376157,
+        "inTokens": 208791,
+        "outTokens": 4658,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "discounts",
+        "kind": "claude",
+        "seconds": 39,
+        "costUsd": 0.1166777,
+        "inTokens": 248677,
+        "outTokens": 2803,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "receipt",
+        "kind": "claude",
+        "seconds": 34,
+        "costUsd": 0.0984737,
+        "inTokens": 246237,
+        "outTokens": 1553,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "tax",
+        "kind": "claude",
+        "seconds": 28,
+        "costUsd": 0.071356,
+        "inTokens": 120452,
+        "outTokens": 725,
+        "error": null
+      },
+      {
+        "role": "integrator",
+        "lane": "-",
+        "kind": "claude",
+        "seconds": 56,
+        "costUsd": 0.1898676,
+        "inTokens": 506291,
+        "outTokens": 5514,
+        "error": null
+      }
+    ],
+    "conflicts": [
+      "discounts",
+      "tax"
+    ],
+    "brokeAfter": [
+      "receipt"
+    ],
+    "repairCommits": 4,
+    "finalTestsPass": true
+  },
+  {
+    "condition": "fanout",
+    "agents": [
+      {
+        "role": "coordinator",
+        "lane": "-",
+        "kind": "claude",
+        "seconds": 90,
+        "costUsd": 0.26025899999999996,
+        "inTokens": 654115,
+        "outTokens": 9442,
+        "error": null
+      }
+    ],
+    "conflicts": [],
+    "brokeAfter": [],
+    "repairCommits": 0,
+    "rehearsals": [],
+    "blockedFiles": [],
+    "plan": "## currency\nowns: src/types.mjs, src/format.mjs, src/cart.mjs, test/cart.test.mjs, test/currency.test.mjs\ndone: prices are integer cents + currency per CONTRACT.md; existing cart test updated and passing; new tests added\ntest: npm test\nregen: none needed (src/index.mjs already complete)\n\n## discounts\nowns: src/discounts.mjs, test/discounts.test.mjs\ndone: applyCoupon and discountFor implemented per CONTRACT.md; total reflects coupons; tests added\nafter: currency\ntest: npm test\nregen: none needed (src/index.mjs already complete)\n\n## receipt\nowns: src/receipt.mjs, test/receipt.test.mjs\ndone: receipt(cart) implemented per CONTRACT.md with tests\nafter: currency, discounts\ntest: npm test\nregen: npm run gen (should be a no-op; index already exports receipt)\n\n## tax\nowns: src/tax.mjs, test/tax.test.mjs\ndone: taxFor(cart, region) implemented per CONTRACT.md with tests\nafter: currency, discounts\ntest: npm test\nregen: npm run gen (should be a no-op; index already exports tax)\n",
+    "error": "plan invalid: PLAN test: goes above the first \"##\" line, once for the whole plan, not inside currency\nPLAN regen: goes above the first \"##\" line, once for the whole plan, not inside currency\nPLAN test: goes above the first \"##\" line, once for the whole plan, not inside discounts\nPLAN regen: goes above the first \"##\" line, once for the whole plan, not inside discounts\nPLAN test: goes above the first \"##\" line, once for the whole plan, not inside receipt\nPLAN regen: goes above the first \"##\" line, once for the whole plan, not inside receipt\nPLAN test: goes above the first \"##\" line, once for the whole plan, not inside tax\nPLAN regen: goes above the first \"##\" line, once for the whole plan, not inside tax\nNOTE no \"test:\" line above the first \"##\": rehearse can only check that branches merge, not that they work together.\nMerge order: currency -> discounts -> receipt -> tax"
+  }
+]

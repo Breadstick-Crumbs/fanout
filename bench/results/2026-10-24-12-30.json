@@ -1,0 +1,130 @@
+[
+  {
+    "condition": "baseline",
+    "agents": [
+      {
+        "role": "lane",
+        "lane": "currency",
+        "kind": "claude",
+        "seconds": 61,
+        "costUsd": 0.1305985,
+        "inTokens": 252000,
+        "outTokens": 3805,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "discounts",
+        "kind": "claude",
+        "seconds": 56,
+        "costUsd": 0.1083659,
+        "inTokens": 205049,
+        "outTokens": 2630,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "receipt",
+        "kind": "claude",
+        "seconds": 56,
+        "costUsd": 0.0973164,
+        "inTokens": 245093,
+        "outTokens": 1570,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "tax",
+        "kind": "claude",
+        "seconds": 55,
+        "costUsd": 0.0986282,
+        "inTokens": 245646,
+        "outTokens": 1604,
+        "error": null
+      },
+      {
+        "role": "integrator",
+        "lane": "-",
+        "kind": "claude",
+        "seconds": 90,
+        "costUsd": 0.1964571,
+        "inTokens": 549014,
+        "outTokens": 5860,
+        "error": null
+      }
+    ],
+    "conflicts": [
+      "discounts",
+      "tax"
+    ],
+    "brokeAfter": [
+      "receipt"
+    ],
+    "repairCommits": 4,
+    "finalTestsPass": true
+  },
+  {
+    "condition": "fanout",
+    "agents": [
+      {
+        "role": "coordinator",
+        "lane": "-",
+        "kind": "claude",
+        "seconds": 122,
+        "costUsd": 0.2319934,
+        "inTokens": 643709,
+        "outTokens": 7675,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "currency",
+        "kind": "claude",
+        "seconds": 59,
+        "costUsd": 0.12051730000000001,
+        "inTokens": 253090,
+        "outTokens": 3495,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "discounts",
+        "kind": "claude",
+        "seconds": 82,
+        "costUsd": 0.08778440000000001,
+        "inTokens": 163752,
+        "outTokens": 1968,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "receipt",
+        "kind": "claude",
+        "seconds": 82,
+        "costUsd": 0.1164271,
+        "inTokens": 337368,
+        "outTokens": 2478,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "tax",
+        "kind": "claude",
+        "seconds": 79,
+        "costUsd": 0.11128590000000002,
+        "inTokens": 295867,
+        "outTokens": 2460,
+        "error": null
+      }
+    ],
+    "conflicts": [],
+    "brokeAfter": [],
+    "repairCommits": 0,
+    "rehearsals": [
+      "MERGED receipt\nMERGED tax\nAll branches merge cleanly (no test command: add `test:` to the plan)."
+    ],
+    "blockedFiles": [],
+    "plan": "## currency\nowns: src/types.mjs, src/format.mjs, src/cart.mjs, test/cart.test.mjs, test/currency.test.mjs\ndone: CONTRACT.md money shape implemented, total wired to subtotal and discountFor, existing test updated, npm test passes\ntest: npm test\nregen: npm run gen\n\n## discounts\nowns: src/discounts.mjs, test/discounts.test.mjs\ndone: applyCoupon and discountFor implemented per CONTRACT.md with tests\nafter: currency\ntest: npm test\nregen: npm run gen\n\n## receipt\nowns: src/receipt.mjs, test/receipt.test.mjs\ndone: receipt(cart) implemented per CONTRACT.md with tests\nafter: currency\ntest: npm test\nregen: npm run gen\n\n## tax\nowns: src/tax.mjs, test/tax.test.mjs\ndone: taxFor implemented per CONTRACT.md with tests\nafter: currency\ntest: npm test\nregen: npm run gen\n",
+    "finalTestsPass": true
+  }
+]

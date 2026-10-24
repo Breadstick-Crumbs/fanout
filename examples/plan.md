@@ -1,3 +1,5 @@
+test: npm test
+
 # Example: going global (4 sessions)
 
 ## foundations

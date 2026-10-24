@@ -10,13 +10,17 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { resolve, relative, isAbsolute, join, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
+const SESSION_KEYS = ["owns", "after", "exposes", "uses", "done", "model"];
+const PLAN_KEYS = ["test", "regen"];
+
 export function parsePlan(text) {
   const sessions = [];
   for (const block of text.split(/^## /m).slice(1)) {
     const [name, ...rest] = block.split("\n");
     const get = (k) => (rest.find((l) => l.startsWith(k + ":")) ?? "").slice(k.length + 1).trim();
     const list = (k) => get(k).split(",").map((s) => s.trim()).filter(Boolean);
-    sessions.push({ name: name.trim(), owns: list("owns"), after: list("after"), exposes: list("exposes"), uses: list("uses") });
+    const keys = rest.map((l) => l.match(/^([A-Za-z_-]+):/)?.[1]).filter(Boolean);
+    sessions.push({ name: name.trim(), owns: list("owns"), after: list("after"), exposes: list("exposes"), uses: list("uses"), keys });
   }
   return sessions;
 }
@@ -127,6 +131,11 @@ export function check(sessions, cwd, regen = []) {
   // A session that uses a contract merges after the session exposing it.
   const deps = new Map(sessions.map((s) => [s.name, [...s.after]]));
   for (const s of sessions) {
+    if (!s.owns.length) problems.push(`PLAN ${s.name} has no owns: line`);
+    for (const k of s.keys ?? []) {
+      if (PLAN_KEYS.includes(k)) problems.push(`PLAN ${k}: goes above the first "##" line, once for the whole plan, not inside ${s.name}`);
+      else if (!SESSION_KEYS.includes(k)) problems.push(`PLAN unknown field "${k}:" in ${s.name} (known: ${SESSION_KEYS.join(", ")})`);
+    }
     for (const e of s.exposes ?? [])
       if (!ownsFile(s, e)) problems.push(`EXPOSES ${e} (in ${s.name}): not in its owns`);
     for (const u of s.uses ?? []) {
@@ -223,6 +232,7 @@ function main(argv) {
   if (cmd === "check") {
     const { problems, order } = check(sessions, cwd, regen);
     problems.forEach((p) => console.log(p));
+    if (!planSetting(text, "test")) console.log('NOTE no "test:" line above the first "##": rehearse can only check that branches merge, not that they work together.');
     console.log("Merge order:", order.join(" -> "));
     return problems.length ? 1 : 0;
   }

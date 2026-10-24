@@ -9,16 +9,26 @@ Split work so parallel sessions can't collide. The script `fanout.mjs` sits next
 
 ## Steps
 
-1. **Plan.** Write `.fanout/plan.md` in the repo root (add `.fanout/` to `.git/info/exclude` so it isn't committed). One block per session:
+1. **Plan.** Write `.fanout/plan.md` in the repo root (add `.fanout/` to `.git/info/exclude` so it isn't committed). Use exactly this shape:
    ```
-   ## money
-   owns: src/lib/present.ts, src/components/MatchCard.tsx
-   done: no hard-coded currency left; typecheck passes
-   uses: src/lib/types.ts
-   ```
-   `owns` is required: paths or globs, each owned by exactly one session. `after` is optional (merge order). Files several sessions depend on (types, API signatures, schema) are contracts: the owner lists them under `exposes:`, and each session that depends on one lists it under `uses:` (that also sets the merge order). Keep contract files to interfaces only, not implementation. Above the first `##`, add `test: <the project's test command>` so `rehearse` can run it, and one `regen: <paths> via <command>` line per set of generated files every session would otherwise touch (codegen output, API clients, lockfiles, snapshots). No session owns those; they are rebuilt after merging.
+   test: npm test
+   regen: src/index.ts via npm run gen
 
-2. **Check.** `node fanout.mjs check`. If it prints CLASH, UNKNOWN, CYCLE, EXPOSES, USES or REGEN, fix the plan. When it passes, show the user the plan and the merge order and get a yes.
+   ## foundations
+   owns: src/types.ts, src/db/**
+   exposes: src/types.ts
+   done: money is integer cents plus currency; typecheck passes
+
+   ## money
+   owns: src/present.ts, src/components/MatchCard.tsx
+   uses: src/types.ts
+   done: no hard-coded currency left
+   ```
+   - **Above the first `##`, once for the whole plan:** `test: <command>` (the project's full test command; rehearse runs it) and one `regen: <paths> via <command>` line per set of generated files every session would otherwise touch (codegen output, barrel/index files, API clients, lockfiles, snapshots). No session owns those; they are rebuilt after merging. Omit `regen:` if there are none.
+   - **In each session, only these fields:** `owns` (required: paths or globs, each owned by exactly one session), `exposes`, `uses`, `after`, `done`.
+   - **Contracts:** a file several sessions depend on (types, function signatures, schema) is listed under `exposes:` by its owner and `uses:` by each session that depends on it; `uses` also sets the merge order. Contracts are the real code files, not a separate notes document. Keep them to interfaces only.
+
+2. **Check.** `node fanout.mjs check`. If it prints CLASH, UNKNOWN, CYCLE, EXPOSES, USES, REGEN or PLAN, fix the plan and run it again. If it prints a NOTE, fix that too unless the project really has no tests. When it passes, show the user the plan and the merge order and get a yes.
 
 3. **Contracts.** If the plan exposes anything, write those files on main yourself before starting: types, function signatures, stubs that throw "not implemented". Commit them. Every session now builds against real interfaces instead of guessing. From here on they are frozen on all `fanout/*` branches, the owner's included. If a session needs one changed, it asks; you change it on main, commit, and tell the sessions that use it to merge main.
 
