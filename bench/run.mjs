@@ -12,7 +12,8 @@
 // --dry swaps every agent for a no-op (the coordinator writes a canned plan) to test the plumbing.
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from "node:fs";
-import { tmpdir, homedir } from "node:os";
+import { tmpdir } from "node:os";
+import { scrub } from "./scrub.mjs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parsePlan, parseRegen, planSetting, blockReason } from "../skills/fanout/fanout.mjs";
@@ -25,6 +26,10 @@ const opt = (f, d) => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1] :
 const MODE = argv[0] && !argv[0].startsWith("--") ? argv[0] : "both";
 const DRY = argv.includes("--dry");
 const MODEL = opt("--model", "sonnet"), BUDGET = opt("--budget", "1"), SINGLE_BUDGET = opt("--single-budget", "5");
+// The planner (fanout's coordinator) and the parallel session agents can run on other models than --model,
+// which the single agent and the integrator use.
+const PLANNER_MODEL = opt("--planner-model", MODEL), SESSION_MODEL = opt("--session-model", MODEL);
+const modelForRole = (role) => (role === "coordinator" ? PLANNER_MODEL : role === "lane" || role === "fix" ? SESSION_MODEL : MODEL);
 const FIXTURE = opt("--fixture", "shop"), FIXTURE_DIR = join(ROOT, "bench", FIXTURE), ACCEPTANCE = join(ROOT, "bench", `${FIXTURE}-acceptance`);
 const TASKS_MD = readFileSync(join(FIXTURE_DIR, "TASKS.md"), "utf8");
 const CODEX_LANE = opt("--codex-lane", "none"); // a task name to run that lane in Codex
@@ -47,7 +52,7 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 async function agent({ lane, role, cwd, prompt, plugin = false, allowGit = false, dryAction }) {
   const kind = lane === CODEX_LANE && role !== "coordinator" && role !== "integrator" ? "codex" : "claude";
   if (DRY) { dryAction?.(); return { role, lane, kind, seconds: 0, costUsd: 0, inTokens: 0, outTokens: 0, error: null }; }
-  const r = await runAgent({ agent: kind, cwd, prompt, plugin, allowGit, model: kind === "claude" ? MODEL : undefined, budget: kind !== "claude" ? undefined : role === "single" ? SINGLE_BUDGET : BUDGET });
+  const r = await runAgent({ agent: kind, cwd, prompt, plugin, allowGit, model: kind === "claude" ? modelForRole(role) : undefined, budget: kind !== "claude" ? undefined : role === "single" ? SINGLE_BUDGET : BUDGET });
   return { role, lane, kind, ...r };
 }
 
@@ -157,7 +162,7 @@ async function fanout() {
   const wts = Object.fromEntries(LANES.map((l) => [l, join(dir, l)]));
   for (const l of LANES) git(repo, "worktree", "add", "-q", "-b", `fanout/${l}`, wts[l], "main");
   // The same brief `fanout run` gives, with the full task spec appended (the plan's task: line is one line).
-  const brief = (s) => laneBrief(s, sessions, regen, planSetting(text, "test"), `\nFull task spec:\n${PREAMBLE}\n\n${TASKS[s.name]}`);
+  const brief = (s) => laneBrief(s, sessions, regen, planSetting(text, "test"), `\nFull task spec:\n${PREAMBLE}\n\n${TASKS[s.name]}`, repo);
   // Commit a lane, as the git hook allows; files the plan forbids are reverted and counted.
   const commitLane = (l) => {
     const s = sessions.find((x) => x.name === l);
@@ -207,7 +212,7 @@ function report(results) {
   const agents = results.flatMap((R) => R.agents.map((a) => `| ${R.condition} | ${a.role} | ${a.lane} | ${a.kind} | ${a.seconds}s | ${a.modelSeconds ?? "?"}s | ${a.turns ?? "?"} | ${toolsOf(a)} | ${usd(a.costUsd)} | ${Math.round((a.inTokens + a.outTokens) / 1000)}k | ${a.error ?? ""} |`));
   return `# Benchmark ${new Date().toISOString().slice(0, 16).replace("T", " ")}${DRY ? " (dry run)" : ""}
 
-Model: ${MODEL} (Claude lanes)${CODEX_LANE === "none" ? "" : `, Codex for the "${CODEX_LANE}" lane`}. Fixture: ${FIXTURE}. Budget cap per Claude agent: ${BUDGET} (single agent: ${SINGLE_BUDGET}).
+Models: ${MODEL} (single agent, integrator), planner ${PLANNER_MODEL}, sessions ${SESSION_MODEL}${CODEX_LANE === "none" ? "" : `, Codex for the "${CODEX_LANE}" lane`}. Fixture: ${FIXTURE}. Budget cap per Claude agent: ${BUDGET} (single agent: ${SINGLE_BUDGET}).
 
 | Condition | Conflicts merging into main | Merges that broke tests | Repair commits | Final tests pass | Hidden tests | Wall time | Agent cost | Tokens | Agent runs |
 |---|---|---|---|---|---|---|---|---|---|
@@ -238,18 +243,7 @@ for (const c of want) await timed({ single, baseline, fanout }[c]);
 const md = report(results);
 const out = join(ROOT, "bench", "results");
 mkdirSync(out, { recursive: true });
-// Results are committed, and agents' commands contain local paths: replace the temp and home folders
-// (in every spelling: C:\..., C:/..., /c/..., and JSON-escaped) with placeholders.
-export function scrub(text) {
-  const spellings = (p, label) => {
-    const fwd = p.replaceAll("\\", "/"), drive = fwd.match(/^([A-Za-z]):\//);
-    return [[p.replaceAll("\\", "\\\\"), label], [p, label], [fwd, label], ...(drive ? [[`/${drive[1].toLowerCase()}/${fwd.slice(3)}`, label]] : [])];
-  };
-  let s = text;
-  for (const [from, to] of [...spellings(tmpdir(), "<tmp>"), ...spellings(homedir(), "~")])
-    s = s.replace(new RegExp(from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), to);
-  return s;
-}
+// Results are committed: local paths in agents' commands are scrubbed first (bench/scrub.mjs).
 const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
 writeFileSync(join(out, `${stamp}${DRY ? "-dry" : ""}.md`), scrub(md));
 writeFileSync(join(out, `${stamp}${DRY ? "-dry" : ""}.json`), scrub(JSON.stringify(results, null, 2)));

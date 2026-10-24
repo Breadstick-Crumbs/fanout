@@ -1,0 +1,61 @@
+[
+  {
+    "condition": "single",
+    "agents": [
+      {
+        "role": "single",
+        "lane": "-",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 246,
+        "costUsd": 0.02729476,
+        "inTokens": 264715,
+        "outTokens": 32423,
+        "error": null,
+        "sessionId": "2706ab60-592d-437d-b92a-63ae46e56038",
+        "turns": 21,
+        "modelSeconds": 223,
+        "tools": {
+          "Bash": [
+            "cd \"<tmp>/fanout-bench-single-qPPmrt/repo\" && git status --short && ls -la && cat package.json && ls src test data && cat src/index.mjs && cat src/store.mjs && cat src/dates.mjs",
+            "cd \"<tmp>/fanout-bench-single-qPPmrt/repo\" && cat data/sample.mjs && ls scripts tools 2>/dev/null; cat scripts/*.mjs 2>/dev/null | head -80; ls test && head -30 test/*.mjs | head -120",
+            "cd \"<tmp>/fanout-bench-single-qPPmrt/repo\" && node --version && npm test 2>&1 | tail -12",
+            "cd \"<tmp>/fanout-bench-single-qPPmrt/repo\" && npm run gen >/dev/null && cat src/index.mjs && node -e 'import(\"./src/index.mjs\").then(m=>console.log(Object.keys(m).length, \"exports ok\"))'",
+            "cd \"<tmp>/fanout-bench-single-qPPmrt/repo\" && npm test 2>&1 | grep -v \"^\\s*duration_ms\" | tail -150"
+          ],
+          "Read": [
+            "<tmp>\\fanout-bench-single-qPPmrt\\repo\\src\\store.mjs"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-single-qPPmrt\\repo\\src\\store.mjs",
+            "<tmp>\\fanout-bench-single-qPPmrt\\repo\\src\\search.mjs",
+            "<tmp>\\fanout-bench-single-qPPmrt\\repo\\src\\fines.mjs",
+            "<tmp>\\fanout-bench-single-qPPmrt\\repo\\src\\csv.mjs",
+            "<tmp>\\fanout-bench-single-qPPmrt\\repo\\src\\reports.mjs",
+            "<tmp>\\fanout-bench-single-qPPmrt\\repo\\src\\holds.mjs",
+            "<tmp>\\fanout-bench-single-qPPmrt\\repo\\src\\api.mjs",
+            "<tmp>\\fanout-bench-single-qPPmrt\\repo\\test\\search.test.mjs",
+            "<tmp>\\fanout-bench-single-qPPmrt\\repo\\test\\fines.test.mjs",
+            "<tmp>\\fanout-bench-single-qPPmrt\\repo\\test\\csv.test.mjs",
+            "<tmp>\\fanout-bench-single-qPPmrt\\repo\\test\\reports.test.mjs",
+            "<tmp>\\fanout-bench-single-qPPmrt\\repo\\test\\holds.test.mjs",
+            "<tmp>\\fanout-bench-single-qPPmrt\\repo\\test\\api.test.mjs"
+          ],
+          "Edit": [
+            "<tmp>\\fanout-bench-single-qPPmrt\\repo\\test\\holds.test.mjs"
+          ]
+        }
+      }
+    ],
+    "conflicts": [],
+    "brokeAfter": [],
+    "repairCommits": 0,
+    "finalTestsPass": true,
+    "seconds": 249,
+    "acceptance": {
+      "pass": 21,
+      "total": 21,
+      "failed": []
+    }
+  }
+]

@@ -1,5 +1,25 @@
 # Benchmark results
 
+## Summary (latest numbers, v0.14)
+
+Six-feature [library](library/) task, scored on 21 hidden tests no agent sees:
+
+| Setup | Wall time | Agent cost | Hidden tests | Conflicts / repairs on `main` | Runs |
+|---|---|---|---|---|---|
+| One agent, Sonnet | ~1m 40s | ~$0.25 | 21/21 | 0 / 0 | 2 |
+| One agent, Haiku | 4m 09s | $0.03 | 21/21 | 0 / 0 | 1 |
+| Six agents, plain worktrees (Sonnet) | 2m 52s – 3m 14s | ~$0.62 | 21/21 | 4 / 8 every run | 2 |
+| Six agents, fanout (Sonnet) | 2m 44s – 2m 51s | $0.61 – $0.66 | 20–21/21 | 0 / 0 | 2 |
+| Six agents, fanout (Sonnet plans, Haiku sessions) | 3m 12s – 3m 36s | $0.14 – $0.15 | 21/21 | 0 / 0 | 2 |
+
+- **Without fanout, parallel agents collided every time.** With fanout, never.
+- **One agent is still fastest at this size.** Parallel pays off when each part takes several minutes.
+- **Early signals, not conclusions:** Haiku sessions matching Sonnet, and Opus planning adding cost without changing results, rest on one or two runs of precisely specified tasks.
+
+The sections below are the history, in the order things were measured. Numbers from before v0.13's overhead fixes are slower than today's.
+
+## Small task: four agents
+
 Four agents work in parallel on the same small codebase ([shop/](shop/)), with the same four tasks ([shop/TASKS.md](shop/TASKS.md)) that deliberately touch each other:
 
 - **currency** changes how prices are stored (dollars to integer cents plus a currency code);
@@ -80,6 +100,25 @@ The fixes: agents start with the project's settings only (fanout's guard is load
 - **The planner dropped from about 100 seconds to under 60.** Each session agent dropped from 74–111 seconds to 46–84.
 - **Cost didn't change.** Each parallel agent still costs about $0.07–$0.12, against roughly $0.04 per feature for one agent working through them in a single session. That gap is the price of starting separate agents.
 - **One agent is still fastest and cheapest at this size.** The one hidden-test miss for fanout was a CSV parsing detail in one round; the next round passed all 21.
+
+### Which model plans, which models build
+
+`fanout run` can plan with one model and run the sessions on another (`--model` and `--session-model`, or `model:` per session in the plan). Small contracts are now pasted into each session's brief. One round each on the library task (19:07 to 19:22), all scored on the 21 hidden tests:
+
+| Setup | Wall time | Agent cost | Hidden tests |
+|---|---|---|---|
+| One agent, Sonnet | 1m 37s – 1m 38s | $0.25 – $0.26 | 21/21 |
+| One agent, Haiku | 4m 09s | $0.03 | 21/21 |
+| fanout: Sonnet plans, Sonnet sessions | 2m 44s – 2m 51s | $0.61 – $0.66 | 20/21, 21/21 |
+| fanout: Opus plans, Sonnet sessions | 3m 00s | $0.82 | 21/21 |
+| fanout: Opus plans, Haiku sessions | 3m 31s | $0.25 | 21/21 |
+| fanout: Sonnet plans, Haiku sessions | 3m 12s – 3m 36s | $0.14 – $0.15 | 21/21, 21/21 |
+
+- **Haiku sessions cut the cost of a fan-out by about 4×** ($0.14–$0.15 against $0.61–$0.66) with no loss on the hidden tests. Each Haiku session cost about $0.01.
+- **Same model, parallel now wins on time:** six Haiku sessions finished in 3m 12s–3m 36s, against 4m 09s for one Haiku agent doing everything.
+- **Opus as planner** used fewer turns (10–11 against 12–16) but cost about twice as much to plan ($0.20–$0.22 against $0.09–$0.11). On this task the outcome was the same: all 21 tests passed either way. The specs here are precise; on vaguer goals, where the split and the interfaces need more judgment, a stronger planner is more likely to matter, but this benchmark doesn't show it.
+- **Fastest is still one Sonnet agent; cheapest is one Haiku agent.** fanout with a cheap session model sits between them, and is the option that keeps `main` safe once work is split.
+- **The tasks are well specified,** which suits cheaper models. On fuzzier real work, check a run's results before making Haiku sessions your default.
 
 ## What this does and doesn't show
 

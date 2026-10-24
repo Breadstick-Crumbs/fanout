@@ -1,0 +1,245 @@
+[
+  {
+    "condition": "baseline",
+    "agents": [
+      {
+        "role": "lane",
+        "lane": "search",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 70,
+        "costUsd": 0.008902819999999999,
+        "inTokens": 173464,
+        "outTokens": 7321,
+        "error": null,
+        "sessionId": "5735848d-3765-4263-b672-dd75d3cc31fa",
+        "turns": 14,
+        "modelSeconds": 36,
+        "tools": {
+          "Bash": [
+            "cd \"<tmp>/fanout-bench-baseline-Fed5Uz/search\" && pwd && ls -la && cat package.json && ls src test data && cat src/index.mjs && cat src/dates.mjs && cat data/sample.mjs && git status --short",
+            "cd \"/tmp/fanout-bench-baseline-Fed5Uz/search\" && cat src/store.mjs && cat test/store.test.mjs && cat scripts/* && cat TASKS.md | head -80 && git log --oneline | head -3",
+            "cat src/store.mjs && cat test/store.test.mjs && cat scripts/* && cat TASKS.md | head -80",
+            "cd \"/tmp/fanout-bench-baseline-Fed5Uz/search\" && npm run gen && cat src/index.mjs && npm test 2>&1 | tail -80",
+            "npm run gen",
+            "npm test",
+            "cat src/index.mjs; git status --short"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-baseline-Fed5Uz\\search\\src\\search.mjs",
+            "<tmp>\\fanout-bench-baseline-Fed5Uz\\search\\test\\search.test.mjs"
+          ],
+          "Edit": [
+            "<tmp>\\fanout-bench-baseline-Fed5Uz\\search\\test\\search.test.mjs",
+            "<tmp>\\fanout-bench-baseline-Fed5Uz\\search\\test\\search.test.mjs",
+            "<tmp>\\fanout-bench-baseline-Fed5Uz\\search\\test\\search.test.mjs",
+            "<tmp>\\fanout-bench-baseline-Fed5Uz\\search\\test\\search.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "fines",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 73,
+        "costUsd": 0.00719207,
+        "inTokens": 115810,
+        "outTokens": 5792,
+        "error": null,
+        "sessionId": "5dcf573f-7b34-43ae-8da0-19379ccb1e59",
+        "turns": 11,
+        "modelSeconds": 33,
+        "tools": {
+          "Bash": [
+            "cd \"<tmp>/fanout-bench-baseline-Fed5Uz/fines\" && ls -la && cat package.json && ls src test data && cat src/dates.mjs && cat src/index.mjs && ls src | head -50",
+            "cd \"<tmp>/fanout-bench-baseline-Fed5Uz/fines\" && grep -rn \"createStore\" src | head; cat data/sample.mjs | head -80; ls test; git status --short | head",
+            "cd \"<tmp>/fanout-bench-baseline-Fed5Uz/fines\" && cat src/store.mjs && cat test/store.test.mjs && cat scripts/* && cat TASKS.md | head -60",
+            "cd \"<tmp>/fanout-bench-baseline-Fed5Uz/fines\" && npm run gen && cat src/index.mjs && npm test 2>&1 | tail -40",
+            "cd \"<tmp>/fanout-bench-baseline-Fed5Uz/fines\" && npm test 2>&1 | grep -n -B2 -A25 \"^not ok\" | head -60",
+            "cd \"<tmp>/fanout-bench-baseline-Fed5Uz/fines\" && npm test 2>&1 | tail -10; echo \"exit=$?\"; git status --short"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-baseline-Fed5Uz\\fines\\src\\fines.mjs",
+            "<tmp>\\fanout-bench-baseline-Fed5Uz\\fines\\test\\fines.test.mjs"
+          ],
+          "Edit": [
+            "<tmp>\\fanout-bench-baseline-Fed5Uz\\fines\\src\\store.mjs",
+            "<tmp>\\fanout-bench-baseline-Fed5Uz\\fines\\test\\fines.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "csv",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 99,
+        "costUsd": 0.00912308,
+        "inTokens": 148171,
+        "outTokens": 8935,
+        "error": null,
+        "sessionId": "8408100a-0317-47c5-a673-7fb740e6b7cd",
+        "turns": 8,
+        "modelSeconds": 68,
+        "tools": {
+          "Bash": [
+            "cd \"<tmp>/fanout-bench-baseline-Fed5Uz/csv\" && ls -la && cat package.json && ls src test data && cat src/index.mjs && cat src/dates.mjs && cat data/sample.mjs | head -40 && git status --short | head",
+            "cd \"<tmp>/fanout-bench-baseline-Fed5Uz/csv\" && cat src/store.mjs && cat test/store.test.mjs | head -60 && cat scripts/* && cat TASKS.md | head -80",
+            "cd \"<tmp>/fanout-bench-baseline-Fed5Uz/csv\" && npm run gen && cat src/index.mjs && npm test 2>&1 | tail -60",
+            "cd \"<tmp>/fanout-bench-baseline-Fed5Uz/csv\" && git status --short"
+          ],
+          "Write": [
+            "<tmp>/fanout-bench-baseline-Fed5Uz/csv/src/csv.mjs",
+            "<tmp>/fanout-bench-baseline-Fed5Uz/csv/test/csv.test.mjs"
+          ],
+          "Edit": [
+            "<tmp>/fanout-bench-baseline-Fed5Uz/csv/test/csv.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "reports",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 59,
+        "costUsd": 0.006020950000000001,
+        "inTokens": 109066,
+        "outTokens": 5037,
+        "error": null,
+        "sessionId": "39d0f25c-06c9-434f-8a96-6bf92c84e3fd",
+        "turns": 7,
+        "modelSeconds": 26,
+        "tools": {
+          "Bash": [
+            "cd \"<tmp>/fanout-bench-baseline-Fed5Uz/reports\" && ls -la && cat package.json && ls src test data && cat src/dates.mjs && head -c 3000 src/index.mjs && head -c 2500 data/sample.mjs",
+            "cd \"<tmp>/fanout-bench-baseline-Fed5Uz/reports\" && cat src/store.mjs && cat scripts/gen-index.mjs && cat test/store.test.mjs && cat TASKS.md | head -80 && git status --short && git log --oneline -3",
+            "cd \"<tmp>/fanout-bench-baseline-Fed5Uz/reports\" && npm run gen && cat src/index.mjs && npm test 2>&1 | tail -60"
+          ],
+          "Write": [
+            "<tmp>/fanout-bench-baseline-Fed5Uz/reports/src/reports.mjs",
+            "<tmp>/fanout-bench-baseline-Fed5Uz/reports/test/reports.test.mjs"
+          ],
+          "Edit": [
+            "<tmp>/fanout-bench-baseline-Fed5Uz/reports/test/reports.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "holds",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 96,
+        "costUsd": 0.00775375,
+        "inTokens": 123191,
+        "outTokens": 7869,
+        "error": null,
+        "sessionId": "782acd67-254c-4ed5-9d87-f25c470590a4",
+        "turns": 11,
+        "modelSeconds": 62,
+        "tools": {
+          "Bash": [
+            "cat src/store.mjs; echo ---; cat src/dates.mjs; echo ---; cat src/index.mjs; echo ---; ls src test data; cat package.json; echo ---; head -c 1500 data/sample.mjs",
+            "cat test/store.test.mjs; echo ---; ls scripts; cat scripts/gen-index.mjs; echo ---; grep -n \"holds\\|seed\" -r src data | head; git status --short",
+            "npm run gen && cat src/index.mjs",
+            "npm test 2>&1 | tail -40; echo; grep -n \"bookId\" data/sample.mjs | tail -5",
+            "npm test 2>&1 | tail -10"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-baseline-Fed5Uz\\holds\\src\\holds.mjs",
+            "<tmp>\\fanout-bench-baseline-Fed5Uz\\holds\\test\\holds.test.mjs"
+          ],
+          "Edit": [
+            "<tmp>\\fanout-bench-baseline-Fed5Uz\\holds\\src\\store.mjs",
+            "<tmp>\\fanout-bench-baseline-Fed5Uz\\holds\\src\\store.mjs",
+            "<tmp>\\fanout-bench-baseline-Fed5Uz\\holds\\test\\holds.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "api",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 119,
+        "costUsd": 0.011228680000000001,
+        "inTokens": 222340,
+        "outTokens": 10608,
+        "error": null,
+        "sessionId": "d9ae0b1f-a83e-44ce-9771-a7b5e9a35f72",
+        "turns": 14,
+        "modelSeconds": 84,
+        "tools": {
+          "Bash": [
+            "ls -la && cat package.json && ls src test data && cat src/index.mjs && cat src/search.mjs src/fines.mjs src/dates.mjs && git status --short",
+            "cat TASKS.md; echo ----; cat src/store.mjs; echo ----; cat scripts/*.mjs; echo ----; head -c 1500 data/sample.mjs; echo; echo ----; cat test/store.test.mjs | head -60; git log --oneline | head -5; git status --short",
+            "S=<tmp>/claude/<tmp>-fanout-bench-baseline-Fed5Uz-api/d9ae0b1f-a83e-44ce-9771-a7b5e9a35f72/scratchpad/verify && rm -rf \"$S\" && mkdir -p \"$S\" && cp -r src test data scripts package.json \"$S\"/ && cat > \"$S/src/search.mjs\" <<'EOF'\nexport function search(store, q = {}) {\n  const page = q.page ?? 1, pageSize = q.pageSize ?? 10;\n  const all = store.books.filter((b) => !q.tag || b.tags.includes(q.tag));\n  return { items: all.slice((page - 1) * pageSize, page * pageSize), total: all.length, page, pages: Math.ceil(all.length / pageSize) };\n}\nEOF\ncat > \"$S/src/fines.mjs\" <<'EOF'\nexport function memberBalance(store, memberId, asOf) { return 0; }\nEOF\ncd \"$S\" && npm test 2>&1 | tail -40",
+            "mkdir -p \"<tmp>/claude/<tmp>-fanout-bench-baseline-Fed5Uz-api/d9ae0b1f-a83e-44ce-9771-a7b5e9a35f72/scratchpad/verify\" && echo ok",
+            "cd \"<tmp>/claude/<tmp>-fanout-bench-baseline-Fed5Uz-api/d9ae0b1f-a83e-44ce-9771-a7b5e9a35f72/scratchpad/verify\" && cp -r \"<tmp>/fanout-bench-baseline-Fed5Uz/api/src\" \"<tmp>/fanout-bench-baseline-Fed5Uz/api/test\" \"<tmp>/fanout-bench-baseline-Fed5Uz/api/data\" \"<tmp>/fanout-bench-baseline-Fed5Uz/api/package.json\" . && ls -R . | head -30",
+            "cp -r \"<tmp>/fanout-bench-baseline-Fed5Uz/api/src\" \"<tmp>/claude/<tmp>-fanout-bench-baseline-Fed5Uz-api/d9ae0b1f-a83e-44ce-9771-a7b5e9a35f72/scratchpad/verify/\" && cp -r \"<tmp>/fanout-bench-baseline-Fed5Uz/api/test\" \"<tmp>/fanout-bench-baseline-Fed5Uz/api/data\" \"<tmp>/fanout-bench-baseline-Fed5Uz/api/package.json\" \"<tmp>/claude/<tmp>-fanout-bench-baseline-Fed5Uz-api/d9ae0b1f-a83e-44ce-9771-a7b5e9a35f72/scratchpad/verify/\" && echo copied",
+            "npm test 2>&1 | tail -60",
+            "rm src/search.mjs src/fines.mjs && npm test 2>&1 | tail -25; git status --short"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-baseline-Fed5Uz\\api\\src\\api.mjs",
+            "<tmp>\\fanout-bench-baseline-Fed5Uz\\api\\test\\api.test.mjs",
+            "<tmp>\\fanout-bench-baseline-Fed5Uz\\api\\src\\search.mjs",
+            "<tmp>\\fanout-bench-baseline-Fed5Uz\\api\\src\\fines.mjs"
+          ],
+          "Edit": [
+            "<tmp>\\fanout-bench-baseline-Fed5Uz\\api\\test\\api.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "integrator",
+        "lane": "-",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 138,
+        "costUsd": 0.07773530000000001,
+        "inTokens": 144749,
+        "outTokens": 2120,
+        "error": null,
+        "sessionId": "36c85d6e-4908-4ac1-b44d-9c01d9000e58",
+        "turns": 12,
+        "modelSeconds": 110,
+        "tools": {
+          "Bash": [
+            "cd <tmp>/fanout-bench-baseline-Fed5Uz/repo && git branch -a && ls && cat package.json && git ls-files && npm test 2>&1 | grep -B5 -A25 \"not ok\"",
+            "cd <tmp>/fanout-bench-baseline-Fed5Uz/repo && cat TASKS.md scripts/gen-index.mjs src/index.mjs; git merge lane/fines 2>&1 | tail -5",
+            "cd <tmp>/fanout-bench-baseline-Fed5Uz/repo && git status --short; git diff --name-only --diff-filter=U",
+            "cd <tmp>/fanout-bench-baseline-Fed5Uz/repo && cat src/store.mjs",
+            "cd <tmp>/fanout-bench-baseline-Fed5Uz/repo && npm run gen >/dev/null && git add -A && git commit -qm \"Merge branch 'lane/fines'\" && git merge lane/reports 2>&1 | tail -3; git merge lane/holds 2>&1 | tail -3; git diff --name-only --diff-filter=U",
+            "cd <tmp>/fanout-bench-baseline-Fed5Uz/repo && npm run gen >/dev/null && git add -A && git commit -qm \"Merge branch 'lane/reports'\" && git merge lane/holds 2>&1 | tail -4; git diff --name-only --diff-filter=U",
+            "cd <tmp>/fanout-bench-baseline-Fed5Uz/repo && grep -n -A12 \"<<<<<<<\" src/store.mjs",
+            "cd <tmp>/fanout-bench-baseline-Fed5Uz/repo && sed -i -e '/^<<<<<<< /d' -e '/^=======$/d' -e '/^>>>>>>> /d' src/store.mjs && npm run gen >/dev/null && git add -A && git commit -qm \"Merge branch 'lane/holds'\" && npm test 2>&1 | grep -E \"^# (pass|fail)|^not ok\"; sed -n 30,70p src/store.mjs",
+            "cd <tmp>/fanout-bench-baseline-Fed5Uz/repo && npm run gen >/dev/null; grep -c \"<<<<\" src/*.mjs; git add -A; git commit -qm \"Merge branch 'lane/holds'\"; npm test 2>&1 | grep -E \"^# (pass|fail)|^not ok\"",
+            "cd <tmp>/fanout-bench-baseline-Fed5Uz/repo && git status --short; cat src/index.mjs; git log --oneline | head -4"
+          ],
+          "Edit": [
+            "<tmp>/fanout-bench-baseline-Fed5Uz/repo/src/store.mjs"
+          ]
+        }
+      }
+    ],
+    "conflicts": [
+      "fines",
+      "reports",
+      "holds"
+    ],
+    "brokeAfter": [
+      "api"
+    ],
+    "repairCommits": 6,
+    "finalTestsPass": true,
+    "seconds": 274,
+    "acceptance": {
+      "pass": 21,
+      "total": 21,
+      "failed": []
+    }
+  }
+]

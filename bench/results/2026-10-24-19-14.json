@@ -1,0 +1,247 @@
+[
+  {
+    "condition": "fanout",
+    "agents": [
+      {
+        "role": "coordinator",
+        "lane": "-",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 59,
+        "costUsd": 0.1040264,
+        "inTokens": 114097,
+        "outTokens": 4494,
+        "error": null,
+        "sessionId": "59869559-9d3f-411c-b8ad-d3963b5e43cc",
+        "turns": 16,
+        "modelSeconds": 35,
+        "tools": {
+          "Read": [
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\repo\\src\\store.mjs",
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\repo\\package.json",
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\repo\\scripts\\gen-index.mjs",
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\repo\\src\\index.mjs"
+          ],
+          "Bash": [
+            "mkdir -p .fanout && cat > .fanout/plan.md <<'EOF'\ntest: npm test\nregen: src/index.mjs via npm run gen\n\n## search\nowns: src/search.mjs, test/search.test.mjs\ntask: Implement search(store, query) with filtering, sorting and paging in src/search.mjs\ndone: npm test passes including new search tests covering every query field\nexposes: src/search.mjs\n\n## fines\nowns: src/fines.mjs, test/fines.test.mjs\ntask: Implement finesFor, memberBalance and payFine in src/fines.mjs (store.payments already exists in createStore)\ndone: npm test passes including new fines tests for grace, cap, open loans and payments\nexposes: src/fines.mjs\n\n## csv\nowns: src/csv.mjs, test/csv.test.mjs\ntask: Implement exportBooks and importBooks with CSV quoting and line-numbered errors\ndone: npm test passes including new csv round-trip and error tests\n\n## reports\nowns: src/reports.mjs, test/reports.test.mjs\ntask: Implement overdueReport, popularBooks and memberActivity\ndone: npm test passes including new reports tests\n\n## holds\nowns: src/store.mjs, src/holds.mjs, test/holds.test.mjs, test/store.test.mjs\ntask: Implement placeHold, cancelHold, holdsFor, and change availableCopies and checkout in store.mjs for holds\ndone: npm test passes including new hold queue and checkout tests\n\n## api\nowns: src/api.mjs, test/api.test.mjs\ntask: Implement createServer(store) with the HTTP routes in src/api.mjs\ndone: npm test passes including new api tests over a listening server\nuses: src/search.mjs, src/fines.mjs\nEOF\nnode \"D:\\fanout\\skills\\fanout\\fanout.mjs\" check",
+            "ls .fanout; node \"D:\\fanout\\skills\\fanout\\fanout.mjs\" check",
+            "node \"D:\\fanout\\skills\\fanout\\fanout.mjs\" check",
+            "python3 - <<'EOF' 2>/dev/null || node -e '\nconst fs=require(\"fs\");let p=fs.readFileSync(\".fanout/plan.md\",\"utf8\");\np=p.replace(\"done: npm test passes including new fines tests for grace, cap, open loans and payments\\nexposes: src/fines.mjs\",\"done: npm test passes including new fines tests for grace, cap, open loans and payments\\nexposes: src/fines.mjs\\nuses: src/store.mjs\");\np=p.replace(\"done: npm test passes including new hold queue and checkout tests\",\"done: npm test passes including new hold queue and checkout tests\\nexposes: src/store.mjs\");\nfs.writeFileSync(\".fanout/plan.md\",p)'\nEOF\ngrep -n \"store.mjs\" .fanout/plan.md",
+            "npm run gen >/dev/null && node \"D:\\fanout\\skills\\fanout\\fanout.mjs\" check && npm test 2>&1 | tail -12 && git add src && git commit -q -m \"fanout: contracts\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\" && git status --short"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\repo\\.fanout\\plan.md",
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\repo\\src\\search.mjs",
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\repo\\src\\fines.mjs"
+          ],
+          "Edit": [
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\repo\\.fanout\\plan.md",
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\repo\\.fanout\\plan.md",
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\repo\\src\\store.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "search",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 96,
+        "costUsd": 0.009919009999999999,
+        "inTokens": 209624,
+        "outTokens": 8794,
+        "error": null,
+        "sessionId": "ff319766-85b1-4052-87d2-185d243ba9b6",
+        "turns": 12,
+        "modelSeconds": 50,
+        "tools": {
+          "Bash": [
+            "cd <tmp>/fanout-bench-fanout-yFAgp9/search && ls -R src test data 2>/dev/null; cat package.json; cat src/search.mjs 2>/dev/null; git log --oneline -3",
+            "cd <tmp>/fanout-bench-fanout-yFAgp9/search && cat src/store.mjs; echo ----; cat data/sample.mjs | head -60; echo ----; cat test/store.test.mjs | head -30",
+            "cd <tmp>/fanout-bench-fanout-yFAgp9/search && cat src/index.mjs; ls scripts 2>/dev/null; cat src/dates.mjs | head -20",
+            "cd <tmp>/fanout-bench-fanout-yFAgp9/search && npm test 2>&1 | tail -n 80",
+            "cd <tmp>/fanout-bench-fanout-yFAgp9/search && npm test 2>&1 | grep -n -B3 -A14 \"^not ok\" | head -60; sed -n 60,64p test/search.test.mjs",
+            "cd <tmp>/fanout-bench-fanout-yFAgp9/search && npm test 2>&1 | tail -n 9; echo \"exit=${PIPESTATUS[0]}\"; npm test >/dev/null 2>&1; echo \"npm test exit=$?\"; git status --short",
+            "cd <tmp>/fanout-bench-fanout-yFAgp9/search && npm test > /dev/null 2>&1; echo \"npm test exit=$?\"; npm test 2>&1 | tail -n 9; git status --short"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\search\\src\\search.mjs",
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\search\\test\\search.test.mjs"
+          ],
+          "Edit": [
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\search\\test\\search.test.mjs",
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\search\\test\\search.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "fines",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 53,
+        "costUsd": 0.00466016,
+        "inTokens": 54573,
+        "outTokens": 4728,
+        "error": null,
+        "sessionId": "40ac8a44-5a9e-4275-9d23-f3ff7809c979",
+        "turns": 7,
+        "modelSeconds": 23,
+        "tools": {
+          "Bash": [
+            "cd \"<tmp>/fanout-bench-fanout-yFAgp9/fines\" && cat src/dates.mjs && cat package.json && ls src test && cat src/fines.mjs 2>/dev/null; cat test/fines.test.mjs 2>/dev/null; head -30 test/*.test.mjs | head -60",
+            "cd \"<tmp>/fanout-bench-fanout-yFAgp9/fines\" && grep -n fines src/index.mjs; npm run gen >/dev/null 2>&1; npm test 2>&1 | tail -40",
+            "cd \"<tmp>/fanout-bench-fanout-yFAgp9/fines\" && npm test 2>&1 | tail -10"
+          ],
+          "Write": [
+            "<tmp>/fanout-bench-fanout-yFAgp9/fines/src/fines.mjs",
+            "<tmp>/fanout-bench-fanout-yFAgp9/fines/test/fines.test.mjs"
+          ],
+          "Edit": [
+            "<tmp>/fanout-bench-fanout-yFAgp9/fines/test/fines.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "csv",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 88,
+        "costUsd": 0.01126708,
+        "inTokens": 187305,
+        "outTokens": 11273,
+        "error": null,
+        "sessionId": "c9cebf6f-5c17-4eed-8622-31543a3a798e",
+        "turns": 10,
+        "modelSeconds": 57,
+        "tools": {
+          "Bash": [
+            "ls -la src test data 2>&1; cat package.json; cat src/csv.mjs 2>&1; cat test/csv.test.mjs 2>&1",
+            "cat src/store.mjs src/dates.mjs src/index.mjs test/store.test.mjs; head -c 900 data/sample.mjs",
+            "pwd; npm test 2>&1 | tail -n 80",
+            "git status --short"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\csv\\src\\csv.mjs",
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\csv\\test\\csv.test.mjs"
+          ],
+          "Edit": [
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\csv\\src\\csv.mjs",
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\csv\\src\\csv.mjs",
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\csv\\test\\csv.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "reports",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 61,
+        "costUsd": 0.006344980000000001,
+        "inTokens": 122267,
+        "outTokens": 5806,
+        "error": null,
+        "sessionId": "addd821e-4ceb-42ce-8643-a099a3d831f0",
+        "turns": 9,
+        "modelSeconds": 29,
+        "tools": {
+          "Bash": [
+            "ls src test data; cat package.json; cat src/reports.mjs 2>/dev/null; cat test/reports.test.mjs 2>/dev/null; cat src/dates.mjs",
+            "cat data/sample.mjs; ls src; git log --oneline -3; grep -rn \"store\\.\\|export function\" src/*.mjs | grep -v index.mjs | head -60",
+            "cat src/store.mjs | head -16; cat test/store.test.mjs; cat src/fines.mjs",
+            "npm run gen && npm test 2>&1 | tail -60",
+            "git status --short"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\reports\\src\\reports.mjs",
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\reports\\test\\reports.test.mjs"
+          ],
+          "Edit": [
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\reports\\test\\reports.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "holds",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 88,
+        "costUsd": 0.009768420000000002,
+        "inTokens": 166369,
+        "outTokens": 10233,
+        "error": null,
+        "sessionId": "5b7bf7b4-a089-41d0-8d1d-7da90bda02eb",
+        "turns": 11,
+        "modelSeconds": 50,
+        "tools": {
+          "Bash": [
+            "cd <tmp>/fanout-bench-fanout-yFAgp9/holds && git status --short && ls -R src test data 2>/dev/null && cat package.json && cat src/store.mjs && cat src/dates.mjs && cat src/index.mjs && cat test/store.test.mjs && ls test && cat data/sample.mjs | head -80",
+            "cd <tmp>/fanout-bench-fanout-yFAgp9/holds && cat >> test/store.test.mjs <<'EOF'\n\ntest(\"checkout honours the hold queue\", () => {\n  const s = createStore(sample);\n  placeHold(s, \"b1\", \"m1\", \"2026-02-01\");\n  placeHold(s, \"b1\", \"m2\", \"2026-02-01\");\n  placeHold(s, \"b1\", \"m3\", \"2026-02-01\");\n  assert.equal(availableCopies(s, \"b1\"), 0);\n  // Third in line, but only two copies are free.\n  assert.throws(() => checkout(s, \"b1\", \"m3\", \"2026-02-02\"), /no copies available/);\n  assert.equal(holdsFor(s, \"b1\").length, 3);\n  // First in line takes a copy and leaves the queue.\n  checkout(s, \"b1\", \"m1\", \"2026-02-02\");\n  assert.deepEqual(holdsFor(s, \"b1\").map((h) => h.memberId), [\"m2\", \"m3\"]);\n  assert.equal(availableCopies(s, \"b1\"), 0);\n  // Second in line is now covered by the last free copy.\n  checkout(s, \"b1\", \"m2\", \"2026-02-02\");\n  assert.deepEqual(holdsFor(s, \"b1\").map((h) => h.memberId), [\"m3\"]);\n  assert.throws(() => checkout(s, \"b1\", \"m3\", \"2026-02-02\"), /no copies available/);\n  // Returning a copy lets the last holder in.\n  checkin(s, \"l5\", \"2026-02-03\");\n});\n\ntest(\"checkout by a non-holder uses only copies not reserved by holds\", () => {\n  const s = createStore(sample);\n  // b3 has 3 copies and 1 open loan, so 2 are free.\n  placeHold(s, \"b3\", \"m3\", \"2026-02-01\");\n  assert.equal(availableCopies(s, \"b3\"), 1);\n  checkout(s, \"b3\", \"m1\", \"2026-02-02\");\n  assert.equal(availableCopies(s, \"b3\"), 0);\n  assert.throws(() => checkout(s, \"b3\", \"m2\", \"2026-02-02\"), /no copies available/);\n  // The hold stays put for its holder.\n  assert.deepEqual(holdsFor(s, \"b3\").map((h) => h.memberId), [\"m3\"]);\n});\nEOF\nnpm run gen 2>&1 | tail -3; npm test 2>&1 | tail -40",
+            "cd <tmp>/fanout-bench-fanout-yFAgp9/holds && npm run gen 2>&1 | tail -3; npm test 2>&1 | tail -40",
+            "cd <tmp>/fanout-bench-fanout-yFAgp9/holds && git status --short && npm test 2>&1 | grep -E \"^# (pass|fail)\""
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\holds\\src\\holds.mjs",
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\holds\\test\\holds.test.mjs"
+          ],
+          "Edit": [
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\holds\\src\\store.mjs",
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\holds\\test\\store.test.mjs",
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\holds\\test\\store.test.mjs",
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\holds\\test\\store.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "api",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 74,
+        "costUsd": 0.00858366,
+        "inTokens": 132228,
+        "outTokens": 8810,
+        "error": null,
+        "sessionId": "20a44e40-d6be-4d13-bc22-39845dace636",
+        "turns": 8,
+        "modelSeconds": 43,
+        "tools": {
+          "Bash": [
+            "ls -la && cat package.json && ls src test data && cat src/index.mjs 2>/dev/null | head -50",
+            "cat src/store.mjs; echo ----; cat src/dates.mjs; echo ----; head -c 1500 data/sample.mjs; echo ----; cat test/store.test.mjs | head -40; echo ----; cat scripts/gen-index.mjs | head -30",
+            "node -v && npm test 2>&1 | tail -80"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\api\\src\\api.mjs",
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\api\\test\\api.test.mjs"
+          ],
+          "Edit": [
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\api\\src\\api.mjs",
+            "<tmp>\\fanout-bench-fanout-yFAgp9\\api\\src\\api.mjs"
+          ]
+        }
+      }
+    ],
+    "conflicts": [],
+    "brokeAfter": [],
+    "repairCommits": 0,
+    "rehearsals": [
+      "OK after api (all 6 merged)\nAll branches merge and pass together."
+    ],
+    "blockedFiles": [
+      "reports: src/index.mjs",
+      "holds: src/index.mjs"
+    ],
+    "plan": "test: npm test\nregen: src/index.mjs via npm run gen\n\n## search\nowns: src/search.mjs, test/search.test.mjs\ntask: Implement search(store, query) with filtering, sorting and paging in src/search.mjs\ndone: npm test passes including new search tests covering every query field\nexposes: src/search.mjs\n\n## fines\nowns: src/fines.mjs, test/fines.test.mjs\ntask: Implement finesFor, memberBalance and payFine in src/fines.mjs (store.payments already exists in createStore)\ndone: npm test passes including new fines tests for grace, cap, open loans and payments\nexposes: src/fines.mjs\nuses: src/store.mjs\n\n## csv\nowns: src/csv.mjs, test/csv.test.mjs\ntask: Implement exportBooks and importBooks with CSV quoting and line-numbered errors\ndone: npm test passes including new csv round-trip and error tests\n\n## reports\nowns: src/reports.mjs, test/reports.test.mjs\ntask: Implement overdueReport, popularBooks and memberActivity\ndone: npm test passes including new reports tests\n\n## holds\nowns: src/store.mjs, src/holds.mjs, test/holds.test.mjs, test/store.test.mjs\ntask: Implement placeHold, cancelHold, holdsFor, and change availableCopies and checkout in store.mjs for holds\ndone: npm test passes including new hold queue and checkout tests\nexposes: src/store.mjs\n\n## api\nowns: src/api.mjs, test/api.test.mjs\ntask: Implement createServer(store) with the HTTP routes in src/api.mjs\ndone: npm test passes including new api tests over a listening server\nuses: src/search.mjs, src/fines.mjs\n",
+    "finalTestsPass": true,
+    "seconds": 192,
+    "acceptance": {
+      "pass": 21,
+      "total": 21,
+      "failed": []
+    }
+  }
+]

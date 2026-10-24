@@ -23,7 +23,7 @@ export function parsePlan(text) {
     const list = (k) => get(k).split(",").map((s) => s.trim()).filter(Boolean);
     const keys = rest.map((l) => l.match(/^([A-Za-z_-]+):/)?.[1]).filter(Boolean);
     sessions.push({ name: name.trim(), owns: list("owns"), after: list("after"), exposes: list("exposes"), uses: list("uses"),
-      task: get("task"), done: get("done"), agent: get("agent"), keys });
+      task: get("task"), done: get("done"), agent: get("agent"), model: get("model"), keys });
   }
   return sessions;
 }

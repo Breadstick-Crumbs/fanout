@@ -1,5 +1,5 @@
 // fanout run: the whole fan-out as one command.
-//   fanout run ["goal"] [--yes] [--agent claude|codex|"<cmd>"] [--model m] [--budget usd] [--fixes 2] [--no-merge]
+//   fanout run ["goal"] [--yes] [--agent claude|codex|"<cmd>"] [--model m] [--session-model m] [--budget usd] [--fixes 2] [--no-merge]
 //
 // 1. Plan: uses .fanout/plan.md if it exists; otherwise a coordinator agent writes it from the goal,
 //    from the plan rules (plannerPrompt), and commits the contract files.
@@ -42,10 +42,10 @@ const bin = (name) => process.env[`FANOUT_${name.toUpperCase()}_BIN`] || name;
 // the agent's session id. With `resume` (a session id from an earlier run) it continues that session
 // with just `prompt`; if that fails it starts fresh with `fallbackPrompt`.
 export async function runAgent({ resume, fallbackPrompt, ...opts }) {
-  if (!resume) return runOnce({ ...opts, prompt: fallbackPrompt ?? opts.prompt });
+  if (!resume) return withSettingsFallback({ ...opts, prompt: fallbackPrompt ?? opts.prompt });
   const r = await runOnce({ ...opts, resume });
   if (!r.error) return r;
-  const fresh = await runOnce({ ...opts, prompt: fallbackPrompt ?? opts.prompt });
+  const fresh = await withSettingsFallback({ ...opts, prompt: fallbackPrompt ?? opts.prompt });
   fresh.seconds += r.seconds; fresh.inTokens += r.inTokens; fresh.outTokens += r.outTokens;
   if (fresh.costUsd != null && r.costUsd != null) fresh.costUsd += r.costUsd;
   return fresh;
@@ -60,23 +60,35 @@ export async function runAgent({ resume, fallbackPrompt, ...opts }) {
 const CLAUDE_TOOLS = "Read,Edit,Write,Glob,Grep,Bash";
 // Read-only shell tools agents reach for (piping test output to tail, listing files). Without them each
 // attempt is refused and costs a turn. Writes still go through Edit/Write, where the guard checks them.
-const READ_ONLY_BASH = ["ls", "cat", "head", "tail", "grep", "wc", "pwd", "echo"].map((c) => `Bash(${c}:*)`);
+const READ_ONLY_BASH = ["cd", "ls", "cat", "head", "tail", "grep", "wc", "pwd", "echo"].map((c) => `Bash(${c}:*)`);
 // Session agents start with the project's settings only, not the user's own: personal hooks and plugins
 // run on every agent and tool call (measured here: a trivial call went from 9s to 15s and doubled its
 // tokens). fanout's guard is loaded directly with --plugin-dir instead. FANOUT_USER_SETTINGS=1 keeps them.
-const settingSources = () => (process.env.FANOUT_USER_SETTINGS ? [] : ["--setting-sources", "project,local", "--plugin-dir", q(PLUGIN_ROOT)]);
+const settingSources = (userSettings) => (process.env.FANOUT_USER_SETTINGS || userSettings ? [] : ["--setting-sources", "project,local", "--plugin-dir", q(PLUGIN_ROOT)]);
 
-function runOnce({ agent = "claude", cwd, prompt, model, budget, plugin = false, allowGit = false, resume }) {
+// Some setups keep what Claude needs to run at all in the user's settings (Bedrock or Vertex, a proxy, an
+// API key helper). If a lean start fails before doing any work, run once more with the user's settings.
+async function withSettingsFallback(opts) {
+  const r = await runOnce(opts);
+  if ((opts.agent ?? "claude") !== "claude" || process.env.FANOUT_USER_SETTINGS || !r.error || r.turns > 0) return r;
+  const again = await runOnce({ ...opts, userSettings: true });
+  again.fellBack = true;
+  again.seconds += r.seconds;
+  if (again.costUsd != null && r.costUsd != null) again.costUsd += r.costUsd;
+  return again;
+}
+
+function runOnce({ agent = "claude", cwd, prompt, model, budget, plugin = false, allowGit = false, resume, userSettings = false }) {
   // Only Claude reports a dollar cost; for any other agent it is unknown (null), not zero.
   const rec = { agent, seconds: 0, costUsd: agent === "claude" ? 0 : null, inTokens: 0, outTokens: 0, error: null, sessionId: null };
   const t0 = Date.now();
   let cmd;
   if (agent === "claude") {
     const tools = ["Read", "Edit", "Write", "Glob", "Grep", "Bash(node:*)", "Bash(npm:*)", "Bash(npx:*)", ...READ_ONLY_BASH, ...(allowGit ? ["Bash(git:*)"] : [])];
-    const sources = settingSources();
+    const sources = settingSources(userSettings);
     cmd = [bin("claude"), "-p", ...(resume ? ["--resume", resume] : []), "--tools", CLAUDE_TOOLS, "--permission-mode", "acceptEdits", "--allowedTools", q(tools.join(",")), "--output-format", "stream-json", "--verbose",
       "--strict-mcp-config", ...sources, ...(model ? ["--model", model] : []), ...(budget ? ["--max-budget-usd", budget] : []),
-      ...(plugin && !sources.length ? ["--plugin-dir", q(PLUGIN_ROOT)] : [])].join(" ");
+      ...((plugin || userSettings) && !sources.length ? ["--plugin-dir", q(PLUGIN_ROOT)] : [])].join(" ");
   } else if (agent === "codex") {
     cmd = [bin("codex"), "exec", "--json", "-s", "workspace-write", "--skip-git-repo-check", "-C", q(cwd), ...(model ? ["-m", model] : []),
       ...(resume ? ["resume", resume] : [])].join(" ");
@@ -144,7 +156,18 @@ export function commitLane(wt, sessions, s, regen, msg) {
   return { committed: c.ok, reverted };
 }
 
-export function brief(s, sessions, regen, test, note = "") {
+// Contracts a session builds against are pasted into its brief when they're small, so it doesn't spend
+// turns reading them (each turn resends the whole conversation). Larger ones are just named.
+const CONTRACT_INLINE_BYTES = 8000;
+function inlineContracts(s, root) {
+  if (!root) return "";
+  const files = s.uses.filter((u) => !/[*?{]/.test(u) && existsSync(join(root, u)));
+  const texts = files.map((f) => [f, readFileSync(join(root, f), "utf8")]);
+  if (!texts.length || texts.reduce((n, [, t]) => n + t.length, 0) > CONTRACT_INLINE_BYTES) return "";
+  return "Their current contents (no need to read them again):\n" + texts.map(([f, t]) => `--- ${f}\n${t.trimEnd()}`).join("\n");
+}
+
+export function brief(s, sessions, regen, test, note = "", root = null) {
   const others = sessions.filter((x) => x !== s).map((x) => x.name);
   return [
     `You are session "${s.name}" of a parallel fan-out. ${others.length ? `Other agents are working on ${others.join(", ")} at the same time.` : ""}`,
@@ -152,6 +175,7 @@ export function brief(s, sessions, regen, test, note = "") {
     s.done ? `Done when: ${s.done}` : "",
     `You may change only: ${s.owns.join(", ")}. Edits anywhere else are refused or reverted.`,
     s.uses.length ? `Shared interfaces you build against (frozen: read them, don't edit them): ${s.uses.join(", ")}.` : "",
+    inlineContracts(s, root),
     regen.length ? `Generated files (${regen.flatMap((r) => r.paths).join(", ")}) are rebuilt after merging; you may run the generator to test, but your changes to them are discarded.` : "",
     test ? `Run \`${test}\` before you finish.` : "",
     "Don't commit: your work is committed for you. Read only the files you need.",
@@ -197,6 +221,8 @@ export async function cli(argv) {
   const opt = (f, d) => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1] : d; };
   const goal = argv[0] && !argv[0].startsWith("--") ? argv[0] : null;
   const defaultAgent = opt("--agent", "claude"), model = opt("--model"), budget = opt("--budget");
+  // Sessions can run on a cheaper model than the planner: a session's own "model:" wins, then --session-model, then --model.
+  const sessionModel = opt("--session-model"), modelFor = (s) => s.model || sessionModel || model;
   const maxFixes = Number(opt("--fixes", "2"));
   const root = mainRoot(process.cwd());
   const base = git(root, "branch", "--show-current").out.trim();
@@ -266,12 +292,12 @@ export async function cli(argv) {
   }
   const agentFor = (s) => s.agent || defaultAgent;
   log(`starting ${sessions.length} sessions: ${sessions.map((s) => `${s.name} (${agentFor(s)})`).join(", ")}`);
-  const lanes = await staggered(sessions, (s) => runAgent({ agent: agentFor(s), cwd: wt[s.name], prompt: brief(s, sessions, regen, test), model, budget }));
+  const lanes = await staggered(sessions, (s) => runAgent({ agent: agentFor(s), cwd: wt[s.name], prompt: brief(s, sessions, regen, test, "", root), model: modelFor(s), budget }));
   sessions.forEach((s, i) => track("lane", s.name, lanes[i]));
   const session = Object.fromEntries(sessions.map((s, i) => [s.name, lanes[i].sessionId]));
   sessions.forEach((s, i) => {
     const { reverted } = commitLane(wt[s.name], sessions, s, regen, `fanout: ${s.name}`);
-    log(`${s.name}: done in ${lanes[i].seconds}s${lanes[i].error ? `, agent error: ${lanes[i].error}` : ""}${reverted.length ? `, reverted out-of-lane: ${reverted.join(", ")}` : ""}`);
+    log(`${s.name}: done in ${lanes[i].seconds}s${lanes[i].fellBack ? ", ran with your user settings (a project-only start failed)" : ""}${lanes[i].error ? `, agent error: ${lanes[i].error}` : ""}${reverted.length ? `, reverted out-of-lane: ${reverted.join(", ")}` : ""}`);
   });
 
   phase("sessions");
@@ -298,8 +324,8 @@ export async function cli(argv) {
     }
     const report = `Your branch was merged with the others in plan order and it broke:\n${r.log.join("\n")}\n\nFix it within the files you may change.`;
     // Resume the lane's own session with just the break report; if that fails, send the full brief again.
-    const fix = await runAgent({ agent: agentFor(s), cwd: wt[name], model, budget, resume: session[name], prompt: report,
-      fallbackPrompt: brief(s, sessions, regen, test, `\n${report}`) });
+    const fix = await runAgent({ agent: agentFor(s), cwd: wt[name], model: modelFor(s), budget, resume: session[name], prompt: report,
+      fallbackPrompt: brief(s, sessions, regen, test, `\n${report}`, root) });
     session[name] = fix.sessionId ?? session[name];
     track("fix", name, fix);
     commitLane(wt[name], sessions, s, regen, `fanout: fix ${name}`);

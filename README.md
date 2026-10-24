@@ -177,7 +177,7 @@ Breaks still happened with fanout, but `rehearse` caught them before `main` and 
 
 Parallel agents aren't free. Each one loads and reads the code on its own, so splitting work only pays when the work is big enough.
 
-**Use one agent** unless each part is substantial. In our benchmarks, one agent did four small tasks about 3× faster and cheaper than four parallel agents, and six medium features (21 hidden tests, all passed either way) about 2.5× faster and cheaper than six. Each parallel agent pays its own startup and reading time, roughly 100 seconds, so parts need to take minutes, not seconds, before splitting pays off.
+**Use one agent** unless each part is substantial. On our six-feature benchmark (21 hidden tests, passed by every setup), one Sonnet agent finished in about 1m 40s for $0.25; six agents with fanout took about 2m 45s. Each parallel agent pays its own start-up and reading time, roughly a minute, so parts need to take several minutes each before splitting saves time. Running the sessions on a cheaper model brings the cost down to about $0.15 ([full results](bench/RESULTS.md)).
 
 **Use fanout** when:
 - the job is big enough that one agent would take a long time, and it splits into parts with their own files;
@@ -195,7 +195,10 @@ No. The plan is the only file, and your agent writes it.
 No. It only acts on branches named `fanout/*`.
 
 **Will it burn tokens?**
-fanout's checks don't: they're plain scripts with no AI calls, and a failure report is a few lines, not a full log. Running several agents does cost more than one, so split work only when it's big enough (see [When to use it](#when-to-use-it)). The planning step is the largest single cost of a `fanout run`; inside Claude Code, your own session plans for free.
+fanout's checks don't: they're plain scripts with no AI calls, and a failure report is a few lines, not a full log. Running several agents does cost more than one, so split work only when it's big enough (see [When to use it](#when-to-use-it)). The planning step is the largest single cost of a `fanout run`; inside Claude Code, your own session plans for free. To cut a run's cost about 4×, plan with your strongest model and run the sessions on a cheaper one: `fanout run "<goal>" --session-model haiku`. That held on our benchmark's well-specified tasks; check the results on fuzzier work before making it your default.
+
+**Does `fanout run` use my personal Claude settings?**
+Its session agents start with your project's settings only, which makes each start several seconds faster and cheaper: your personal hooks, plugins and global `CLAUDE.md` aren't loaded, and fanout's own guard is loaded directly. If an agent can't start that way (for example your provider or API key setup lives in your user settings), fanout retries it with your settings and says so. Set `FANOUT_USER_SETTINGS=1` to always use them.
 
 **Can I mix Claude Code and Codex?**
 Yes. Sessions are just git branches. Run some in Claude, some in Codex, or headless (`claude -p`, `codex exec`).

@@ -1,9 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runAgent } from "../skills/fanout/run.mjs";
+import { runAgent, brief, plannerPrompt, staggered } from "../skills/fanout/run.mjs";
+import { parsePlan } from "../skills/fanout/fanout.mjs";
+import { scrub } from "../bench/scrub.mjs";
+import { execFileSync, spawnSync } from "node:child_process";
 
 // A fake claude/codex: logs its args and stdin as one JSON line, then answers like the real CLI would.
 const dir = mkdtempSync(join(tmpdir(), "fanout-run-"));
@@ -15,6 +18,7 @@ const args = process.argv.slice(2), stdin = readFileSync(0, "utf8");
 appendFileSync(${JSON.stringify(logFile)}, JSON.stringify({ args, stdin }) + "\\n");
 const resuming = args.includes("--resume") || args.includes("resume");
 if (resuming && process.env.FAKE_FAIL_RESUME) { console.log(JSON.stringify({ is_error: true, result: "no such session" })); process.exit(1); }
+if (process.env.FAKE_FAIL_LEAN && args.includes("--setting-sources")) { console.log(JSON.stringify({ is_error: true, result: "auth failed", num_turns: Number(process.env.FAKE_FAIL_LEAN) - 1 || undefined })); process.exit(1); }
 if (args[0] === "exec") {
   console.log(JSON.stringify({ type: "thread.started", thread_id: "thread-7" }));
   console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 5, output_tokens: 2 } }));
@@ -27,6 +31,8 @@ const useFake = () => {
   writeFileSync(logFile, "");
   process.env.FANOUT_CLAUDE_BIN = process.env.FANOUT_CODEX_BIN = `node "${fake}"`;
   delete process.env.FAKE_FAIL_RESUME;
+  delete process.env.FAKE_FAIL_LEAN;
+  delete process.env.FANOUT_USER_SETTINGS;
 };
 
 test("claude run records session id and uses the slim tool set", async () => {
@@ -82,4 +88,98 @@ test("shell-command agents have no session to resume", async () => {
   const r = await runAgent({ agent: `node -e "process.stdin.resume()"`, cwd: dir, prompt: "x" });
   assert.equal(r.sessionId, null);
   assert.equal(r.error, null);
+});
+
+test("claude agents start lean: project settings only, fanout's guard loaded directly", async () => {
+  useFake();
+  await runAgent({ agent: "claude", cwd: dir, prompt: "x" });
+  const [lean] = calls();
+  assert.equal(lean.args[lean.args.indexOf("--setting-sources") + 1], "project,local");
+  assert.ok(lean.args.includes("--plugin-dir"));
+  assert.ok(lean.args[lean.args.indexOf("--allowedTools") + 1].includes("Bash(tail:*)"));
+  useFake();
+  process.env.FANOUT_USER_SETTINGS = "1";
+  await runAgent({ agent: "claude", cwd: dir, prompt: "x" });
+  assert.ok(!calls()[0].args.includes("--setting-sources"));
+  delete process.env.FANOUT_USER_SETTINGS;
+});
+
+test("a lean start that fails before doing anything retries with the user's settings", async () => {
+  useFake();
+  process.env.FAKE_FAIL_LEAN = "1"; // fails with no turns, like a missing login or provider setting
+  const r = await runAgent({ agent: "claude", cwd: dir, prompt: "brief" });
+  assert.equal(r.error, null);
+  assert.equal(r.fellBack, true);
+  const [first, second] = calls();
+  assert.ok(first.args.includes("--setting-sources"));
+  assert.ok(!second.args.includes("--setting-sources"));
+  assert.ok(second.args.includes("--plugin-dir"), "the guard still loads on the fallback");
+  assert.equal(second.stdin, "brief");
+});
+
+test("a lean run that failed after doing work is not retried", async () => {
+  useFake();
+  process.env.FAKE_FAIL_LEAN = "4"; // failed after 3 turns: a real failure, not a setup problem
+  const r = await runAgent({ agent: "claude", cwd: dir, prompt: "brief" });
+  assert.match(r.error, /auth failed/);
+  assert.equal(calls().length, 1);
+});
+
+test("brief pastes small contracts, names large ones, skips globs", () => {
+  const root = mkdtempSync(join(tmpdir(), "fanout-brief-"));
+  mkdirSync(join(root, "src"));
+  writeFileSync(join(root, "src/types.mjs"), "export const Money = 1;\n");
+  writeFileSync(join(root, "src/big.mjs"), "x".repeat(9000));
+  const [a, b] = parsePlan("## a\nowns: src/types.mjs\nexposes: src/types.mjs\n## b\nowns: src/b.mjs\nuses: src/types.mjs, src/gen/**\ntask: build b\n");
+  const small = brief(b, [a, b], [], "npm test", "", root);
+  assert.match(small, /--- src\/types\.mjs\nexport const Money = 1;/);
+  assert.match(small, /Task: build b/);
+  b.uses = ["src/big.mjs"];
+  const large = brief(b, [a, b], [], "npm test", "", root);
+  assert.match(large, /src\/big\.mjs/);
+  assert.doesNotMatch(large, /xxxxxxxx/);
+  assert.doesNotMatch(brief(b, [a, b], [], "npm test"), /---/); // no root: nothing pasted
+});
+
+test("planner prompt carries the plan rules, the file list and the goal", () => {
+  const root = mkdtempSync(join(tmpdir(), "fanout-plan-"));
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  writeFileSync(join(root, "app.js"), "");
+  execFileSync("git", ["add", "-A"], { cwd: root });
+  const p = plannerPrompt({ goal: "add coupons", base: "main", root, extra: "Use two sessions." });
+  for (const want of ["owns:", "exposes:", "fanout.mjs", "app.js", "Goal: add coupons", "Use two sessions.", "commit (\"fanout: contracts\")"])
+    assert.ok(p.includes(want), want);
+});
+
+test("staggered starts agents a gap apart, in order, and keeps results in order", async () => {
+  const started = [];
+  const t0 = Date.now();
+  const out = await staggered(["a", "b", "c"], async (x) => { started.push([x, Date.now() - t0]); return x.toUpperCase(); }, 40);
+  assert.deepEqual(out, ["A", "B", "C"]);
+  assert.deepEqual(started.map(([x]) => x), ["a", "b", "c"]);
+  assert.ok(started[2][1] >= 70, `third started at ${started[2][1]}ms`);
+});
+
+test("scrub replaces temp and home folders in every spelling", () => {
+  const dirs = [["C:\\Users\\pat\\AppData\\Local\\Temp", "<tmp>"], ["C:\\Users\\pat", "~"]];
+  const text = String.raw`cd C:\Users\pat\AppData\Local\Temp\x; cat C:/Users/pat/notes; ls /c/Users/pat; "C:\\Users\\pat\\AppData\\Local\\Temp\\y"`;
+  const s = scrub(text, dirs);
+  assert.doesNotMatch(s, /pat/);
+  assert.match(s, /<tmp>\\x/);
+  assert.match(s, /~\/notes/);
+});
+
+test("fanout run uses each session's model, then --session-model, for session agents", () => {
+  useFake();
+  const repo = mkdtempSync(join(tmpdir(), "fanout-models-"));
+  const g = (...a) => execFileSync("git", a, { cwd: repo, stdio: "ignore" });
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(repo, "x.txt"), "1"); g("add", "-A"); g("commit", "-qm", "init");
+  mkdirSync(join(repo, ".fanout"));
+  writeFileSync(join(repo, ".fanout/plan.md"), "## a\nowns: a.txt\ntask: a\nmodel: haiku\n\n## b\nowns: b.txt\ntask: b\n");
+  const r = spawnSync(process.execPath, [join(import.meta.dirname, "../skills/fanout/fanout.mjs"), "run", "--yes", "--model", "opus", "--session-model", "sonnet"],
+    { cwd: repo, encoding: "utf8", env: { ...process.env, FANOUT_STAGGER_MS: "0" } });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const models = Object.fromEntries(calls().map((c) => [c.stdin.match(/session "(\w+)"/)?.[1], c.args[c.args.indexOf("--model") + 1]]));
+  assert.deepEqual(models, { a: "haiku", b: "sonnet" });
 });
