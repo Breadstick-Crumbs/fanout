@@ -391,3 +391,29 @@ test("verify uses the branch name and the default plan", () => {
   assert.equal(r.status, 1);
   assert.match(r.stdout, /OUT OF LANE s: x\.txt/);
 });
+
+test("status: table, last results, from a lane worktree, and no plan", () => {
+  const d = dir();
+  const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(d, "x.txt"), "1"); g("add", "-A"); g("commit", "-qm", "init");
+  writeFileSync(join(d, ".git/info/exclude"), ".fanout/\n");
+  const none = run(["status"], { cwd: d });
+  assert.equal(none.status, 0);
+  assert.match(none.stdout, /No plan/);
+  mkdirSync(join(d, ".fanout"));
+  writeFileSync(join(d, ".fanout/plan.md"), "## a\nowns: a.txt\n## b\nowns: b.txt\n");
+  const lane = join(d, ".fanout/lanes/a");
+  g("worktree", "add", "-q", "-b", "fanout/a", lane, "main");
+  writeFileSync(join(lane, "a.txt"), "a"); writeFileSync(join(lane, "stray.txt"), "s");
+  execFileSync("git", ["add", "-A"], { cwd: lane }); execFileSync("git", ["commit", "-qm", "a"], { cwd: lane });
+  writeFileSync(join(d, ".fanout/log.jsonl"), JSON.stringify({ at: "2026-01-02T03:04:05Z", kind: "rehearse", result: "pass" }) + "\n");
+  for (const cwd of [d, lane]) {
+    const r = run(["status"], { cwd });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^a\s+fanout\/a\s+1\s+2\s+yes\s+out of lane 1$/m);
+    assert.match(r.stdout, /^b\s+not started\s+-\s+-\s+no\s+-$/m);
+    assert.match(r.stdout, /last run: none/);
+    assert.match(r.stdout, /last rehearse: 2026-01-02 03:04  pass/);
+  }
+});
