@@ -249,6 +249,35 @@ test("git hook: staged out-of-lane, contract and generated files are refused on 
   assert.equal(run(["install-git-hook"], { cwd: d }).status, 1); // someone else's hook: left alone
 });
 
+test("run: lanes in parallel, out-of-lane work reverted, a break goes back to its lane, then merged", () => {
+  const d = dir();
+  const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(d, "test.mjs"), 'import { existsSync } from "node:fs";\nif (existsSync("b.mjs")) { const { b } = await import("./b.mjs"); if (b !== 2) { console.error("b is " + b); process.exit(1); } }\n');
+  g("add", "-A"); g("commit", "-qm", "init");
+  // A stand-in agent: writes its lane's file from the brief; b gets it wrong until told it broke.
+  const fake = join(dir(), "agent.mjs");
+  writeFileSync(fake, `import { readFileSync, writeFileSync } from "node:fs";
+const brief = readFileSync(0, "utf8"), name = brief.match(/session "(\\w+)"/)[1];
+if (name === "a") { writeFileSync("a.mjs", "export const a = 1\\n"); writeFileSync("stray.txt", "not mine"); }
+if (name === "b") writeFileSync("b.mjs", 'import { a } from "./a.mjs"\\nexport const b = a + ' + (brief.includes("it broke") ? 1 : 2) + "\\n");
+`);
+  mkdirSync(join(d, ".fanout"));
+  writeFileSync(join(d, ".fanout/plan.md"), "test: node test.mjs\n\n## a\nowns: a.mjs\nexposes: a.mjs\ntask: export a = 1\n\n## b\nowns: b.mjs\nuses: a.mjs\ntask: export b = a + 1\n");
+  // a.mjs is a contract, so it has to exist on main before the lanes start.
+  writeFileSync(join(d, "a.mjs"), "export const a = 1\n"); g("add", "a.mjs"); g("commit", "-qm", "contract");
+  const ask = run(["run"], { cwd: d, input: "" });
+  assert.equal(ask.status, 0);
+  assert.match(ask.stdout, /Run again with --yes/);
+  const r = run(["run", "--yes", "--agent", `node "${fake}"`], { cwd: d });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /a: done in \d+s, reverted out-of-lane: stray\.txt/);
+  assert.match(r.stdout, /rehearse: BROKE after b/);
+  assert.match(r.stdout, /merged into main: a -> b \(3 agent runs, 1 fixes/);
+  assert.equal(execFileSync(process.execPath, ["-e", 'import("./b.mjs").then((m) => console.log(m.b))'], { cwd: d, encoding: "utf8" }).trim(), "2");
+  assert.equal(execFileSync("git", ["branch", "--list", "fanout/*"], { cwd: d, encoding: "utf8" }).trim(), "");
+});
+
 test("verify uses the branch name and the default plan", () => {
   const d = dir();
   const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });

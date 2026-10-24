@@ -17,20 +17,25 @@ Split work so parallel sessions can't collide. The script `fanout.mjs` sits next
    ## foundations
    owns: src/types.ts, src/db/**
    exposes: src/types.ts
+   task: store money as integer cents plus a currency code everywhere in the db layer
    done: money is integer cents plus currency; typecheck passes
 
    ## money
    owns: src/present.ts, src/components/MatchCard.tsx
    uses: src/types.ts
+   task: show prices in the user's currency on match cards
    done: no hard-coded currency left
+   agent: codex
    ```
    - **Above the first `##`, once for the whole plan:** `test: <command>` (the project's full test command; rehearse runs it) and one `regen: <paths> via <command>` line per set of generated files every session would otherwise touch (codegen output, barrel/index files, API clients, lockfiles, snapshots). No session owns those; they are rebuilt after merging. Omit `regen:` if there are none.
-   - **In each session, only these fields:** `owns` (required: paths or globs, each owned by exactly one session), `exposes`, `uses`, `after`, `done`.
+   - **In each session, only these fields:** `owns` (required: paths or globs, each owned by exactly one session), `task` (one line: what this session builds), `done`, `exposes`, `uses`, `after`, and optionally `agent` (`claude`, `codex`, or a command that takes the brief on stdin) to run that session in a different agent.
    - **Contracts:** a file several sessions depend on (types, function signatures, schema) is listed under `exposes:` by its owner and `uses:` by each session that depends on it; `uses` also sets the merge order. Contracts are the real code files, not a separate notes document. Keep them to interfaces only.
 
 2. **Check.** `node fanout.mjs check`. If it prints CLASH, UNKNOWN, CYCLE, EXPOSES, USES, REGEN or PLAN, fix the plan and run it again. If it prints a NOTE, fix that too unless the project really has no tests. When it passes, show the user the plan and the merge order and get a yes.
 
 3. **Contracts.** If the plan exposes anything, write those files on main yourself before starting: types, function signatures, stubs that throw "not implemented". Commit them. Every session now builds against real interfaces instead of guessing. From here on they are frozen on all `fanout/*` branches, the owner's included. If a session needs one changed, it asks; you change it on main, commit, and tell the sessions that use it to merge main.
+
+**Fastest path from here:** once the plan passes check and the contracts are committed, run `node fanout.mjs run --yes`. It does steps 4 to 6 by itself: starts every session in parallel (headless, in `.fanout/lanes/<name>`), commits their work, rehearses, sends each break back to the session that caused it, merges in order and tests. It stops and says so only if a session still breaks after two fixes. Use the manual steps below when the host gives you better parallel sessions than headless runs, or to drive a session by hand.
 
 4. **Start.** For each session: `git worktree add -b fanout/<name> ../<repo>-<name> main` (the branch must be exactly `fanout/<name>`), then start an agent in that folder with a brief: owned paths, done-when, what not to touch, typecheck and own tests only, no deploy, commit when done. Tell it to read only its `uses` files from other sessions' code, not to explore the rest. Use whatever the host offers for parallel sessions; otherwise run each headless in the background: `claude -p "<brief>"` or `codex exec "<brief>"` from the worktree. Sessions can be any mix of agents.
 

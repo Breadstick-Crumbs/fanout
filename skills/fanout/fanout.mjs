@@ -5,12 +5,13 @@
 //   fanout rehearse [plan.md] [--base main] [--test cmd]   merge every branch in order on a scratch worktree, test after each
 //   fanout guard                                    PreToolUse hook (installed by the plugin)
 //   fanout install-git-hook [--force]               same rules as a git pre-commit hook, for agents outside Claude Code
-import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from "node:fs";
+//   fanout run ["goal"] [--yes] [--agent claude|codex|"<cmd>"]   do the whole fan-out: plan, agents, rehearse, fix, merge (see run.mjs)
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync, realpathSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { resolve, relative, isAbsolute, join, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
-const SESSION_KEYS = ["owns", "after", "exposes", "uses", "done", "model"];
+const SESSION_KEYS = ["owns", "after", "exposes", "uses", "done", "task", "agent", "model"];
 const PLAN_KEYS = ["test", "regen"];
 
 export function parsePlan(text) {
@@ -20,7 +21,8 @@ export function parsePlan(text) {
     const get = (k) => (rest.find((l) => l.startsWith(k + ":")) ?? "").slice(k.length + 1).trim();
     const list = (k) => get(k).split(",").map((s) => s.trim()).filter(Boolean);
     const keys = rest.map((l) => l.match(/^([A-Za-z_-]+):/)?.[1]).filter(Boolean);
-    sessions.push({ name: name.trim(), owns: list("owns"), after: list("after"), exposes: list("exposes"), uses: list("uses"), keys });
+    sessions.push({ name: name.trim(), owns: list("owns"), after: list("after"), exposes: list("exposes"), uses: list("uses"),
+      task: get("task"), done: get("done"), agent: get("agent"), keys });
   }
   return sessions;
 }
@@ -171,7 +173,7 @@ function currentSession(cwd) {
     return b.startsWith(BRANCH_PREFIX) ? b.slice(BRANCH_PREFIX.length) : null;
   } catch { return null; }
 }
-function mainRoot(cwd) {
+export function mainRoot(cwd) {
   try { return resolve(git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd).trim(), ".."); }
   catch { return cwd; }
 }
@@ -221,6 +223,7 @@ const explicitPlan = (argv) => (argv[1] && !argv[1].startsWith("--") ? argv[1] :
 function main(argv) {
   const cmd = argv[0];
   if (cmd === "guard") return guard(argv);
+  if (cmd === "run") return import("./run.mjs").then((m) => m.cli(argv.slice(1)));
   const cwd = resolve(arg(argv, "--cwd", process.cwd()));
   if (cmd === "precommit") return precommit(cwd);
   if (cmd === "install-git-hook") return installHook(cwd, argv.includes("--force"));
@@ -329,4 +332,6 @@ exec node "$script" precommit
   return 0;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) process.exit(main(process.argv.slice(2)));
+// Run when executed directly, including through an npm/npx bin link (argv[1] is then the link).
+const isMain = () => { try { return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href; } catch { return false; } };
+if (isMain()) Promise.resolve(main(process.argv.slice(2))).then((code) => process.exit(code));

@@ -7,12 +7,13 @@
 //
 //   node bench/run.mjs [baseline|fanout|both] [--dry] [--model sonnet] [--budget 1] [--codex-lane receipt|none]
 // --dry swaps every agent for a no-op (the coordinator writes a canned plan) to test the plumbing.
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { cpSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parsePlan, parseRegen, blockReason } from "../skills/fanout/fanout.mjs";
+import { runAgent } from "../skills/fanout/run.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FANOUT = join(ROOT, "skills", "fanout", "fanout.mjs");
@@ -35,54 +36,12 @@ const tail = (s, n = 15) => s.trimEnd().split("\n").slice(-n).join("\n");
 const npmTest = (cwd) => run(process.execPath, ["--test", "test/*.test.mjs"], cwd);
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
-// One agent call. Returns cost/tokens/time; never throws.
-function agent({ lane, role, cwd, prompt, plugin = false, allowGit = false, dryAction }) {
+// One agent call via fanout's own runner (skills/fanout/run.mjs). Never throws.
+async function agent({ lane, role, cwd, prompt, plugin = false, allowGit = false, dryAction }) {
   const kind = lane === CODEX_LANE && role !== "coordinator" && role !== "integrator" ? "codex" : "claude";
-  const rec = { role, lane, kind, seconds: 0, costUsd: 0, inTokens: 0, outTokens: 0, error: null };
-  const t0 = Date.now();
-  return new Promise((done) => {
-    if (DRY) { dryAction?.(); rec.seconds = 0; return done(rec); }
-    let cmd, args;
-    if (kind === "claude") {
-      const tools = ["Read", "Edit", "Write", "Glob", "Grep", "Bash(node:*)", "Bash(npm:*)", ...(allowGit ? ["Bash(git:*)"] : [])];
-      cmd = "claude";
-      args = ["-p", "--model", MODEL, "--permission-mode", "acceptEdits", "--allowedTools", `"${tools.join(",")}"`,
-        "--output-format", "json", "--max-budget-usd", BUDGET, "--strict-mcp-config", ...(plugin ? ["--plugin-dir", `"${ROOT}"`] : [])];
-    } else {
-      cmd = "codex";
-      args = ["exec", "--json", "-s", "workspace-write", "--skip-git-repo-check", "-C", `"${cwd}"`];
-    }
-    const p = spawn(cmd, args, { cwd, shell: process.platform === "win32" });
-    let out = "";
-    p.stdout.on("data", (d) => (out += d));
-    p.stderr.on("data", (d) => (out += d));
-    p.stdin.end(prompt);
-    p.on("close", (code) => {
-      rec.seconds = Math.round((Date.now() - t0) / 1000);
-      try {
-        if (kind === "claude") {
-          const j = JSON.parse(out.slice(out.indexOf("{")));
-          rec.costUsd = j.total_cost_usd ?? 0;
-          const u = j.usage ?? {};
-          rec.inTokens = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
-          rec.outTokens = u.output_tokens ?? 0;
-          if (j.is_error) rec.error = String(j.result ?? j.subtype).slice(0, 200);
-        } else {
-          for (const line of out.split("\n")) {
-            if (!line.startsWith("{")) continue;
-            const e = JSON.parse(line);
-            if (e.type === "turn.completed" && e.usage) {
-              rec.inTokens += e.usage.input_tokens ?? 0;
-              rec.outTokens += e.usage.output_tokens ?? 0;
-            }
-            if (e.type === "error" || e.type === "turn.failed") rec.error = JSON.stringify(e).slice(0, 200);
-          }
-        }
-      } catch { rec.error = `exit ${code}: ${tail(out, 3)}`.slice(0, 300); }
-      if (code !== 0 && !rec.error) rec.error = `exit ${code}`;
-      done(rec);
-    });
-  });
+  if (DRY) { dryAction?.(); return { role, lane, kind, seconds: 0, costUsd: 0, inTokens: 0, outTokens: 0, error: null }; }
+  const r = await runAgent({ agent: kind, cwd, prompt, plugin, allowGit, model: kind === "claude" ? MODEL : undefined, budget: kind === "claude" ? BUDGET : undefined });
+  return { role, lane, kind, ...r };
 }
 
 function setup(name) {
