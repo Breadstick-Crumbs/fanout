@@ -6,7 +6,8 @@
 //   fanout guard                                    PreToolUse hook (installed by the plugin)
 //   fanout install-git-hook [--force]               same rules as a git pre-commit hook, for agents outside Claude Code
 //   fanout run ["goal"] [--yes] [--agent claude|codex|"<cmd>"]   do the whole fan-out: plan, agents, rehearse, fix, merge (see run.mjs)
-//   fanout log [--last 20]                          past runs and rehearsals from .fanout/log.jsonl: time, cost, fixes, test runs
+//   fanout status [--base main]                     one table: each session's branch, commits, files, worktree, verify flags, last run and rehearse
+//   fanout log [--last 20]                         past runs and rehearsals from .fanout/log.jsonl: time, cost, fixes, test runs
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, chmodSync, existsSync, realpathSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { resolve, relative, isAbsolute, join, dirname } from "node:path";
@@ -273,7 +274,40 @@ function showLog(cwd, limit = 20) {
   }
   return 0;
 }
-const explicitPlan = (argv) => (argv[1] && !argv[1].startsWith("--") ? argv[1] : null);
+// Reads only existing state (plan, branches, lanes, log); works from the main checkout or any lane worktree.
+function showStatus(cwd, base) {
+  const root = mainRoot(cwd);
+  let text;
+  try { text = readFileSync(join(root, ".fanout", "plan.md"), "utf8"); } catch { console.log("No plan"); return 0; }
+  const sessions = parsePlan(text), regen = parseRegen(text);
+  if (!sessions.length) { console.log("No plan"); return 0; }
+  const rows = [["session", "branch", "ahead", "files", "worktree", "verify"]];
+  for (const s of sessions) {
+    const branch = BRANCH_PREFIX + s.name, lane = existsSync(join(root, ".fanout", "lanes", s.name)) ? "yes" : "no";
+    try { git(["rev-parse", "--verify", "--quiet", "refs/heads/" + branch], root); }
+    catch { rows.push([s.name, "not started", "-", "-", lane, "-"]); continue; }
+    try {
+      const ahead = git(["rev-list", "--count", `${base}..${branch}`], root).trim();
+      const changed = git(["diff", "--name-only", `${base}...${branch}`], root).split("\n").filter(Boolean);
+      const contracts = contractChanges(sessions, changed);
+      const frozen = contracts.filter((f) => contractOwner(sessions, f).name !== s.name);
+      const generated = changed.filter((f) => regenFor(regen, f));
+      const out = verify(s, changed).filter((f) => !contracts.includes(f) && !generated.includes(f));
+      const flags = [out.length && `out of lane ${out.length}`, frozen.length && `contract ${frozen.length}`, generated.length && `generated ${generated.length}`].filter(Boolean);
+      rows.push([s.name, branch, ahead, String(changed.length), lane, flags.join(", ") || "ok"]);
+    } catch { rows.push([s.name, branch, "?", "?", lane, `no base ${base}`]); }
+  }
+  const w = rows[0].map((_, i) => Math.max(...rows.map((r) => r[i].length)));
+  rows.forEach((r) => console.log(r.map((c, i) => c.padEnd(w[i])).join("  ").trimEnd()));
+  let recs = [];
+  try { recs = readFileSync(join(root, ".fanout", "log.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean); } catch { /* none yet */ }
+  for (const kind of ["run", "rehearse"]) {
+    const r = recs.findLast((x) => x.kind === kind);
+    console.log(`last ${kind}: ${r ? `${r.at.slice(0, 16).replace("T", " ")}  ${r.result ?? ""}` : "none"}`);
+  }
+  return 0;
+}
+const explicitPlan =(argv) => (argv[1] && !argv[1].startsWith("--") ? argv[1] : null);
 
 function main(argv) {
   const cmd = argv[0];
@@ -282,8 +316,9 @@ function main(argv) {
   const cwd = resolve(arg(argv, "--cwd", process.cwd()));
   if (cmd === "precommit") return precommit(cwd);
   if (cmd === "install-git-hook") return installHook(cwd, argv.includes("--force"));
+  if (cmd === "status") return showStatus(cwd, arg(argv, "--base", "main"));
   if (cmd === "log") return showLog(cwd, Number(arg(argv, "--last", "20")));
-  if (!["check", "verify", "rehearse"].includes(cmd)) { console.error("usage: fanout check [plan.md] | verify [--session name] [--base main] | rehearse [--base main] [--test cmd] | run [\"goal\"] [--yes] | log [--last 20] | install-git-hook [--force] | guard"); return 2; }
+  if (!["check", "verify", "rehearse"].includes(cmd)) { console.error("usage: fanout check [plan.md] | verify [--session name] [--base main] | rehearse [--base main] [--test cmd] | run [\"goal\"] [--yes] | status [--base main] | log [--last 20] | install-git-hook [--force] | guard"); return 2; }
   const planPath = explicitPlan(argv) ?? defaultPlan(cwd);
   let text;
   try { text = readFileSync(planPath, "utf8"); } catch { console.error(`No plan at ${planPath}`); return 2; }
