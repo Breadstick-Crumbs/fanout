@@ -1,0 +1,133 @@
+[
+  {
+    "condition": "baseline",
+    "agents": [
+      {
+        "role": "lane",
+        "lane": "currency",
+        "kind": "claude",
+        "seconds": 61,
+        "costUsd": 0.13946420000000004,
+        "inTokens": 253699,
+        "outTokens": 4432,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "discounts",
+        "kind": "claude",
+        "seconds": 50,
+        "costUsd": 0.1323375,
+        "inTokens": 336970,
+        "outTokens": 3247,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "receipt",
+        "kind": "codex",
+        "seconds": 225,
+        "costUsd": 0,
+        "inTokens": 398230,
+        "outTokens": 1516,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "tax",
+        "kind": "claude",
+        "seconds": 40,
+        "costUsd": 0.098337,
+        "inTokens": 245755,
+        "outTokens": 1589,
+        "error": null
+      },
+      {
+        "role": "integrator",
+        "lane": "-",
+        "kind": "claude",
+        "seconds": 67,
+        "costUsd": 0.21846150000000003,
+        "inTokens": 610440,
+        "outTokens": 6814,
+        "error": null
+      }
+    ],
+    "conflicts": [
+      "discounts",
+      "tax"
+    ],
+    "brokeAfter": [
+      "receipt"
+    ],
+    "repairCommits": 4,
+    "finalTestsPass": true
+  },
+  {
+    "condition": "fanout",
+    "agents": [
+      {
+        "role": "coordinator",
+        "lane": "-",
+        "kind": "claude",
+        "seconds": 61,
+        "costUsd": 0.18770030000000001,
+        "inTokens": 453236,
+        "outTokens": 5875,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "currency",
+        "kind": "claude",
+        "seconds": 106,
+        "costUsd": 0.11871150000000001,
+        "inTokens": 252082,
+        "outTokens": 3461,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "discounts",
+        "kind": "claude",
+        "seconds": 52,
+        "costUsd": 0.09901420000000001,
+        "inTokens": 205485,
+        "outTokens": 2481,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "receipt",
+        "kind": "codex",
+        "seconds": 107,
+        "costUsd": 0,
+        "inTokens": 145839,
+        "outTokens": 953,
+        "error": null
+      },
+      {
+        "role": "lane",
+        "lane": "tax",
+        "kind": "claude",
+        "seconds": 52,
+        "costUsd": 0.0929708,
+        "inTokens": 247334,
+        "outTokens": 1668,
+        "error": null
+      }
+    ],
+    "conflicts": [],
+    "brokeAfter": [],
+    "repairCommits": 0,
+    "rehearsals": [
+      "OK after receipt\nOK after tax\nAll branches merge and pass together."
+    ],
+    "blockedFiles": [
+      "receipt: src/index.mjs",
+      "tax: src/index.mjs"
+    ],
+    "plan": "test: npm test\nregen: src/index.mjs via npm run gen\n\n## currency\nowns: src/types.mjs, src/format.mjs, test/cart.test.mjs, test/currency.test.mjs\nexposes: src/types.mjs, src/format.mjs\ndone: prices are integer cents plus ISO currency (default USD); formatting handles currencies; existing behaviour and tests still pass\n\n## discounts\nowns: src/cart.mjs, test/discounts.test.mjs\nuses: src/types.mjs\ndone: applyCoupon(cart, code) with SAVE10 and FLAT5; total(cart) returns integer cents reflecting the coupon, never below zero\n\n## receipt\nowns: src/receipt.mjs, test/receipt.test.mjs\nuses: src/types.mjs, src/format.mjs\ndone: receipt(cart) returns item lines and a final Total line, prices via formatPrice\n\n## tax\nowns: src/tax.mjs, test/tax.test.mjs\nuses: src/types.mjs\ndone: taxFor(cart, region) returns integer cents, CA 7.25%, NY 4%, else 0, applied to total(cart)\n",
+    "finalTestsPass": true
+  }
+]

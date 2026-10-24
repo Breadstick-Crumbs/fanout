@@ -141,14 +141,14 @@ node skills/fanout/fanout.mjs install-git-hook   # enforce the plan on every com
 
 We ran the same four overlapping tasks with four parallel agents, with and without fanout ([full results](bench/RESULTS.md)):
 
-| | Without fanout (3 runs) | With fanout (2 runs) |
+| | Without fanout (4 runs) | With fanout (3 runs) |
 |---|---|---|
 | Conflicts merging into `main` | 2 every run | 0 |
 | Merges that broke tests | 1 every run | 0 |
 | Repair commits on `main` | 4 every run | 0 |
-| Cost per run | $0.61–$0.63 | $0.55–$0.92 |
+| Claude cost per run | $0.59–$0.63 | $0.50–$0.92 |
 
-Breaks still happened with fanout, but `rehearse` caught them before `main`, and the agent that caused each one fixed it. It's a small benchmark: rerun it with `node bench/run.mjs both`.
+Breaks still happened with fanout, but `rehearse` caught them before `main`, and the agent that caused each one fixed it. One pair of runs mixed Claude and Codex agents, with the same result. It's a small benchmark: rerun it with `node bench/run.mjs both`.
 
 ## FAQ
 
