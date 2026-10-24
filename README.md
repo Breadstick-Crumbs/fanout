@@ -24,7 +24,7 @@ flowchart TD
     you(["You: split this into parallel sessions"])
     plan["<b>Plan</b><br/>each agent gets its own files<br/>you approve it once"]
     contracts["<b>Contracts</b><br/>shared types written on main first, then frozen"]
-    subgraph lanes["Agents work in parallel. Edits outside their own files are blocked."]
+    subgraph lanes[" "]
         a1["Agent 1<br/>fanout/foundations"]
         a2["Agent 2<br/>fanout/money"]
         a3["Agent 3<br/>fanout/landing"]
@@ -33,8 +33,10 @@ flowchart TD
     fix["The agent that broke it gets a short report<br/>and fixes its own branch"]
     merged(["main: merged in the right order, nothing new breaks"])
 
-    you --> plan --> contracts --> lanes
-    lanes --> rehearse
+    you --> plan --> contracts
+    contracts --> a1 & a3
+    contracts -- "in parallel, each locked to its own files" --> a2
+    a1 & a2 & a3 --> rehearse
     rehearse -- "break found" --> fix --> rehearse
     rehearse -- "all green" --> merged
 ```
