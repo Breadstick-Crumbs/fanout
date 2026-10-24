@@ -5,7 +5,7 @@ import { writeFileSync, mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parsePlan, matches, check, verify } from "../skills/fanout/fanout.mjs";
+import { parsePlan, parseRegen, matches, check, verify } from "../skills/fanout/fanout.mjs";
 
 const script = fileURLToPath(new URL("../skills/fanout/fanout.mjs", import.meta.url));
 const dir = () => mkdtempSync(join(tmpdir(), "fanout-"));
@@ -169,6 +169,57 @@ test("rehearse: reports a textual conflict and the files", () => {
   assert.equal(r.status, 1);
   assert.match(r.stdout, /MERGED a/);
   assert.match(r.stdout, /CONFLICT merging b: x\.txt/);
+});
+
+test("regen: parsed, no session may own it, guard blocks it, rehearse rebuilds it", () => {
+  assert.deepEqual(parseRegen("regen: gen/**, api.d.ts via npm run codegen\n## a\nowns: a\n"), [{ paths: ["gen/**", "api.d.ts"], cmd: "npm run codegen" }]);
+  const bad = check(parsePlan("## a\nowns: gen/**\n"), null, parseRegen("regen: gen/x.ts\nregen: gen/** via x\n")).problems.join("\n");
+  assert.match(bad, /REGEN gen\/x\.ts: no command/);
+  assert.match(bad, /REGEN gen\/\*\* is generated but a owns gen\/\*\*/);
+
+  const d = dir();
+  const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(d, "src.txt"), "1");
+  writeFileSync(join(d, "gen.txt"), "1");
+  writeFileSync(join(d, "build.mjs"), 'import fs from "node:fs"; fs.writeFileSync("gen.txt", fs.readFileSync("src.txt"))\n');
+  writeFileSync(join(d, "test.mjs"), 'import fs from "node:fs"; if (String(fs.readFileSync("gen.txt")) !== String(fs.readFileSync("src.txt"))) process.exit(1)\n');
+  g("add", "-A"); g("commit", "-qm", "base");
+  mkdirSync(join(d, ".fanout"));
+  writeFileSync(join(d, ".fanout/plan.md"), "test: node test.mjs\nregen: gen.txt via node build.mjs\n\n## a\nowns: src.txt\n");
+  g("checkout", "-qb", "fanout/a");
+  const r = run(["guard"], { cwd: d, input: JSON.stringify({ tool_name: "Edit", cwd: d, tool_input: { file_path: join(d, "gen.txt") } }) });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /gen\.txt is generated \(`node build\.mjs` rebuilds it/);
+  writeFileSync(join(d, "src.txt"), "2"); g("commit", "-qam", "change source only");
+  g("checkout", "-q", "main");
+  const rh = run(["rehearse"], { cwd: d });
+  assert.equal(rh.status, 0, rh.stdout);
+  assert.match(rh.stdout, /OK after a/);
+});
+
+test("git hook: staged out-of-lane, contract and generated files are refused on fanout branches only", () => {
+  const d = dir();
+  const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  const commit = (file) => { writeFileSync(join(d, file), String(Math.random())); g("add", file); return spawnSync("git", ["commit", "-qm", file], { cwd: d, encoding: "utf8" }); };
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(d, "x.txt"), "1"); g("add", "-A"); g("commit", "-qm", "init");
+  mkdirSync(join(d, ".fanout"));
+  writeFileSync(join(d, ".fanout/plan.md"), "regen: gen.txt via true\n## s\nowns: mine.txt, types.txt\nexposes: types.txt\n");
+  writeFileSync(join(d, ".git/info/exclude"), ".fanout/\n");
+  assert.equal(run(["install-git-hook"], { cwd: d }).status, 0);
+  assert.equal(run(["install-git-hook"], { cwd: d }).status, 0); // reinstalling over our own hook is fine
+  assert.equal(commit("other.txt").status, 0); // main: untouched
+  g("checkout", "-qb", "fanout/s");
+  assert.equal(commit("mine.txt").status, 0);
+  for (const [file, msg] of [["other.txt", /does not own other\.txt/], ["types.txt", /types\.txt is a contract/], ["gen.txt", /gen\.txt is generated/]]) {
+    const r = commit(file);
+    assert.notEqual(r.status, 0, file);
+    assert.match(r.stderr, msg);
+    g("reset", "-q");
+  }
+  writeFileSync(join(d, ".git/hooks/pre-commit"), "#!/bin/sh\nexit 0\n");
+  assert.equal(run(["install-git-hook"], { cwd: d }).status, 1); // someone else's hook: left alone
 });
 
 test("verify uses the branch name and the default plan", () => {

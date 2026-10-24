@@ -4,10 +4,11 @@
 //   fanout verify [--session name] [--base main]    session defaults to the fanout/<name> branch
 //   fanout rehearse [plan.md] [--base main] [--test cmd]   merge every branch in order on a scratch worktree, test after each
 //   fanout guard                                    PreToolUse hook (installed by the plugin)
-import { readFileSync } from "node:fs";
+//   fanout install-git-hook [--force]               same rules as a git pre-commit hook, for agents outside Claude Code
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
-import { resolve, relative, isAbsolute, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { resolve, relative, isAbsolute, join, dirname } from "node:path";
+import { pathToFileURL, fileURLToPath } from "node:url";
 
 export function parsePlan(text) {
   const sessions = [];
@@ -23,6 +24,13 @@ export function parsePlan(text) {
 // Plan-wide settings sit above the first "## " block, e.g. "test: npm test".
 export const planSetting = (text, key) =>
   (text.split(/^## /m)[0].split("\n").find((l) => l.startsWith(key + ":")) ?? "").slice(key.length + 1).trim();
+
+// "regen: src/gen/**, api.d.ts via npm run codegen" (any number of lines above the first "## "):
+// generated files no session owns or commits; the command rebuilds them after merging.
+export const parseRegen = (text) => text.split(/^## /m)[0].split("\n").filter((l) => l.startsWith("regen:")).map((l) => {
+  const [paths, cmd = ""] = l.slice(6).split(/\s+via\s+/);
+  return { paths: paths.split(",").map((x) => x.trim()).filter(Boolean), cmd: cmd.trim() };
+});
 
 const norm = (p) => p.replaceAll("\\", "/").replace(/^\.\//, "");
 
@@ -61,6 +69,17 @@ export const ownsFile = (session, path) => session.owns.some((g) => matches(g, p
 const exposes = (session, path) => (session.exposes ?? []).some((g) => g === path || matches(g, path));
 export const contractOwner = (sessions, path) => sessions.find((s) => exposes(s, path));
 export const contractChanges = (sessions, changed) => changed.filter((f) => contractOwner(sessions, f));
+export const regenFor = (regen, path) => regen.find((r) => r.paths.some((g) => matches(g, path)));
+
+// Why this session may not change rel, or null if it may. Shared by the edit guard and the git hook.
+export function blockReason(sessions, s, regen, rel) {
+  const owner = contractOwner(sessions, rel);
+  if (owner) return `${rel} is a contract (exposed by "${owner.name}") and is frozen during the fan-out. Ask the coordinator to change it on main; sessions that use it will be told.`;
+  const r = regenFor(regen, rel);
+  if (r) return `${rel} is generated (\`${r.cmd}\` rebuilds it after merging). Change its source instead, and don't commit it.`;
+  if (ownsFile(s, rel)) return null;
+  return `session "${s.name}" does not own ${rel}. Owned: ${s.owns.join(", ")}. Ask the coordinator to change the plan.`;
+}
 
 const isGlob = (s) => /[*?{]/.test(s);
 const prefix = (g) => norm(g).split(/[*?{]/)[0];
@@ -80,26 +99,31 @@ function repoFiles(cwd) {
 // With a git repo, two patterns clash only if a real file matches both, or if one
 // of them names paths that don't exist yet and the prefixes overlap.
 // Without a repo, falls back to comparing the literal prefixes.
-export function check(sessions, cwd) {
+// Returns null for no overlap, else a detail string ("" when there is nothing to add).
+function overlap(a, b, files) {
+  if (!files) return prefixClash(a, b) ? "" : null;
+  const shared = files.filter((f) => matches(a, f) && matches(b, f));
+  if (shared.length) return `: ${shared.slice(0, 3).join(", ")}${shared.length > 3 ? ` +${shared.length - 3} more` : ""}`;
+  const ma = files.some((f) => matches(a, f)), mb = files.some((f) => matches(b, f));
+  return (!ma || !mb) && prefixClash(a, b) ? ": new paths may overlap" : null;
+}
+
+export function check(sessions, cwd, regen = []) {
   const problems = [];
   const files = cwd ? repoFiles(cwd) : null;
   for (let i = 0; i < sessions.length; i++)
     for (let j = i + 1; j < sessions.length; j++)
       for (const a of sessions[i].owns) for (const b of sessions[j].owns) {
-        const label = `${sessions[i].name} (${a}) <-> ${sessions[j].name} (${b})`;
-        if (files) {
-          const shared = files.filter((f) => matches(a, f) && matches(b, f));
-          if (shared.length) {
-            const more = shared.length > 3 ? ` +${shared.length - 3} more` : "";
-            problems.push(`CLASH ${label}: ${shared.slice(0, 3).join(", ")}${more}`);
-            continue;
-          }
-          const ma = files.some((f) => matches(a, f)), mb = files.some((f) => matches(b, f));
-          if ((!ma || !mb) && prefixClash(a, b)) problems.push(`CLASH ${label}: new paths may overlap`);
-        } else if (prefixClash(a, b)) {
-          problems.push(`CLASH ${label}`);
-        }
+        const o = overlap(a, b, files);
+        if (o !== null) problems.push(`CLASH ${sessions[i].name} (${a}) <-> ${sessions[j].name} (${b})${o}`);
       }
+  for (const r of regen) {
+    if (!r.cmd) problems.push(`REGEN ${r.paths.join(", ")}: no command (write "regen: <paths> via <command>")`);
+    for (const g of r.paths) for (const s of sessions) for (const a of s.owns) {
+      const o = overlap(g, a, files);
+      if (o !== null) problems.push(`REGEN ${g} is generated but ${s.name} owns ${a}${o}`);
+    }
+  }
   // A session that uses a contract merges after the session exposing it.
   const deps = new Map(sessions.map((s) => [s.name, [...s.after]]));
   for (const s of sessions) {
@@ -148,9 +172,10 @@ const defaultPlan = (cwd) => resolve(mainRoot(cwd), ".fanout", "plan.md");
 // each merge, so a break is caught before pushing and pinned to the branch that caused it.
 // The worktree sits in .fanout/ inside the main checkout so node_modules etc. still resolve.
 // Output is a few lines plus the tail of a failing run: cheap for an agent to read and act on.
-export function rehearse(order, { cwd, base = "main", test, tail = 20 }) {
+export function rehearse(order, { cwd, base = "main", test, regen = [], tail = 20 }) {
   const log = [], root = mainRoot(cwd), wt = join(root, ".fanout", "rehearse");
   const sh = (cmd) => spawnSync(cmd, { cwd: wt, shell: true, encoding: "utf8" });
+  const tailOf = (r) => `${r.stdout ?? ""}${r.stderr ?? ""}`.trimEnd().split("\n").slice(-tail).join("\n");
   const g = (...a) => execFileSync("git", ["-c", "user.name=fanout", "-c", "user.email=fanout@local", ...a],
     { cwd: wt, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   const drop = () => { try { git(["worktree", "remove", "--force", wt], root); } catch { /* not there */ } };
@@ -168,11 +193,14 @@ export function rehearse(order, { cwd, base = "main", test, tail = 20 }) {
         log.push(`CONFLICT merging ${name}: ${files.join(", ")}`);
         ok = false; break;
       }
+      // Rebuild generated files and commit them, as the real merge into main will.
+      const failed = regen.filter((x) => x.cmd).map((x) => [x.cmd, sh(x.cmd)]).find(([, r]) => r.status !== 0);
+      if (failed) { log.push(`REGEN FAILED after ${name}: \`${failed[0]}\` exited ${failed[1].status}`, tailOf(failed[1])); ok = false; break; }
+      if (regen.length) { g("add", "-A"); try { g("commit", "-qm", "regen"); } catch { /* nothing changed */ } }
       if (!test) { log.push(`MERGED ${name}`); continue; }
       const r = sh(test);
       if (r.status === 0) { log.push(`OK after ${name}`); continue; }
-      const out = `${r.stdout ?? ""}${r.stderr ?? ""}`.trimEnd().split("\n").slice(-tail).join("\n");
-      log.push(`BROKE after ${name}: \`${test}\` exited ${r.status}`, out);
+      log.push(`BROKE after ${name}: \`${test}\` exited ${r.status}`, tailOf(r));
       ok = false; break;
     }
   } finally { drop(); }
@@ -184,22 +212,24 @@ const explicitPlan = (argv) => (argv[1] && !argv[1].startsWith("--") ? argv[1] :
 function main(argv) {
   const cmd = argv[0];
   if (cmd === "guard") return guard(argv);
-  if (!["check", "verify", "rehearse"].includes(cmd)) { console.error("usage: fanout check [plan.md] | verify [--session name] [--base main] | rehearse [--base main] [--test cmd] | guard"); return 2; }
   const cwd = resolve(arg(argv, "--cwd", process.cwd()));
+  if (cmd === "precommit") return precommit(cwd);
+  if (cmd === "install-git-hook") return installHook(cwd, argv.includes("--force"));
+  if (!["check", "verify", "rehearse"].includes(cmd)) { console.error("usage: fanout check [plan.md] | verify [--session name] [--base main] | rehearse [--base main] [--test cmd] | install-git-hook [--force] | guard"); return 2; }
   const planPath = explicitPlan(argv) ?? defaultPlan(cwd);
   let text;
   try { text = readFileSync(planPath, "utf8"); } catch { console.error(`No plan at ${planPath}`); return 2; }
-  const sessions = parsePlan(text);
+  const sessions = parsePlan(text), regen = parseRegen(text);
   if (cmd === "check") {
-    const { problems, order } = check(sessions, cwd);
+    const { problems, order } = check(sessions, cwd, regen);
     problems.forEach((p) => console.log(p));
     console.log("Merge order:", order.join(" -> "));
     return problems.length ? 1 : 0;
   }
   if (cmd === "rehearse") {
-    const { problems, order } = check(sessions, cwd);
+    const { problems, order } = check(sessions, cwd, regen);
     if (problems.length) { problems.forEach((p) => console.log(p)); console.log("Fix the plan first (fanout check)."); return 1; }
-    const { ok, log } = rehearse(order, { cwd, base: arg(argv, "--base", "main"), test: arg(argv, "--test") ?? planSetting(text, "test") });
+    const { ok, log } = rehearse(order, { cwd, base: arg(argv, "--base", "main"), test: arg(argv, "--test") ?? planSetting(text, "test"), regen });
     log.forEach((l) => console.log(l));
     return ok ? 0 : 1;
   }
@@ -208,14 +238,26 @@ function main(argv) {
   if (!s) { console.error(`No session "${name}" in plan. Pass --session or run from a fanout/<name> branch.`); return 2; }
   const base = arg(argv, "--base", "main"), head = arg(argv, "--head", "HEAD");
   const changed = git(["diff", "--name-only", `${base}...${head}`], cwd).split("\n").filter(Boolean);
-  const out = verify(s, changed), frozen = contractChanges(sessions, changed);
+  const frozen = contractChanges(sessions, changed), generated = changed.filter((f) => regenFor(regen, f));
+  const out = verify(s, changed).filter((f) => !frozen.includes(f) && !generated.includes(f));
   out.forEach((f) => console.log(`OUT OF LANE ${name}: ${f}`));
   frozen.forEach((f) => console.log(`CONTRACT CHANGED ${name}: ${f} (exposed by ${contractOwner(sessions, f).name})`));
-  console.log(`${name}: ${changed.length} changed, ${out.length} outside its owns, ${frozen.length} contracts changed`);
-  return out.length || frozen.length ? 1 : 0;
+  generated.forEach((f) => console.log(`GENERATED CHANGED ${name}: ${f} (rebuilt after merging; don't commit it)`));
+  console.log(`${name}: ${changed.length} changed, ${out.length} outside its owns, ${frozen.length} contracts changed, ${generated.length} generated`);
+  return out.length || frozen.length || generated.length ? 1 : 0;
 }
 
-// PreToolUse hook: blocks Write/Edit/NotebookEdit outside the session's owns, and on any contract.
+// The plan and this checkout's session, or null when not on a fanout/<name> branch with a plan.
+function loadSession(cwd) {
+  const name = currentSession(cwd);
+  if (!name) return null;
+  let text;
+  try { text = readFileSync(defaultPlan(cwd), "utf8"); } catch { return null; }
+  const sessions = parsePlan(text), s = sessions.find((x) => x.name === name);
+  return s ? { sessions, s, regen: parseRegen(text) } : null;
+}
+
+// PreToolUse hook: blocks Write/Edit/NotebookEdit outside the session's owns, on contracts and on generated files.
 // Active only on a fanout/<name> branch with a plan present, so it does nothing in normal work.
 function guard() {
   let input = {};
@@ -223,24 +265,49 @@ function guard() {
   const target = input.tool_input?.file_path ?? input.tool_input?.notebook_path;
   if (!target) return 0;
   const cwd = input.cwd ?? process.cwd();
-  const session = currentSession(cwd);
-  if (!session) return 0;
-  let text;
-  try { text = readFileSync(defaultPlan(cwd), "utf8"); } catch { return 0; }
-  const sessions = parsePlan(text), s = sessions.find((x) => x.name === session);
-  if (!s) return 0;
+  const ctx = loadSession(cwd);
+  if (!ctx) return 0;
   let root = cwd;
   try { root = git(["rev-parse", "--show-toplevel"], cwd).trim(); } catch { /* not a repo */ }
   const rel = norm(relative(root, isAbsolute(target) ? target : resolve(cwd, target)));
   if (rel.startsWith("..")) return 0; // outside the repo: not our business
-  const owner = contractOwner(sessions, rel);
-  if (owner) {
-    console.error(`fanout: ${rel} is a contract (exposed by "${owner.name}") and is frozen during the fan-out. Ask the coordinator to change it on main; sessions that use it will be told.`);
-    return 2;
-  }
-  if (ownsFile(s, rel)) return 0;
-  console.error(`fanout: session "${session}" does not own ${rel}. Owned: ${s.owns.join(", ")}. Ask the coordinator to change the plan.`);
+  const why = blockReason(ctx.sessions, ctx.s, ctx.regen, rel);
+  if (!why) return 0;
+  console.error("fanout: " + why);
   return 2;
+}
+
+// git pre-commit hook: the same rules on staged files, so agents outside Claude Code are held to the plan too.
+function precommit(cwd) {
+  const ctx = loadSession(cwd);
+  if (!ctx) return 0;
+  const staged = git(["diff", "--cached", "--name-only"], cwd).split("\n").filter(Boolean);
+  const why = staged.map((f) => blockReason(ctx.sessions, ctx.s, ctx.regen, f)).filter(Boolean);
+  why.forEach((w) => console.error("fanout: " + w));
+  return why.length ? 1 : 0;
+}
+
+const HOOK_MARK = "# fanout pre-commit";
+function installHook(cwd, force) {
+  let path;
+  try { path = resolve(cwd, git(["rev-parse", "--git-path", "hooks/pre-commit"], cwd).trim()); }
+  catch { console.error("Not a git repo."); return 2; }
+  if (existsSync(path) && !readFileSync(path, "utf8").includes(HOOK_MARK) && !force) {
+    console.error(`${path} already exists and isn't fanout's. Add "node <fanout.mjs> precommit" to it, or pass --force to replace it.`);
+    return 1;
+  }
+  const script = norm(fileURLToPath(import.meta.url));
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `#!/bin/sh
+${HOOK_MARK}
+case "$(git branch --show-current)" in fanout/*) ;; *) exit 0 ;; esac
+script='${script}'
+[ -f "$script" ] || { echo "fanout: $script is gone (plugin updated?). Run: node <new fanout.mjs> install-git-hook" >&2; exit 1; }
+exec node "$script" precommit
+`);
+  chmodSync(path, 0o755);
+  console.log(`Installed ${path}. Commits on fanout/* branches now follow the plan, whatever agent makes them.`);
+  return 0;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) process.exit(main(process.argv.slice(2)));
