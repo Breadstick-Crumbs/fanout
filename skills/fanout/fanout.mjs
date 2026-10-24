@@ -247,6 +247,15 @@ function main(argv) {
   return out.length || frozen.length || generated.length ? 1 : 0;
 }
 
+// Files a tool call would write. Claude Code sends file_path / notebook_path; Codex sends
+// apply_patch with the patch text in tool_input.command ("*** Update File: path" etc.).
+export function editTargets(toolInput = {}) {
+  const direct = toolInput.file_path ?? toolInput.notebook_path;
+  if (direct) return [direct];
+  const patch = typeof toolInput.command === "string" ? toolInput.command : typeof toolInput.input === "string" ? toolInput.input : "";
+  return [...patch.matchAll(/^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$/gm)].map((m) => m[1].trim());
+}
+
 // The plan and this checkout's session, or null when not on a fanout/<name> branch with a plan.
 function loadSession(cwd) {
   const name = currentSession(cwd);
@@ -257,24 +266,24 @@ function loadSession(cwd) {
   return s ? { sessions, s, regen: parseRegen(text) } : null;
 }
 
-// PreToolUse hook: blocks Write/Edit/NotebookEdit outside the session's owns, on contracts and on generated files.
+// PreToolUse hook (Claude Code and Codex): blocks file edits outside the session's owns, on contracts and on generated files.
 // Active only on a fanout/<name> branch with a plan present, so it does nothing in normal work.
 function guard() {
   let input = {};
   try { input = JSON.parse(readFileSync(0, "utf8")); } catch { return 0; }
-  const target = input.tool_input?.file_path ?? input.tool_input?.notebook_path;
-  if (!target) return 0;
+  const targets = editTargets(input.tool_input);
+  if (!targets.length) return 0;
   const cwd = input.cwd ?? process.cwd();
   const ctx = loadSession(cwd);
   if (!ctx) return 0;
   let root = cwd;
   try { root = git(["rev-parse", "--show-toplevel"], cwd).trim(); } catch { /* not a repo */ }
-  const rel = norm(relative(root, isAbsolute(target) ? target : resolve(cwd, target)));
-  if (rel.startsWith("..")) return 0; // outside the repo: not our business
-  const why = blockReason(ctx.sessions, ctx.s, ctx.regen, rel);
-  if (!why) return 0;
-  console.error("fanout: " + why);
-  return 2;
+  const why = targets
+    .map((t) => norm(relative(root, isAbsolute(t) ? t : resolve(cwd, t))))
+    .filter((rel) => !rel.startsWith("..")) // outside the repo: not our business
+    .map((rel) => blockReason(ctx.sessions, ctx.s, ctx.regen, rel)).filter(Boolean);
+  why.forEach((w) => console.error("fanout: " + w));
+  return why.length ? 2 : 0;
 }
 
 // git pre-commit hook: the same rules on staged files, so agents outside Claude Code are held to the plan too.

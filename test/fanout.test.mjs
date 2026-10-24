@@ -5,7 +5,7 @@ import { writeFileSync, mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parsePlan, parseRegen, matches, check, verify } from "../skills/fanout/fanout.mjs";
+import { parsePlan, parseRegen, matches, check, verify, editTargets } from "../skills/fanout/fanout.mjs";
 
 const script = fileURLToPath(new URL("../skills/fanout/fanout.mjs", import.meta.url));
 const dir = () => mkdtempSync(join(tmpdir(), "fanout-"));
@@ -112,6 +112,24 @@ test("guard: blocks out-of-lane edits on a fanout/<name> branch, silent elsewher
   assert.equal(bad.status, 2);
   assert.match(bad.stderr, /does not own other\/a\.ts/);
   assert.equal(call(join(tmpdir(), "elsewhere.txt")).status, 0);
+});
+
+test("guard reads Codex apply_patch edits", () => {
+  assert.deepEqual(editTargets({ command: "*** Begin Patch\n*** Update File: a.ts\n@@\n-x\n+y\n*** Add File: b/c.ts\n+z\n*** Delete File: d.ts\n*** End Patch\n" }), ["a.ts", "b/c.ts", "d.ts"]);
+  assert.deepEqual(editTargets({ command: ["ls", "-la"] }), []);
+  const d = dir();
+  const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(d, "x.txt"), "1"); g("add", "-A"); g("commit", "-qm", "init");
+  mkdirSync(join(d, ".fanout"));
+  writeFileSync(join(d, ".fanout/plan.md"), "## s\nowns: mine/**\n");
+  g("checkout", "-qb", "fanout/s");
+  const patch = (files) => run(["guard"], { cwd: d, input: JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "apply_patch", cwd: d,
+    tool_input: { command: "*** Begin Patch\n" + files.map((f) => `*** Add File: ${f}\n+hi\n`).join("") + "*** End Patch\n" } }) });
+  assert.equal(patch(["mine/a.ts"]).status, 0);
+  const bad = patch(["mine/a.ts", "other.ts"]);
+  assert.equal(bad.status, 2);
+  assert.match(bad.stderr, /does not own other\.ts/);
 });
 
 test("guard finds the plan from a linked worktree", () => {

@@ -1,7 +1,7 @@
 {
   "name": "fanout",
-  "description": "Run many Claude Code sessions in parallel without merge chaos: file-disjoint plan, edit guard, branch verify, merge order.",
-  "version": "0.6.0",
+  "description": "Run many coding agents in parallel without merge chaos: each owns its own files, shared interfaces are frozen, and every branch is tested together before it merges.",
+  "version": "0.7.0",
   "author": { "name": "Breadstick-Crumbs" },
   "license": "MIT",
   "repository": "https://github.com/Breadstick-Crumbs/fanout"

@@ -1,35 +1,92 @@
 # fanout
 
-**Run many Claude Code sessions at once without merge chaos.**
+**Run several coding agents at once. Merge once. Nothing breaks.**
 
-Git worktrees stop parallel sessions overwriting each other's files. They don't stop two sessions editing the same file, or a session wandering outside its job. fanout gives every session its own files, blocks edits outside them, and merges in the right order.
+Works with **Claude Code** and **Codex**, or a mix of both. No dependencies, no config, just Node 18+ and git.
+
+---
+
+## Why
+
+Running agents in parallel is easy. Putting their work back together is the hard part:
+
+- **Two agents edit the same file**, and one overwrites the other.
+- **One agent renames a function another agent is calling.** Git merges both branches with no conflict, and the build breaks anyway.
+- **Every agent regenerates the same file** (an API client, codegen output, a lockfile) and they all conflict.
+- **You become the merge queue**, fixing breakages by hand after every round.
+
+fanout stops each of these before it happens, and catches anything that slips through before it reaches `main`.
+
+## How it works, in one picture
+
+```
+ you: "split this into parallel sessions"
+          │
+          ▼
+   ┌─────────────┐  each agent gets its own files.
+   │    plan     │  shared types are written first and frozen.
+   └─────────────┘  you approve it once.
+          │
+   ┌──────┼──────┐
+   ▼      ▼      ▼
+ agent  agent  agent   each on its own branch, in its own folder.
+   │      │      │     edits outside its files are blocked.
+   └──────┼──────┘
+          ▼
+   ┌─────────────┐  all branches merged on a scratch copy and tested
+   │  rehearse   │  after each merge. a break is sent back to the agent
+   └─────────────┘  that caused it, which fixes it by itself.
+          │
+          ▼
+        main        merged in the right order. nothing new breaks.
+```
 
 ## Install
 
+**Claude Code**
+
 ```
-/plugin install fanout --marketplace Breadstick-Crumbs/fanout
+/plugin marketplace add Breadstick-Crumbs/fanout
+/plugin install fanout@fanout
 ```
+
+**Codex**
+
+```bash
+codex plugin marketplace add Breadstick-Crumbs/fanout
+```
+
+Then in Codex, open `/plugins` and install **fanout**, and open `/hooks` to trust its edit guard.
+
+**Any other agent, or no plugin system**
+
+```bash
+git clone https://github.com/Breadstick-Crumbs/fanout
+cp -r fanout/skills/fanout ~/.agents/skills/     # Codex reads skills from here
+cp -r fanout/skills/fanout ~/.claude/skills/     # Claude Code reads skills from here
+```
+
+The git hook (below) enforces the rules whatever agent you use.
 
 ## Use
 
-Tell Claude Code:
+Ask your agent:
 
 > Split this into parallel sessions: add Arabic support, fix the currency bug, and redo the landing page.
 
-Claude writes the plan, checks it, shows you who owns what, and starts the sessions. From then on:
+Then:
 
-- A session that tries to edit a file it doesn't own is stopped, with a message telling it to ask.
-- Shared interfaces (types, API signatures) are written on main first and frozen, so sessions build against the real thing instead of guessing, and nobody can quietly change one under the others.
-- Generated files every session would touch (codegen output, API clients) belong to nobody: sessions can't edit them, and they're rebuilt once after merging.
-- Before each merge, fanout lists any file a branch changed outside its lane.
-- Before anything merges, fanout rehearses: it merges every branch in order on a scratch worktree and runs your tests after each one. Branches that merge with no conflict but break each other are caught and pinned to the branch that broke things.
-- The failing session gets the short report and fixes its branch; only then do branches merge into main.
+1. **It shows you a plan**: who owns which files, and the merge order. You say yes. That's the only time you're asked.
+2. **Shared interfaces are written first** (types, function signatures) and committed, so every agent builds against the real thing instead of guessing.
+3. **Each agent starts** on its own branch, in its own folder. If it tries to edit a file it doesn't own, it's stopped and told to ask.
+4. **When they finish, fanout rehearses**: it merges every branch on a scratch copy and runs your tests after each merge. If something breaks, the agent that broke it gets a short report and fixes it.
+5. **Everything merges into `main`** in the right order.
 
-That's it. No config, no environment variables.
+You only hear about problems if the same agent fails twice.
 
-## What the plan looks like
+## The plan
 
-Claude writes this to `.fanout/plan.md`; you only read and approve it.
+Your agent writes it to `.fanout/plan.md`. You just read and approve it.
 
 ```md
 test: npm test
@@ -46,22 +103,59 @@ uses: src/lib/types.ts
 done: no hard-coded currency left
 ```
 
-`exposes` marks a contract; `uses` says who depends on it and puts that session later in the merge order. `regen` lists generated files and the command that rebuilds them.
+| Field | Meaning |
+|---|---|
+| `## name` | One session (one agent, one branch: `fanout/name`). |
+| `owns` | The only files this session may change. Globs work. No two sessions may own the same file. |
+| `exposes` | Files other sessions depend on (types, APIs). Written on `main` first, then frozen for everyone. |
+| `uses` | Contracts this session depends on. It merges after the session that exposes them. |
+| `after` | Extra merge-order dependencies, if you need them. |
+| `done` | What finished looks like. |
+| `test` | Your test command. Run after every merge during rehearsal. |
+| `regen` | Generated files nobody owns, and the command that rebuilds them after merging. |
 
-## Commands (Claude runs these; you can too)
+## What it catches
+
+| Problem | What fanout does |
+|---|---|
+| Two sessions planned to own the same file | `check` refuses the plan: `CLASH a <-> b: src/x.ts` |
+| A session edits a file it doesn't own | Blocked as it happens. The agent is told to ask. |
+| A session changes a shared interface | Blocked. Interfaces are frozen during the fan-out. |
+| A session edits a generated file | Blocked. It's rebuilt after merging instead. |
+| Branches merge cleanly but break together | `rehearse` reports `BROKE after money` with the failing output. |
+| A real merge conflict | `rehearse` reports `CONFLICT merging b: x.txt` before anything reaches `main`. |
+| An agent with no hooks (Cursor, scripts) | The git pre-commit hook refuses the commit. |
+
+## Commands
+
+Your agent runs these. You can too.
 
 ```bash
-node skills/fanout/fanout.mjs check              # plan vs your repo: clashes, order
-node skills/fanout/fanout.mjs verify             # from a fanout/<name> worktree: files outside its lane, contracts changed
-node skills/fanout/fanout.mjs rehearse           # merge all branches on a scratch worktree, regen + test after each
-node skills/fanout/fanout.mjs install-git-hook   # same rules as a git pre-commit hook, for Codex, Cursor or any agent
+node skills/fanout/fanout.mjs check              # is the plan safe? prints the merge order
+node skills/fanout/fanout.mjs verify             # in a session's folder: anything changed outside its lane?
+node skills/fanout/fanout.mjs rehearse           # merge every branch on a scratch copy, test after each
+node skills/fanout/fanout.mjs install-git-hook   # enforce the plan on every commit, from any agent
 ```
 
-## How it works
+## FAQ
 
-- Sessions run on branches named `fanout/<name>`. The plan sits in the main checkout, so every worktree finds it.
-- Globs are matched against your real files, so `src/app/start/**` and `src/app/other/**` don't clash.
-- The guard is a plugin `PreToolUse` hook, plus an optional git pre-commit hook for agents outside Claude Code. Both only act on `fanout/*` branches, so normal work is untouched.
+**Do I need to configure anything?**
+No. The plan is the only file, and your agent writes it.
+
+**Does it get in the way of my normal work?**
+No. Everything only acts on branches named `fanout/*`. On any other branch, fanout does nothing.
+
+**Will it burn tokens?**
+No. The checks are plain scripts with no AI calls. Agents are told to read only the files they need, and a failure report is a few lines, not a full log.
+
+**Can I mix Claude Code and Codex?**
+Yes. Sessions are just git branches. Run some in Claude, some in Codex, or headless (`claude -p`, `codex exec`).
+
+**What if two tasks really need the same file?**
+Give it to one session. If it's an interface others depend on, make it a contract (`exposes` / `uses`). If it's generated, list it under `regen`.
+
+**What doesn't it do?**
+It isn't a CI system. It won't fix flaky tests or speed up a slow test suite. It makes sure what your agents hand to CI already works together.
 
 ## Development
 
@@ -69,8 +163,8 @@ node skills/fanout/fanout.mjs install-git-hook   # same rules as a git pre-commi
 npm test
 ```
 
-Node's built-in test runner, no dependencies.
+Node's built-in test runner. No dependencies.
 
-## Licence
+## License
 
 MIT. See [LICENSE](LICENSE).

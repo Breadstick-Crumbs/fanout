@@ -1,6 +1,6 @@
 ---
 name: fanout
-description: Use when the user wants to split a goal into parallel Claude Code sessions (git worktrees). Plans who owns which files, blocks out-of-lane edits, checks each branch, and merges in the right order.
+description: Use when the user wants to split a goal into parallel coding-agent sessions (Claude Code, Codex, or both) on git worktrees. Plans who owns which files, freezes shared interfaces, blocks out-of-lane edits, tests all branches together, and merges in the right order. Not for a single small change.
 ---
 
 # Fanout
@@ -22,7 +22,9 @@ Split work so parallel sessions can't collide. The script `fanout.mjs` sits next
 
 3. **Contracts.** If the plan exposes anything, write those files on main yourself before starting: types, function signatures, stubs that throw "not implemented". Commit them. Every session now builds against real interfaces instead of guessing. From here on they are frozen on all `fanout/*` branches, the owner's included. If a session needs one changed, it asks; you change it on main, commit, and tell the sessions that use it to merge main.
 
-4. **Start.** For each session create a worktree on branch `fanout/<name>` (exactly that name) from main and brief it: owned paths, done-when, what not to touch, typecheck and own tests only, no deploy. Tell it to read only its `uses` files from other sessions' code, not to explore the rest. The plugin's hook now blocks any edit outside that session's `owns`, to a contract, or to a generated file, automatically. If any session runs in another agent (Codex, Cursor, a script), also run `node fanout.mjs install-git-hook` once: a pre-commit hook that applies the same rules to commits on `fanout/*` branches. Tell the user you installed it.
+4. **Start.** For each session: `git worktree add -b fanout/<name> ../<repo>-<name> main` (the branch must be exactly `fanout/<name>`), then start an agent in that folder with a brief: owned paths, done-when, what not to touch, typecheck and own tests only, no deploy, commit when done. Tell it to read only its `uses` files from other sessions' code, not to explore the rest. Use whatever the host offers for parallel sessions; otherwise run each headless in the background: `claude -p "<brief>"` or `codex exec "<brief>"` from the worktree. Sessions can be any mix of agents.
+
+   Run `node fanout.mjs install-git-hook` once per repo (tell the user): a pre-commit hook that applies the plan to every commit on a `fanout/*` branch, whatever agent made it. The plugin's edit hook also blocks bad edits as they happen, in Claude Code and in Codex once its hooks are trusted (`/hooks`).
 
 5. **Rehearse.** When the sessions report done, run `node fanout.mjs verify` in each worktree (files changed outside `owns`, contracts or generated files changed; send the session back or move ownership if any), then `node fanout.mjs rehearse` from the main checkout. It merges every branch in order on a throwaway worktree, runs the regen commands, then the test command, after each merge. Branches can merge with no conflict and still break each other, which only this catches. On `BROKE after <name>` or `CONFLICT merging <name>`, send that session the printed lines (not the full log) to fix on its branch, then rehearse again. Do this without asking the user; stop and ask only if the same session fails twice.
 
