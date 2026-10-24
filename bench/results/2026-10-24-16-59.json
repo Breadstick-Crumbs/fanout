@@ -1,0 +1,174 @@
+[
+  {
+    "condition": "single",
+    "agents": [
+      {
+        "role": "single",
+        "lane": "-",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 59,
+        "costUsd": 0.0987229,
+        "inTokens": 69891,
+        "outTokens": 5158,
+        "error": null,
+        "sessionId": "d2757ec9-55e2-4720-87b0-24a9193a9151"
+      }
+    ],
+    "conflicts": [],
+    "brokeAfter": [],
+    "repairCommits": 0,
+    "finalTestsPass": true,
+    "seconds": 60
+  },
+  {
+    "condition": "baseline",
+    "agents": [
+      {
+        "role": "lane",
+        "lane": "currency",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 57,
+        "costUsd": 0.08330359999999999,
+        "inTokens": 52721,
+        "outTokens": 4262,
+        "error": null,
+        "sessionId": "11ca2e61-0b57-4d91-9d4c-304cd18b3a28"
+      },
+      {
+        "role": "lane",
+        "lane": "discounts",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 56,
+        "costUsd": 0.0692734,
+        "inTokens": 75024,
+        "outTokens": 2978,
+        "error": null,
+        "sessionId": "df5b4294-539f-4a62-8c26-bdc40f4567ac"
+      },
+      {
+        "role": "lane",
+        "lane": "receipt",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 42,
+        "costUsd": 0.0404405,
+        "inTokens": 37674,
+        "outTokens": 1458,
+        "error": null,
+        "sessionId": "1579d831-cd22-420e-9752-9ae7949a27fe"
+      },
+      {
+        "role": "lane",
+        "lane": "tax",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 36,
+        "costUsd": 0.0289941,
+        "inTokens": 27319,
+        "outTokens": 725,
+        "error": null,
+        "sessionId": "1f492841-ecc9-4925-bd4b-1805569665b0"
+      },
+      {
+        "role": "integrator",
+        "lane": "-",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 87,
+        "costUsd": 0.13909,
+        "inTokens": 207899,
+        "outTokens": 5892,
+        "error": null,
+        "sessionId": "1700f8f8-ed3d-4b6a-be3c-93c6a046ff7b"
+      }
+    ],
+    "conflicts": [
+      "discounts",
+      "tax"
+    ],
+    "brokeAfter": [],
+    "repairCommits": 4,
+    "finalTestsPass": true,
+    "seconds": 150
+  },
+  {
+    "condition": "fanout",
+    "agents": [
+      {
+        "role": "coordinator",
+        "lane": "-",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 87,
+        "costUsd": 0.1316662,
+        "inTokens": 136017,
+        "outTokens": 6391,
+        "error": null,
+        "sessionId": "b2cc25b4-a915-4419-a019-d98a5b403b01"
+      },
+      {
+        "role": "lane",
+        "lane": "currency",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 82,
+        "costUsd": 0.045752400000000006,
+        "inTokens": 31060,
+        "outTokens": 2567,
+        "error": null,
+        "sessionId": "22974437-f164-4bbe-8700-29e949b75fe3"
+      },
+      {
+        "role": "lane",
+        "lane": "discounts",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 86,
+        "costUsd": 0.0536627,
+        "inTokens": 95848,
+        "outTokens": 2266,
+        "error": null,
+        "sessionId": "54ff514a-3e13-4fb3-9b0b-ef986b1c088a"
+      },
+      {
+        "role": "lane",
+        "lane": "receipt",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 82,
+        "costUsd": 0.0321488,
+        "inTokens": 39497,
+        "outTokens": 1414,
+        "error": null,
+        "sessionId": "ca01160e-5228-4563-b96e-7ed9dc099ad8"
+      },
+      {
+        "role": "lane",
+        "lane": "tax",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 86,
+        "costUsd": 0.05535949999999999,
+        "inTokens": 92913,
+        "outTokens": 1967,
+        "error": null,
+        "sessionId": "685f5d65-3497-4687-862f-594c7688ce05"
+      }
+    ],
+    "conflicts": [],
+    "brokeAfter": [],
+    "repairCommits": 0,
+    "rehearsals": [
+      "OK after tax (all 4 merged)\nAll branches merge and pass together."
+    ],
+    "blockedFiles": [
+      "receipt: src/index.mjs"
+    ],
+    "plan": "test: npm test\nregen: src/index.mjs via npm run gen\n\n## currency\nowns: src/types.mjs, src/format.mjs, src/cart.mjs, test/cart.test.mjs, test/currency.test.mjs\nexposes: src/types.mjs, src/format.mjs, src/cart.mjs\ntask: store prices as integer cents plus an ISO currency code (default \"USD\") in products, cart totals and formatting, keeping the signatures in the contract files\ndone: no floating-point money anywhere; formatPrice handles currencies; total still calls discountFor from src/discounts.mjs; tests pass\n\n## discounts\nowns: src/discounts.mjs, test/discounts.test.mjs\nexposes: src/discounts.mjs\nuses: src/types.mjs, src/cart.mjs\ntask: implement applyCoupon(cart, code) with SAVE10 and FLAT5 (500 cents, never below zero) and discountFor(cart) so total(cart) reflects the coupon\ndone: total(cart) reflects the applied coupon; tests pass\n\n## receipt\nowns: src/receipt.mjs, test/receipt.test.mjs\nuses: src/format.mjs, src/cart.mjs, src/types.mjs\ntask: add receipt(cart) returning one \"name x qty  <line price>\" line per item and a final \"Total  <total>\" line, formatted with formatPrice\ndone: receipt tests pass\n\n## tax\nowns: src/tax.mjs, test/tax.test.mjs\nuses: src/cart.mjs, src/types.mjs\ntask: add taxFor(cart, region) with CA 7.25%, NY 4%, 0 otherwise, applied to total(cart) and returned as integer cents\ndone: tax tests pass\n",
+    "finalTestsPass": true,
+    "seconds": 207
+  }
+]

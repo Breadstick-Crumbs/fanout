@@ -1,0 +1,9 @@
+{
+  "name": "library",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "gen": "node scripts/gen-index.mjs",
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}

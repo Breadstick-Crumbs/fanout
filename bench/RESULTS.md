@@ -31,6 +31,56 @@ Agents are Claude Code (Sonnet), run headless and capped at $1 each. In the last
 - **Mixed Claude and Codex:** same pattern. Without fanout, 2 conflicts, 1 broken merge and 4 repairs. With fanout, none. The Codex agent's edit to the generated index was discarded by the plan, like the Claude agents' edits.
 - In every fanout run, the receipt and tax agents ran the index generator locally. Those edits were discarded, as the plan says, and the file was regenerated once after merging.
 
+## Is parallel worth it at all?
+
+Later runs (16:59 and 17:07 in [results/](results/)) added a third setup: one agent doing all four tasks, one after another. By then fanout's headless agents started about 8× cheaper (v0.10), so these costs are lower than the ones above.
+
+| Setup (2 runs each) | Wall time | Agent cost | Conflicts | Repairs on `main` | Final tests pass |
+|---|---|---|---|---|---|
+| One agent, all four tasks | 0m 56s – 1m 00s | $0.09 – $0.10 | 0 | 0 | yes |
+| Four agents, plain worktrees | 2m 30s – 2m 59s | $0.35 – $0.36 | 2 | 4 | yes, after integrator |
+| Four agents, fanout | 3m 19s – 3m 27s | $0.32 – $0.35 | 0 | 0 | yes |
+
+- **On a task this small, one agent wins outright:** about 3× faster and 3× cheaper than either parallel setup. Splitting four small changes costs more in setup (worktrees, briefs, merging, planning) than the parallel work saves.
+- **Within parallel work, fanout still does its job:** no conflicts and no repairs, at the same cost as plain worktrees. It's slower here because of its planning step (about 1.5 minutes and $0.13–$0.15, the largest single cost of a fanout run).
+- **So fanout is for work that's big enough to split.**
+
+### A bigger task: six features, 21 hidden tests
+
+The [library](library/) fixture has six features ([TASKS.md](library/TASKS.md)) with real dependencies: the API needs search and fines, and fines and holds both change the core store. Each setup is scored on 21 hidden acceptance tests ([library-acceptance/](library-acceptance/)) that no agent sees. One run (18:13 in [results/](results/)):
+
+| Setup | Wall time | Agent cost | Hidden tests | Conflicts | Repairs on `main` |
+|---|---|---|---|---|---|
+| One agent, all six tasks | 2m 07s | $0.24 | 21/21 | 0 | 0 |
+| Six agents, plain worktrees | 3m 58s | $0.65 | 21/21 | 4 | 8 |
+| Six agents, fanout | 5m 49s | $0.57 | 21/21 | 0 | 0 |
+
+- **One agent still won:** about 2.5× faster and 2.5× cheaper, with the same quality. Sonnet did each feature in about 20 seconds when working through them in one session.
+- **Each parallel agent carries a fixed overhead** of roughly 100 seconds and about $0.05: loading the project, reading the code it needs, running the tests. One agent pays that once; six agents pay it six times. fanout adds its planning step on top (about 100 seconds and $0.11 here).
+- **Without fanout,** parallel work hit 4 conflicts and needed 8 repair commits. **With fanout,** none, and rehearse passed first time.
+- **Rough break-even:** parallel only wins on time when each part would take one agent noticeably longer than that fixed overhead, a few minutes per part rather than seconds. On cost, parallel never wins at this size, because the overhead is paid per agent.
+
+### Cutting the overhead
+
+Tracing every agent's tool calls (the "Turns" and "Model time" columns in [results/](results/)) showed that more than half of each parallel agent's time wasn't the model:
+- **Personal Claude settings loaded into every agent.** The user's own hooks and plugins ran on every start and on every file read. A trivial headless call took 15s (9s without them) and twice the tokens.
+- **Refused commands.** Agents piped test output through `tail` or `grep`, which weren't allowed, and lost a turn retrying each time.
+- **A start-up race.** Starting several agents in the same instant sometimes left their shells unable to find `npm` or `node`.
+- **A slow planner.** It read the whole skill and explored the code: 17 turns, about 100 seconds.
+
+The fixes: agents start with the project's settings only (fanout's guard is loaded directly), read-only shell tools are allowed, agents start 1.5 seconds apart, and the planner gets the plan rules and the file list up front. Plain parallel gets the same agent fixes, so the comparison stays fair. Two rounds after the fixes (18:47 and 18:54):
+
+| Setup | Wall time | Agent cost | Hidden tests | Conflicts | Repairs on `main` |
+|---|---|---|---|---|---|
+| One agent | 1m 37s – 1m 38s | $0.25 – $0.26 | 21/21, 21/21 | 0 | 0 |
+| Six agents, plain worktrees | 2m 52s – 3m 14s | $0.61 – $0.62 | 21/21, 21/21 | 4 | 8 |
+| Six agents, fanout | 2m 44s – 2m 51s | $0.61 – $0.66 | 20/21, 21/21 | 0 | 0 |
+
+- **fanout got about a third faster** (from 4m 11s in the traced run before the fixes) and is now faster than plain parallel, while still preventing every conflict and repair.
+- **The planner dropped from about 100 seconds to under 60.** Each session agent dropped from 74–111 seconds to 46–84.
+- **Cost didn't change.** Each parallel agent still costs about $0.07–$0.12, against roughly $0.04 per feature for one agent working through them in a single session. That gap is the price of starting separate agents.
+- **One agent is still fastest and cheapest at this size.** The one hidden-test miss for fanout was a CSV parsing detail in one round; the next round passed all 21.
+
 ## What this does and doesn't show
 
 - **It shows** that on overlapping work, fanout kept `main` free of conflicts and breakage, with no integration step afterwards, at about the same Claude cost: $0.50–$0.92 against $0.59–$0.63.
@@ -48,8 +98,9 @@ The first three fanout runs (12:30, 12:37 and 12:40 in [results/](results/)) are
 ## Run it yourself
 
 ```bash
-node bench/run.mjs both                      # baseline and fanout
-node bench/run.mjs fanout --model sonnet --budget 1
+node bench/run.mjs all                       # one agent, plain parallel, and fanout
+node bench/run.mjs both                      # plain parallel and fanout
+node bench/run.mjs all --fixture library --budget 2 --single-budget 5   # the bigger task, scored on hidden tests
 node bench/run.mjs both --dry                # plumbing only, no agents
 node bench/run.mjs both --codex-lane receipt # run the receipt lane in Codex
 ```

@@ -1,0 +1,237 @@
+[
+  {
+    "condition": "single",
+    "agents": [
+      {
+        "role": "single",
+        "lane": "-",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 125,
+        "costUsd": 0.2369345,
+        "inTokens": 105731,
+        "outTokens": 13986,
+        "error": null,
+        "sessionId": "01618964-11a4-4b70-b734-9902941de8a8"
+      }
+    ],
+    "conflicts": [],
+    "brokeAfter": [],
+    "repairCommits": 0,
+    "finalTestsPass": true,
+    "seconds": 127,
+    "acceptance": {
+      "pass": 21,
+      "total": 21,
+      "failed": []
+    }
+  },
+  {
+    "condition": "baseline",
+    "agents": [
+      {
+        "role": "lane",
+        "lane": "search",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 124,
+        "costUsd": 0.10638030000000001,
+        "inTokens": 135997,
+        "outTokens": 4659,
+        "error": null,
+        "sessionId": "42333c02-0705-4553-9f1d-01062b41c1fe"
+      },
+      {
+        "role": "lane",
+        "lane": "fines",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 86,
+        "costUsd": 0.07487390000000002,
+        "inTokens": 65792,
+        "outTokens": 3114,
+        "error": null,
+        "sessionId": "df4652ad-7841-4681-81d1-7048a4bb8f01"
+      },
+      {
+        "role": "lane",
+        "lane": "csv",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 105,
+        "costUsd": 0.10262099999999999,
+        "inTokens": 97887,
+        "outTokens": 4943,
+        "error": null,
+        "sessionId": "cacaee0d-18e3-456b-bf51-1305d1d99ceb"
+      },
+      {
+        "role": "lane",
+        "lane": "reports",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 98,
+        "costUsd": 0.0898787,
+        "inTokens": 83987,
+        "outTokens": 4009,
+        "error": null,
+        "sessionId": "75434610-5b8a-496b-8d73-74c462e67d16"
+      },
+      {
+        "role": "lane",
+        "lane": "holds",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 105,
+        "costUsd": 0.10210980000000001,
+        "inTokens": 75936,
+        "outTokens": 5001,
+        "error": null,
+        "sessionId": "8e9ebf10-a3af-49d5-9f04-d40457a7ddd3"
+      },
+      {
+        "role": "lane",
+        "lane": "api",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 105,
+        "costUsd": 0.1056356,
+        "inTokens": 70139,
+        "outTokens": 5160,
+        "error": null,
+        "sessionId": "181caab8-e3ce-4c91-bfcc-0b7222c54c2e"
+      },
+      {
+        "role": "integrator",
+        "lane": "-",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 99,
+        "costUsd": 0.0679713,
+        "inTokens": 148786,
+        "outTokens": 2478,
+        "error": null,
+        "sessionId": "38bc31e4-ceee-46b6-8220-713dde5ffcb7"
+      }
+    ],
+    "conflicts": [
+      "fines",
+      "reports",
+      "holds",
+      "api"
+    ],
+    "brokeAfter": [],
+    "repairCommits": 8,
+    "finalTestsPass": true,
+    "seconds": 238,
+    "acceptance": {
+      "pass": 21,
+      "total": 21,
+      "failed": []
+    }
+  },
+  {
+    "condition": "fanout",
+    "agents": [
+      {
+        "role": "coordinator",
+        "lane": "-",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 103,
+        "costUsd": 0.1138857,
+        "inTokens": 167190,
+        "outTokens": 5215,
+        "error": null,
+        "sessionId": "b6806fb4-b2ff-4d96-a267-8de2cb462de9"
+      },
+      {
+        "role": "lane",
+        "lane": "search",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 156,
+        "costUsd": 0.0753905,
+        "inTokens": 51269,
+        "outTokens": 3415,
+        "error": null,
+        "sessionId": "6668f1df-f240-48d0-abc1-ec0dbf8617e1"
+      },
+      {
+        "role": "lane",
+        "lane": "fines",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 198,
+        "costUsd": 0.0956185,
+        "inTokens": 152037,
+        "outTokens": 4289,
+        "error": null,
+        "sessionId": "818f90d3-798a-4105-97cc-555440262006"
+      },
+      {
+        "role": "lane",
+        "lane": "csv",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 149,
+        "costUsd": 0.07215500000000001,
+        "inTokens": 46244,
+        "outTokens": 4261,
+        "error": null,
+        "sessionId": "b4d58adf-deec-44f6-b8d9-447b83a48994"
+      },
+      {
+        "role": "lane",
+        "lane": "reports",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 158,
+        "costUsd": 0.07866300000000001,
+        "inTokens": 59058,
+        "outTokens": 3944,
+        "error": null,
+        "sessionId": "800926a8-a6a4-468f-aaa6-ef71f473b90a"
+      },
+      {
+        "role": "lane",
+        "lane": "holds",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 150,
+        "costUsd": 0.080152,
+        "inTokens": 51360,
+        "outTokens": 4313,
+        "error": null,
+        "sessionId": "a6896454-22ab-4db7-941f-4e9e14a640ec"
+      },
+      {
+        "role": "lane",
+        "lane": "api",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 147,
+        "costUsd": 0.0510034,
+        "inTokens": 33124,
+        "outTokens": 2871,
+        "error": null,
+        "sessionId": "6b4181ae-9dc9-4754-9642-144283bc0c64"
+      }
+    ],
+    "conflicts": [],
+    "brokeAfter": [],
+    "repairCommits": 0,
+    "rehearsals": [
+      "OK after api (all 6 merged)\nAll branches merge and pass together."
+    ],
+    "blockedFiles": [],
+    "plan": "test: npm test\nregen: src/index.mjs via npm run gen\n\n## holds\nowns: src/holds.mjs, src/store.mjs, test/holds.test.mjs, test/store.test.mjs\nexposes: src/store.mjs\ntask: add holds (placeHold, cancelHold, holdsFor) and hold-aware availableCopies and checkout in store.mjs\ndone: holds behave per TASKS.md; createStore keeps payments: [] and holds: []; npm test passes\n\n## search\nowns: src/search.mjs, test/search.test.mjs\nexposes: src/search.mjs\nuses: src/store.mjs\ntask: implement search(store, query) with filters, sort and paging\ndone: search matches TASKS.md; npm test passes\n\n## fines\nowns: src/fines.mjs, test/fines.test.mjs\nexposes: src/fines.mjs\nuses: src/store.mjs\ntask: implement finesFor, memberBalance and payFine against store.payments\ndone: fines match TASKS.md; npm test passes\n\n## csv\nowns: src/csv.mjs, test/csv.test.mjs\nuses: src/store.mjs\ntask: implement exportBooks and importBooks\ndone: csv matches TASKS.md; npm test passes\n\n## reports\nowns: src/reports.mjs, test/reports.test.mjs\nuses: src/store.mjs\ntask: implement overdueReport, popularBooks and memberActivity\ndone: reports match TASKS.md; npm test passes\n\n## api\nowns: src/api.mjs, test/api.test.mjs\nuses: src/search.mjs, src/fines.mjs, src/store.mjs\ntask: implement createServer(store) with the HTTP routes\ndone: routes match TASKS.md; npm test passes\n",
+    "finalTestsPass": true,
+    "seconds": 349,
+    "acceptance": {
+      "pass": 21,
+      "total": 21,
+      "failed": []
+    }
+  }
+]

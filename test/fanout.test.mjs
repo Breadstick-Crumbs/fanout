@@ -225,6 +225,8 @@ test("rehearse: one test run when everything passes, a short bisect when not", (
   const ok = run(["rehearse"], { cwd: d });
   assert.equal(ok.status, 0, ok.stdout + ok.stderr);
   assert.equal(runs(), 1);
+  const logged = JSON.parse(readFileSync(join(d, ".fanout/log.jsonl"), "utf8").trim().split("\n").at(-1));
+  assert.deepEqual([logged.kind, logged.sessions, logged.testRuns, logged.result], ["rehearse", 4, 1, "pass"]);
   g("checkout", "-q", "fanout/c"); writeFileSync(join(d, "c.txt"), "boom"); g("add", "-A"); g("commit", "-qm", "break"); g("checkout", "-q", "main");
   const r = run(["rehearse"], { cwd: d });
   assert.equal(r.status, 1);
@@ -360,6 +362,20 @@ if (name === "b") writeFileSync("b.mjs", 'import { a } from "./a.mjs"\\nexport c
   assert.match(r.stdout, /merged into main: a -> b \(3 agent runs, 1 fixes/);
   assert.equal(execFileSync(process.execPath, ["-e", 'import("./b.mjs").then((m) => console.log(m.b))'], { cwd: d, encoding: "utf8" }).trim(), "2");
   assert.equal(execFileSync("git", ["branch", "--list", "fanout/*"], { cwd: d, encoding: "utf8" }).trim(), "");
+  // The run left one log line: phases, test runs, the fix, and cost "unknown" (not $0) for a non-Claude agent.
+  const runs = readFileSync(join(d, ".fanout/log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((x) => x.kind === "run");
+  assert.equal(runs.length, 1);
+  const [rec] = runs;
+  assert.equal(rec.result, "merged");
+  assert.equal(rec.sessions, 2);
+  assert.equal(rec.fixes, 1);
+  assert.ok(rec.testRuns >= 3, `test runs ${rec.testRuns}`);
+  assert.equal(rec.costUnknown, true);
+  assert.deepEqual(Object.keys(rec.phases), ["plan", "sessions", "rehearse", "merge"]);
+  assert.deepEqual(rec.agents.map((a) => a.role), ["lane", "lane", "fix"]);
+  const shown = run(["log"], { cwd: d });
+  assert.equal(shown.status, 0);
+  assert.match(shown.stdout, /run\s+2\s+\S+\s+1\s+\d+\s+\$0\.00\+\?\s+merged/);
 });
 
 test("verify uses the branch name and the default plan", () => {

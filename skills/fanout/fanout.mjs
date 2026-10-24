@@ -6,7 +6,8 @@
 //   fanout guard                                    PreToolUse hook (installed by the plugin)
 //   fanout install-git-hook [--force]               same rules as a git pre-commit hook, for agents outside Claude Code
 //   fanout run ["goal"] [--yes] [--agent claude|codex|"<cmd>"]   do the whole fan-out: plan, agents, rehearse, fix, merge (see run.mjs)
-import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync, realpathSync } from "node:fs";
+//   fanout log [--last 20]                          past runs and rehearsals from .fanout/log.jsonl: time, cost, fixes, test runs
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, chmodSync, existsSync, realpathSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { resolve, relative, isAbsolute, join, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -186,7 +187,8 @@ const defaultPlan = (cwd) => resolve(mainRoot(cwd), ".fanout", "plan.md");
 // Output is a few lines plus the tail of a failing run: cheap for an agent to read and act on.
 export function rehearse(order, { cwd, base = "main", test, regen = [], tail = 20 }) {
   const log = [], root = mainRoot(cwd), wt = join(root, ".fanout", "rehearse");
-  const sh = (cmd) => spawnSync(cmd, { cwd: wt, shell: true, encoding: "utf8" });
+  let testRuns = 0;
+  const sh = (cmd) => { if (cmd === test) testRuns++; return spawnSync(cmd, { cwd: wt, shell: true, encoding: "utf8" }); };
   const tailOf = (r) => `${r.stdout ?? ""}${r.stderr ?? ""}`.trimEnd().split("\n").slice(-tail).join("\n");
   const g = (...a) => execFileSync("git", ["-c", "user.name=fanout", "-c", "user.email=fanout@local", ...a],
     { cwd: wt, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -244,7 +246,32 @@ export function rehearse(order, { cwd, base = "main", test, regen = [], tail = 2
     }
   } finally { drop(); }
   if (ok) log.push(test ? "All branches merge and pass together." : "All branches merge cleanly (no test command: add `test:` to the plan).");
-  return { ok, log };
+  return { ok, log, testRuns };
+}
+
+// Run log: one JSON line per fan-out or rehearsal in .fanout/log.jsonl (git-ignored, stays local),
+// so real projects produce their own numbers: time, cost, fixes, test runs, result.
+export function appendLog(cwd, rec) {
+  try {
+    const dir = join(mainRoot(cwd), ".fanout");
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, "log.jsonl"), JSON.stringify({ at: new Date().toISOString(), ...rec }) + "\n");
+  } catch { /* logging must never break a run */ }
+}
+
+function showLog(cwd, limit = 20) {
+  let lines = [];
+  try { lines = readFileSync(join(mainRoot(cwd), ".fanout", "log.jsonl"), "utf8").split("\n").filter(Boolean); } catch { /* none yet */ }
+  if (!lines.length) { console.log("No runs logged yet."); return 0; }
+  const recs = lines.slice(-limit).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  const mins = (s) => (s == null ? "" : s < 90 ? `${Math.round(s)}s` : `${(s / 60).toFixed(1)}m`);
+  console.log("when              kind      sessions  time    fixes  test runs  cost     result");
+  for (const r of recs) {
+    const cost = r.costUsd == null ? "" : `$${r.costUsd.toFixed(2)}${r.costUnknown ? "+?" : ""}`;
+    console.log([r.at.slice(0, 16).replace("T", " "), (r.kind ?? "").padEnd(8), String(r.sessions ?? "").padEnd(8),
+      mins(r.seconds).padEnd(6), String(r.fixes ?? "").padEnd(5), String(r.testRuns ?? "").padEnd(9), cost.padEnd(7), r.result ?? ""].join("  "));
+  }
+  return 0;
 }
 const explicitPlan = (argv) => (argv[1] && !argv[1].startsWith("--") ? argv[1] : null);
 
@@ -255,7 +282,8 @@ function main(argv) {
   const cwd = resolve(arg(argv, "--cwd", process.cwd()));
   if (cmd === "precommit") return precommit(cwd);
   if (cmd === "install-git-hook") return installHook(cwd, argv.includes("--force"));
-  if (!["check", "verify", "rehearse"].includes(cmd)) { console.error("usage: fanout check [plan.md] | verify [--session name] [--base main] | rehearse [--base main] [--test cmd] | install-git-hook [--force] | guard"); return 2; }
+  if (cmd === "log") return showLog(cwd, Number(arg(argv, "--last", "20")));
+  if (!["check", "verify", "rehearse"].includes(cmd)) { console.error("usage: fanout check [plan.md] | verify [--session name] [--base main] | rehearse [--base main] [--test cmd] | run [\"goal\"] [--yes] | log [--last 20] | install-git-hook [--force] | guard"); return 2; }
   const planPath = explicitPlan(argv) ?? defaultPlan(cwd);
   let text;
   try { text = readFileSync(planPath, "utf8"); } catch { console.error(`No plan at ${planPath}`); return 2; }
@@ -270,8 +298,11 @@ function main(argv) {
   if (cmd === "rehearse") {
     const { problems, order } = check(sessions, cwd, regen);
     if (problems.length) { problems.forEach((p) => console.log(p)); console.log("Fix the plan first (fanout check)."); return 1; }
-    const { ok, log } = rehearse(order, { cwd, base: arg(argv, "--base", "main"), test: arg(argv, "--test") ?? planSetting(text, "test"), regen });
+    const t0 = Date.now();
+    const { ok, log, testRuns } = rehearse(order, { cwd, base: arg(argv, "--base", "main"), test: arg(argv, "--test") ?? planSetting(text, "test"), regen });
     log.forEach((l) => console.log(l));
+    appendLog(cwd, { kind: "rehearse", sessions: order.length, seconds: Math.round((Date.now() - t0) / 1000), testRuns,
+      result: ok ? "pass" : (log.find((l) => /^(BROKE|CONFLICT|REGEN FAILED|FLAKY|BASE FAILS)/.test(l)) ?? "fail").split(":")[0] });
     return ok ? 0 : 1;
   }
   const name = arg(argv, "--session") ?? currentSession(cwd);

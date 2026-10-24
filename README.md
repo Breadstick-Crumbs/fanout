@@ -173,6 +173,19 @@ Same four overlapping tasks, four parallel agents, with and without fanout ([ful
 
 Breaks still happened with fanout, but `rehearse` caught them before `main` and the agent that caused each one fixed it. One pair of runs mixed Claude and Codex, with the same result. It's a small benchmark. Rerun it with `node bench/run.mjs both`.
 
+## When to use it
+
+Parallel agents aren't free. Each one loads and reads the code on its own, so splitting work only pays when the work is big enough.
+
+**Use one agent** unless each part is substantial. In our benchmarks, one agent did four small tasks about 3× faster and cheaper than four parallel agents, and six medium features (21 hidden tests, all passed either way) about 2.5× faster and cheaper than six. Each parallel agent pays its own startup and reading time, roughly 100 seconds, so parts need to take minutes, not seconds, before splitting pays off.
+
+**Use fanout** when:
+- the job is big enough that one agent would take a long time, and it splits into parts with their own files;
+- several agents touch shared code, where a clean merge can still break the build;
+- you run agents headless or in CI, or mix Claude Code and Codex, and nobody is watching each merge.
+
+Even when you don't split the work, `rehearse` and the edit guard cost nothing to run.
+
 ## FAQ
 
 **Do I need to configure anything?**
@@ -182,7 +195,7 @@ No. The plan is the only file, and your agent writes it.
 No. It only acts on branches named `fanout/*`.
 
 **Will it burn tokens?**
-No. The checks are plain scripts with no AI calls, and a failure report is a few lines, not a full log.
+fanout's checks don't: they're plain scripts with no AI calls, and a failure report is a few lines, not a full log. Running several agents does cost more than one, so split work only when it's big enough (see [When to use it](#when-to-use-it)). The planning step is the largest single cost of a `fanout run`; inside Claude Code, your own session plans for free.
 
 **Can I mix Claude Code and Codex?**
 Yes. Sessions are just git branches. Run some in Claude, some in Codex, or headless (`claude -p`, `codex exec`).

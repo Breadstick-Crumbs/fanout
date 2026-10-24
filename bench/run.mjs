@@ -1,19 +1,22 @@
 #!/usr/bin/env node
-// Benchmark: the same four tasks (bench/shop/TASKS.md) done by four parallel agents, twice.
-//   baseline: plain worktrees, then merge, then one integrator agent cleans up.
+// Benchmark: the same tasks (bench/<fixture>/TASKS.md, one "## name" per task), done three ways.
+//   single:   one agent does all four tasks, one after another. The "why parallel at all?" baseline.
+//   baseline: four parallel agents on plain worktrees, then merge, then one integrator agent cleans up.
 //   fanout:   a coordinator agent plans and writes contracts with the fanout skill, lanes are
 //             guarded, rehearse finds breaks and the lane that caused one fixes it, then merge.
 // The "receipt" lane runs in Codex, the rest in Claude Code, in both conditions.
 //
-//   node bench/run.mjs [baseline|fanout|both] [--dry] [--model sonnet] [--budget 1] [--codex-lane receipt|none]
+// Fixtures: shop (4 small tasks) and library (6 bigger ones). If bench/<fixture>-acceptance/ exists, its hidden
+// tests are copied in at the end and scored, so every setup is judged the same way.
+//   node bench/run.mjs [single|baseline|fanout|both|all] [--fixture shop|library] [--single-budget 5] [--dry]   (both = baseline + fanout; all adds single) [--model sonnet] [--budget 1] [--codex-lane receipt|none]
 // --dry swaps every agent for a no-op (the coordinator writes a canned plan) to test the plumbing.
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from "node:fs";
+import { tmpdir, homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parsePlan, parseRegen, blockReason } from "../skills/fanout/fanout.mjs";
-import { runAgent } from "../skills/fanout/run.mjs";
+import { parsePlan, parseRegen, planSetting, blockReason } from "../skills/fanout/fanout.mjs";
+import { runAgent, staggered, plannerPrompt, brief as laneBrief } from "../skills/fanout/run.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FANOUT = join(ROOT, "skills", "fanout", "fanout.mjs");
@@ -21,11 +24,15 @@ const argv = process.argv.slice(2);
 const opt = (f, d) => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1] : d; };
 const MODE = argv[0] && !argv[0].startsWith("--") ? argv[0] : "both";
 const DRY = argv.includes("--dry");
-const MODEL = opt("--model", "sonnet"), BUDGET = opt("--budget", "1");
-const LANES = ["currency", "discounts", "receipt", "tax"];
-const CODEX_LANE = opt("--codex-lane", "receipt"); // "none" runs every lane in Claude
-const TASKS = Object.fromEntries(readFileSync(join(ROOT, "bench/shop/TASKS.md"), "utf8").split(/^## /m).slice(1)
+const MODEL = opt("--model", "sonnet"), BUDGET = opt("--budget", "1"), SINGLE_BUDGET = opt("--single-budget", "5");
+const FIXTURE = opt("--fixture", "shop"), FIXTURE_DIR = join(ROOT, "bench", FIXTURE), ACCEPTANCE = join(ROOT, "bench", `${FIXTURE}-acceptance`);
+const TASKS_MD = readFileSync(join(FIXTURE_DIR, "TASKS.md"), "utf8");
+const CODEX_LANE = opt("--codex-lane", "none"); // a task name to run that lane in Codex
+const TASKS = Object.fromEntries(TASKS_MD.split(/^## /m).slice(1)
   .map((b) => { const [name, ...rest] = b.split("\n"); return [name.trim(), rest.join("\n").trim()]; }));
+const LANES = Object.keys(TASKS);
+// The fixture-wide notes above the first task go into every brief.
+const PREAMBLE = TASKS_MD.split(/^## /m)[0].replace(/^#.*$/m, "").trim();
 
 const run = (cmd, args, cwd, input) => {
   const r = spawnSync(cmd, args, { cwd, encoding: "utf8", input, shell: process.platform === "win32" && cmd !== "git" && cmd !== process.execPath });
@@ -40,14 +47,14 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 async function agent({ lane, role, cwd, prompt, plugin = false, allowGit = false, dryAction }) {
   const kind = lane === CODEX_LANE && role !== "coordinator" && role !== "integrator" ? "codex" : "claude";
   if (DRY) { dryAction?.(); return { role, lane, kind, seconds: 0, costUsd: 0, inTokens: 0, outTokens: 0, error: null }; }
-  const r = await runAgent({ agent: kind, cwd, prompt, plugin, allowGit, model: kind === "claude" ? MODEL : undefined, budget: kind === "claude" ? BUDGET : undefined });
+  const r = await runAgent({ agent: kind, cwd, prompt, plugin, allowGit, model: kind === "claude" ? MODEL : undefined, budget: kind !== "claude" ? undefined : role === "single" ? SINGLE_BUDGET : BUDGET });
   return { role, lane, kind, ...r };
 }
 
 function setup(name) {
   const dir = mkdtempSync(join(tmpdir(), `fanout-bench-${name}-`));
   const repo = join(dir, "repo");
-  cpSync(join(ROOT, "bench/shop"), repo, { recursive: true });
+  cpSync(FIXTURE_DIR, repo, { recursive: true });
   git(repo, "init", "-q", "-b", "main");
   git(repo, "config", "user.name", "bench"); git(repo, "config", "user.email", "bench@local");
   writeFileSync(join(repo, ".git/info/exclude"), ".fanout/\nnode_modules/\n");
@@ -65,8 +72,8 @@ async function baseline() {
   log("baseline: repo", repo);
   const wts = Object.fromEntries(LANES.map((l) => [l, join(dir, l)]));
   for (const l of LANES) git(repo, "worktree", "add", "-q", "-b", `lane/${l}`, wts[l], "main");
-  R.agents.push(...await Promise.all(LANES.map((l) => agent({ lane: l, role: "lane", cwd: wts[l],
-    prompt: `${TASKS[l]}\n\n${COMMON}` }))));
+  R.agents.push(...await staggered(LANES, (l) => agent({ lane: l, role: "lane", cwd: wts[l],
+    prompt: `${PREAMBLE}\n\n${TASKS[l]}\n\n${COMMON}` })));
   for (const l of LANES) commitAll(wts[l], l);
   for (const l of LANES) {
     const m = git(repo, "merge", "--no-ff", "--no-edit", `lane/${l}`);
@@ -77,7 +84,7 @@ async function baseline() {
   const t = npmTest(repo);
   log(`baseline: conflicts=${R.conflicts.join(",") || "none"} brokeAfter=${R.brokeAfter.join(",") || "none"} testsPass=${t.ok}`);
   if (R.conflicts.length || !t.ok) {
-    const prompt = `Four branches (lane/currency, lane/discounts, lane/receipt, lane/tax) were built in parallel and are being integrated into main.\n` +
+    const prompt = `${LANES.length} branches (${LANES.map((l) => "lane/" + l).join(", ")}) were built in parallel and are being integrated into main.\n` +
       (R.conflicts.length ? `These did not merge cleanly and are not merged yet: ${R.conflicts.map((l) => "lane/" + l).join(", ")}.\n` : "") +
       (t.ok ? "" : `npm test currently fails on main:\n${tail(t.out)}\n`) +
       `Merge whatever isn't merged, resolve conflicts, and make main work with all four features and npm test passing. src/index.mjs is generated by \`npm run gen\`. Commit your work on main.`;
@@ -85,8 +92,23 @@ async function baseline() {
     commitAll(repo, "integrator leftovers");
   }
   R.repairCommits = Number(git(repo, "rev-list", "--count", `${before}..HEAD`).out.trim()) || 0;
-  R.finalTestsPass = npmTest(repo).ok;
+  R.finalTestsPass = npmTest(repo).ok; R.repo = repo; // scored, then dropped before saving
 
+  return R;
+}
+
+// ---------- single agent ----------
+async function single() {
+  const { repo } = setup("single");
+  const R = { condition: "single", agents: [], conflicts: [], brokeAfter: [], repairCommits: 0 };
+  log("single: repo", repo);
+  R.agents.push(await agent({ lane: "-", role: "single", cwd: repo, prompt: `Do all of these tasks in this codebase.
+
+${TASKS_MD}
+
+${COMMON}` }));
+  commitAll(repo, "single agent");
+  R.finalTestsPass = npmTest(repo).ok; R.repo = repo; // scored, then dropped before saving
   return R;
 }
 
@@ -120,9 +142,10 @@ async function fanout() {
   const R = { condition: "fanout", agents: [], conflicts: [], brokeAfter: [], repairCommits: 0, rehearsals: [], blockedFiles: [] };
   log("fanout: repo", repo);
   run(process.execPath, [FANOUT, "install-git-hook"], repo);
-  const coord = `Follow the fanout skill at ${join(ROOT, "skills/fanout/SKILL.md")} (read it first; its script is ${FANOUT}, run it with node) to split these four tasks into parallel sessions. Do only the planning part: write .fanout/plan.md (sessions named exactly ${LANES.join(", ")}; include test: and regen: lines), run the check until it passes, then write and commit the contract files on main. Do not start any sessions, create worktrees, or implement the tasks beyond the contracts: I start the sessions myself. Treat the plan as approved.\n\n${readFileSync(join(ROOT, "bench/shop/TASKS.md"), "utf8")}`;
+  // The same planner prompt `fanout run` uses; the benchmark only pins the session names to its tasks.
+  const coord = plannerPrompt({ goal: TASKS_MD, base: "main", root: repo, extra: `\nUse exactly one session per task, named ${LANES.join(", ")}.\n` });
   R.agents.push(await agent({ lane: "-", role: "coordinator", cwd: repo, prompt: coord, plugin: true, allowGit: true,
-    dryAction: () => { mkdirSync(join(repo, ".fanout"), { recursive: true }); writeFileSync(join(repo, ".fanout/plan.md"), CANNED_PLAN); } }));
+    dryAction: () => { mkdirSync(join(repo, ".fanout"), { recursive: true }); writeFileSync(join(repo, ".fanout/plan.md"), FIXTURE === "shop" ? CANNED_PLAN : `test: npm test\n\n${LANES.map((l) => `## ${l}\nowns: src/${l}.mjs, test/${l}.test.mjs\ntask: ${l}\n`).join("\n")}`); } }));
   commitAll(repo, "coordinator leftovers");
   const planPath = join(repo, ".fanout/plan.md");
   if (!existsSync(planPath)) { R.error = "coordinator wrote no plan"; return R; }
@@ -133,11 +156,8 @@ async function fanout() {
   const order = chk.out.match(/Merge order: (.*)/)[1].trim().split(" -> ");
   const wts = Object.fromEntries(LANES.map((l) => [l, join(dir, l)]));
   for (const l of LANES) git(repo, "worktree", "add", "-q", "-b", `fanout/${l}`, wts[l], "main");
-  const brief = (s) => `You are session "${s.name}" of a parallel fan-out; other sessions are doing the other parts at the same time.\n\nTask:\n${TASKS[s.name]}\n\n` +
-    `You may edit only: ${s.owns.join(", ")}.\n` +
-    (s.uses.length ? `Interfaces you depend on (frozen; read them, don't edit them): ${s.uses.join(", ")}.\n` : "") +
-    (regen.length ? `Generated files (${regen.flatMap((r) => r.paths).join(", ")}) are rebuilt after merging: you may run the generator to test, but your edits to them are discarded.\n` : "") +
-    `Read only the files you need. Done when: ${(text.split(`## ${s.name}`)[1] ?? "").match(/^done:(.*)$/m)?.[1]?.trim() ?? "the task works"}.\n\n${COMMON}`;
+  // The same brief `fanout run` gives, with the full task spec appended (the plan's task: line is one line).
+  const brief = (s) => laneBrief(s, sessions, regen, planSetting(text, "test"), `\nFull task spec:\n${PREAMBLE}\n\n${TASKS[s.name]}`);
   // Commit a lane, as the git hook allows; files the plan forbids are reverted and counted.
   const commitLane = (l) => {
     const s = sessions.find((x) => x.name === l);
@@ -151,7 +171,7 @@ async function fanout() {
     }
     return git(wts[l], "commit", "-qm", l);
   };
-  R.agents.push(...await Promise.all(LANES.map((l) => agent({ lane: l, role: "lane", cwd: wts[l], prompt: brief(sessions.find((s) => s.name === l)) }))));
+  R.agents.push(...await staggered(LANES, (l) => agent({ lane: l, role: "lane", cwd: wts[l], prompt: brief(sessions.find((s) => s.name === l)) })));
   for (const l of LANES) commitLane(l);
   for (let round = 0; round < 3; round++) {
     const r = run(process.execPath, [FANOUT, "rehearse"], repo);
@@ -171,39 +191,66 @@ async function fanout() {
     commitAll(repo, "regen");
     if (!npmTest(repo).ok) R.brokeAfter.push(l);
   }
-  R.finalTestsPass = npmTest(repo).ok;
+  R.finalTestsPass = npmTest(repo).ok; R.repo = repo; // scored, then dropped before saving
 
   return R;
 }
 
 // ---------- report ----------
 const sum = (R, k) => R.agents.reduce((a, x) => a + (x[k] || 0), 0);
+const usd = (v) => (v == null ? "?" : `$${v.toFixed(2)}`);
+const costOf = (R) => `${usd(sum(R, "costUsd"))}${R.agents.some((a) => a.costUsd == null) ? " + ?" : ""}`;
+const wall = (s) => (s == null ? "" : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`);
 function report(results) {
-  const rows = results.map((R) => `| ${R.condition} | ${R.conflicts.length ? R.conflicts.join(", ") : "none"} | ${R.brokeAfter.length ? R.brokeAfter.join(", ") : "none"} | ${R.repairCommits} | ${R.finalTestsPass ? "yes" : "**no**"} | $${sum(R, "costUsd").toFixed(2)} | ${Math.round((sum(R, "inTokens") + sum(R, "outTokens")) / 1000)}k | ${R.agents.length} |`);
-  const agents = results.flatMap((R) => R.agents.map((a) => `| ${R.condition} | ${a.role} | ${a.lane} | ${a.kind} | ${a.seconds}s | $${a.costUsd.toFixed(2)} | ${Math.round((a.inTokens + a.outTokens) / 1000)}k | ${a.error ?? ""} |`));
+  const rows = results.map((R) => `| ${R.condition} | ${R.conflicts.length ? R.conflicts.join(", ") : "none"} | ${R.brokeAfter.length ? R.brokeAfter.join(", ") : "none"} | ${R.repairCommits} | ${R.finalTestsPass ? "yes" : "**no**"} | ${R.acceptance ? `${R.acceptance.pass}/${R.acceptance.total}` : "-"} | ${wall(R.seconds)} | ${costOf(R)} | ${Math.round((sum(R, "inTokens") + sum(R, "outTokens")) / 1000)}k | ${R.agents.length} |`);
+  const toolsOf = (a) => Object.entries(a.tools ?? {}).map(([k, v]) => `${k} ${v.length}`).join(", ");
+  const agents = results.flatMap((R) => R.agents.map((a) => `| ${R.condition} | ${a.role} | ${a.lane} | ${a.kind} | ${a.seconds}s | ${a.modelSeconds ?? "?"}s | ${a.turns ?? "?"} | ${toolsOf(a)} | ${usd(a.costUsd)} | ${Math.round((a.inTokens + a.outTokens) / 1000)}k | ${a.error ?? ""} |`));
   return `# Benchmark ${new Date().toISOString().slice(0, 16).replace("T", " ")}${DRY ? " (dry run)" : ""}
 
-Model: ${MODEL} (Claude lanes)${CODEX_LANE === "none" ? "" : `, Codex for the "${CODEX_LANE}" lane`}. Budget cap per Claude agent: $${BUDGET}.
+Model: ${MODEL} (Claude lanes)${CODEX_LANE === "none" ? "" : `, Codex for the "${CODEX_LANE}" lane`}. Fixture: ${FIXTURE}. Budget cap per Claude agent: ${BUDGET} (single agent: ${SINGLE_BUDGET}).
 
-| Condition | Conflicts merging into main | Merges that broke tests | Repair commits | Final tests pass | Claude cost | Tokens | Agent runs |
-|---|---|---|---|---|---|---|---|
+| Condition | Conflicts merging into main | Merges that broke tests | Repair commits | Final tests pass | Hidden tests | Wall time | Agent cost | Tokens | Agent runs |
+|---|---|---|---|---|---|---|---|---|---|
 ${rows.join("\n")}
 
 ${results.map((R) => R.condition === "fanout" ? `fanout: rehearsals ${R.rehearsals.length}, files reverted for leaving their lane: ${R.blockedFiles.length ? R.blockedFiles.join("; ") : "none"}${R.error ? `. Error: ${R.error}` : ""}` : "").filter(Boolean).join("\n")}
 
-| Condition | Role | Lane | Agent | Time | Cost | Tokens | Error |
-|---|---|---|---|---|---|---|---|
+| Condition | Role | Lane | Agent | Time | Model time | Turns | Tools | Cost | Tokens | Error |
+|---|---|---|---|---|---|---|---|---|---|---|
 ${agents.join("\n")}
 `;
 }
 
 const results = [];
-if (MODE !== "fanout") results.push(await baseline());
-if (MODE !== "baseline") results.push(await fanout());
+function acceptance(repo) {
+  if (!repo || !existsSync(ACCEPTANCE)) return null;
+  cpSync(ACCEPTANCE, join(repo, "acceptance"), { recursive: true });
+  const out = run(process.execPath, ["--test", "acceptance/*.test.mjs"], repo).out;
+  const n = (k) => Number(out.match(new RegExp(`^# ${k} (\\d+)`, "m"))?.[1] ?? 0);
+  // A file whose imports fail counts as one test, so the total comes from the test files themselves.
+  const total = readdirSync(ACCEPTANCE).filter((f) => f.endsWith(".test.mjs")).reduce((t, f) => t + (readFileSync(join(ACCEPTANCE, f), "utf8").match(/^test\(/gm) ?? []).length, 0);
+  return { pass: n("pass"), total, failed: [...out.matchAll(/^not ok \d+ - (.*)$/gm)].map((m) => m[1]).filter((t) => !t.includes(".test.mjs")) };
+}
+const timed = async (fn) => { const t0 = Date.now(), R = await fn(); R.seconds = Math.round((Date.now() - t0) / 1000); R.acceptance = acceptance(R.repo); delete R.repo; results.push(R); };
+const want = { single: ["single"], baseline: ["baseline"], fanout: ["fanout"], both: ["baseline", "fanout"], all: ["single", "baseline", "fanout"] }[MODE];
+if (!want) { console.error("usage: node bench/run.mjs [single|baseline|fanout|both|all] [--dry] ..."); process.exit(2); }
+for (const c of want) await timed({ single, baseline, fanout }[c]);
 const md = report(results);
 const out = join(ROOT, "bench", "results");
 mkdirSync(out, { recursive: true });
+// Results are committed, and agents' commands contain local paths: replace the temp and home folders
+// (in every spelling: C:\..., C:/..., /c/..., and JSON-escaped) with placeholders.
+export function scrub(text) {
+  const spellings = (p, label) => {
+    const fwd = p.replaceAll("\\", "/"), drive = fwd.match(/^([A-Za-z]):\//);
+    return [[p.replaceAll("\\", "\\\\"), label], [p, label], [fwd, label], ...(drive ? [[`/${drive[1].toLowerCase()}/${fwd.slice(3)}`, label]] : [])];
+  };
+  let s = text;
+  for (const [from, to] of [...spellings(tmpdir(), "<tmp>"), ...spellings(homedir(), "~")])
+    s = s.replace(new RegExp(from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), to);
+  return s;
+}
 const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
-writeFileSync(join(out, `${stamp}${DRY ? "-dry" : ""}.md`), md);
-writeFileSync(join(out, `${stamp}${DRY ? "-dry" : ""}.json`), JSON.stringify(results, null, 2));
+writeFileSync(join(out, `${stamp}${DRY ? "-dry" : ""}.md`), scrub(md));
+writeFileSync(join(out, `${stamp}${DRY ? "-dry" : ""}.json`), scrub(JSON.stringify(results, null, 2)));
 console.log(md);
