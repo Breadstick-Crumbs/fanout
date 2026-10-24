@@ -19,26 +19,24 @@ fanout stops each of these before it happens, and catches anything that slips th
 
 ## How it works, in one picture
 
-```
- you: "split this into parallel sessions"
-          │
-          ▼
-   ┌─────────────┐  each agent gets its own files.
-   │    plan     │  shared types are written first and frozen.
-   └─────────────┘  you approve it once.
-          │
-   ┌──────┼──────┐
-   ▼      ▼      ▼
- agent  agent  agent   each on its own branch, in its own folder.
-   │      │      │     edits outside its files are blocked.
-   └──────┼──────┘
-          ▼
-   ┌─────────────┐  all branches merged on a scratch copy and tested
-   │  rehearse   │  after each merge. a break is sent back to the agent
-   └─────────────┘  that caused it, which fixes it by itself.
-          │
-          ▼
-        main        merged in the right order. nothing new breaks.
+```mermaid
+flowchart TD
+    you(["You: split this into parallel sessions"])
+    plan["<b>Plan</b><br/>each agent gets its own files<br/>you approve it once"]
+    contracts["<b>Contracts</b><br/>shared types written on main first, then frozen"]
+    subgraph lanes["Agents work in parallel. Edits outside their own files are blocked."]
+        a1["Agent 1<br/>fanout/foundations"]
+        a2["Agent 2<br/>fanout/money"]
+        a3["Agent 3<br/>fanout/landing"]
+    end
+    rehearse["<b>Rehearse</b><br/>merge every branch on a scratch copy<br/>and run tests after each merge"]
+    fix["The agent that broke it gets a short report<br/>and fixes its own branch"]
+    merged(["main: merged in the right order, nothing new breaks"])
+
+    you --> plan --> contracts --> lanes
+    lanes --> rehearse
+    rehearse -- "break found" --> fix --> rehearse
+    rehearse -- "all green" --> merged
 ```
 
 ## Install
