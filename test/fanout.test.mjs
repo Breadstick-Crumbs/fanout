@@ -54,14 +54,23 @@ test("contracts: frozen in the guard (owner included) and flagged by verify", ()
   writeFileSync(join(d, ".fanout/plan.md"), "## foundations\nowns: types.mjs, db/**\nexposes: types.mjs\n## money\nowns: card.mjs\nuses: types.mjs\n");
   g("checkout", "-qb", "fanout/foundations");
   const call = (file) => run(["guard"], { cwd: d, input: JSON.stringify({ tool_name: "Edit", cwd: d, tool_input: { file_path: join(d, file) } }) });
+  assert.equal(call("types.mjs").status, 0); // the owner may edit it
+  assert.equal(call("db/a.mjs").status, 0);
+  writeFileSync(join(d, "types.mjs"), "export function formatPrice() {}\n"); g("commit", "-qam", "evolve");
+  const v = run(["verify"], { cwd: d });
+  assert.equal(v.status, 0);
+  assert.match(v.stdout, /NOTE foundations changed its exposed file types\.mjs/);
+  g("checkout", "-qb", "fanout/money");
   const r = call("types.mjs");
   assert.equal(r.status, 2);
   assert.match(r.stderr, /types\.mjs is a contract \(exposed by "foundations"\)/);
-  assert.equal(call("db/a.mjs").status, 0);
-  writeFileSync(join(d, "types.mjs"), "export function formatPrice() {}\n"); g("commit", "-qam", "rename anyway");
-  const v = run(["verify"], { cwd: d });
-  assert.equal(v.status, 1);
-  assert.match(v.stdout, /CONTRACT CHANGED foundations: types\.mjs/);
+  writeFileSync(join(d, "card.mjs"), "x\n"); g("add", "card.mjs"); g("commit", "-qm", "card");
+  g("checkout", "-q", "main"); g("branch", "-f", "fanout/money", "main");
+  g("checkout", "-q", "fanout/money");
+  writeFileSync(join(d, "types.mjs"), "export function other() {}\n"); g("commit", "-qam", "break it");
+  const v2 = run(["verify"], { cwd: d });
+  assert.equal(v2.status, 1);
+  assert.match(v2.stdout, /CONTRACT CHANGED money: types\.mjs/);
 });
 
 test("check rejects plan-wide settings inside a session, unknown fields and missing owns", () => {
@@ -232,19 +241,25 @@ test("git hook: staged out-of-lane, contract and generated files are refused on 
   g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
   writeFileSync(join(d, "x.txt"), "1"); g("add", "-A"); g("commit", "-qm", "init");
   mkdirSync(join(d, ".fanout"));
-  writeFileSync(join(d, ".fanout/plan.md"), "regen: gen.txt via true\n## s\nowns: mine.txt, types.txt\nexposes: types.txt\n");
+  writeFileSync(join(d, ".fanout/plan.md"), "regen: gen.txt via true\n## s\nowns: mine.txt, types.txt\nexposes: types.txt\n## t\nowns: theirs.txt\nuses: types.txt\n");
   writeFileSync(join(d, ".git/info/exclude"), ".fanout/\n");
   assert.equal(run(["install-git-hook"], { cwd: d }).status, 0);
   assert.equal(run(["install-git-hook"], { cwd: d }).status, 0); // reinstalling over our own hook is fine
   assert.equal(commit("other.txt").status, 0); // main: untouched
   g("checkout", "-qb", "fanout/s");
   assert.equal(commit("mine.txt").status, 0);
-  for (const [file, msg] of [["other.txt", /does not own other\.txt/], ["types.txt", /types\.txt is a contract/], ["gen.txt", /gen\.txt is generated/]]) {
+  for (const [file, msg] of [["other.txt", /does not own other\.txt/], ["gen.txt", /gen\.txt is generated/]]) {
     const r = commit(file);
     assert.notEqual(r.status, 0, file);
     assert.match(r.stderr, msg);
     g("reset", "-q");
   }
+  assert.equal(commit("types.txt").status, 0); // the owner may change its exposed file
+  g("checkout", "-q", "main"); g("checkout", "-qb", "fanout/t");
+  const c = commit("types.txt");
+  assert.notEqual(c.status, 0);
+  assert.match(c.stderr, /types\.txt is a contract/);
+  g("reset", "-q");
   writeFileSync(join(d, ".git/hooks/pre-commit"), "#!/bin/sh\nexit 0\n");
   assert.equal(run(["install-git-hook"], { cwd: d }).status, 1); // someone else's hook: left alone
 });
