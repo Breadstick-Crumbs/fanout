@@ -80,7 +80,7 @@ export const regenFor = (regen, path) => regen.find((r) => r.paths.some((g) => m
 // Why this session may not change rel, or null if it may. Shared by the edit guard and the git hook.
 export function blockReason(sessions, s, regen, rel) {
   const owner = contractOwner(sessions, rel);
-  if (owner) return `${rel} is a contract (exposed by "${owner.name}") and is frozen during the fan-out. Ask the coordinator to change it on main; sessions that use it will be told.`;
+  if (owner && owner.name !== s.name) return `${rel} is a contract (exposed by "${owner.name}") and is frozen for every other session. Ask the coordinator to change the plan, or ask "${owner.name}" to evolve it.`;
   const r = regenFor(regen, rel);
   if (r) return `${rel} is generated (\`${r.cmd}\` rebuilds it after merging). Change its source instead, and don't commit it.`;
   if (ownsFile(s, rel)) return null;
@@ -251,10 +251,13 @@ function main(argv) {
   if (!s) { console.error(`No session "${name}" in plan. Pass --session or run from a fanout/<name> branch.`); return 2; }
   const base = arg(argv, "--base", "main"), head = arg(argv, "--head", "HEAD");
   const changed = git(["diff", "--name-only", `${base}...${head}`], cwd).split("\n").filter(Boolean);
-  const frozen = contractChanges(sessions, changed), generated = changed.filter((f) => regenFor(regen, f));
-  const out = verify(s, changed).filter((f) => !frozen.includes(f) && !generated.includes(f));
+  const contracts = contractChanges(sessions, changed);
+  const frozen = contracts.filter((f) => contractOwner(sessions, f).name !== name), evolved = contracts.filter((f) => !frozen.includes(f));
+  const generated = changed.filter((f) => regenFor(regen, f));
+  const out = verify(s, changed).filter((f) => !contracts.includes(f) && !generated.includes(f));
   out.forEach((f) => console.log(`OUT OF LANE ${name}: ${f}`));
   frozen.forEach((f) => console.log(`CONTRACT CHANGED ${name}: ${f} (exposed by ${contractOwner(sessions, f).name})`));
+  evolved.forEach((f) => console.log(`NOTE ${name} changed its exposed file ${f}; sessions that use it should merge ${name} first and be told`));
   generated.forEach((f) => console.log(`GENERATED CHANGED ${name}: ${f} (rebuilt after merging; don't commit it)`));
   console.log(`${name}: ${changed.length} changed, ${out.length} outside its owns, ${frozen.length} contracts changed, ${generated.length} generated`);
   return out.length || frozen.length || generated.length ? 1 : 0;
