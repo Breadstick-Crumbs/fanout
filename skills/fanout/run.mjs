@@ -35,18 +35,41 @@ const sh = (cmd, cwd) => {
 };
 const q = (s) => (WIN ? `"${s}"` : `'${s.replaceAll("'", `'\\''`)}'`);
 
-// Runs one agent with the prompt on stdin. Never throws; returns cost, tokens, seconds and any error.
-export function runAgent({ agent = "claude", cwd, prompt, model, budget, plugin = false, allowGit = false }) {
-  const rec = { agent, seconds: 0, costUsd: 0, inTokens: 0, outTokens: 0, error: null };
+// Binaries can be swapped (tests point these at a fake agent).
+const bin = (name) => process.env[`FANOUT_${name.toUpperCase()}_BIN`] || name;
+
+// Runs one agent with the prompt on stdin. Never throws; returns cost, tokens, seconds, any error and
+// the agent's session id. With `resume` (a session id from an earlier run) it continues that session
+// with just `prompt`; if that fails it starts fresh with `fallbackPrompt`.
+export async function runAgent({ resume, fallbackPrompt, ...opts }) {
+  if (!resume) return runOnce({ ...opts, prompt: fallbackPrompt ?? opts.prompt });
+  const r = await runOnce({ ...opts, resume });
+  if (!r.error) return r;
+  const fresh = await runOnce({ ...opts, prompt: fallbackPrompt ?? opts.prompt });
+  fresh.seconds += r.seconds; fresh.costUsd += r.costUsd; fresh.inTokens += r.inTokens; fresh.outTokens += r.outTokens;
+  return fresh;
+}
+
+// Headless Claude startup cost, trivial "say ok" call through `claude -p` with the flags below:
+//   before (default tool set): ~39k input tokens, $0.31 cold cache / $0.08 warm
+//   --tools Read,Edit,Write,Glob,Grep,Bash: ~8.6k input tokens, $0.03 cold / $0.002 warm
+// The built-in tool schemas (Task, WebFetch, notebook, cron, ...) were most of that. --allowedTools still
+// limits Bash to node/npm/npx(/git). --setting-sources and --disable-slash-commands made no measurable
+// difference here, and --bare needs an API key, so they are not used.
+const CLAUDE_TOOLS = "Read,Edit,Write,Glob,Grep,Bash";
+
+function runOnce({ agent = "claude", cwd, prompt, model, budget, plugin = false, allowGit = false, resume }) {
+  const rec = { agent, seconds: 0, costUsd: 0, inTokens: 0, outTokens: 0, error: null, sessionId: null };
   const t0 = Date.now();
   let cmd;
   if (agent === "claude") {
     const tools = ["Read", "Edit", "Write", "Glob", "Grep", "Bash(node:*)", "Bash(npm:*)", "Bash(npx:*)", ...(allowGit ? ["Bash(git:*)"] : [])];
-    cmd = ["claude", "-p", "--permission-mode", "acceptEdits", "--allowedTools", q(tools.join(",")), "--output-format", "json",
+    cmd = [bin("claude"), "-p", ...(resume ? ["--resume", resume] : []), "--tools", CLAUDE_TOOLS, "--permission-mode", "acceptEdits", "--allowedTools", q(tools.join(",")), "--output-format", "json",
       "--strict-mcp-config", ...(model ? ["--model", model] : []), ...(budget ? ["--max-budget-usd", budget] : []),
       ...(plugin ? ["--plugin-dir", q(PLUGIN_ROOT)] : [])].join(" ");
   } else if (agent === "codex") {
-    cmd = ["codex", "exec", "--json", "-s", "workspace-write", "--skip-git-repo-check", "-C", q(cwd), ...(model ? ["-m", model] : [])].join(" ");
+    cmd = [bin("codex"), "exec", "--json", "-s", "workspace-write", "--skip-git-repo-check", "-C", q(cwd), ...(model ? ["-m", model] : []),
+      ...(resume ? ["resume", resume] : [])].join(" ");
   } else cmd = agent;
   return new Promise((done) => {
     const p = spawn(cmd, { cwd, shell: true });
@@ -61,6 +84,7 @@ export function runAgent({ agent = "claude", cwd, prompt, model, budget, plugin 
         if (agent === "claude") {
           const j = JSON.parse(out.slice(out.indexOf("{")));
           const u = j.usage ?? {};
+          rec.sessionId = j.session_id ?? null;
           rec.costUsd = j.total_cost_usd ?? 0;
           rec.inTokens = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
           rec.outTokens = u.output_tokens ?? 0;
@@ -69,6 +93,7 @@ export function runAgent({ agent = "claude", cwd, prompt, model, budget, plugin 
           for (const line of out.split("\n")) {
             if (!line.startsWith("{")) continue;
             const e = JSON.parse(line);
+            if (e.type === "thread.started" && e.thread_id) rec.sessionId = e.thread_id;
             if (e.type === "turn.completed" && e.usage) { rec.inTokens += e.usage.input_tokens ?? 0; rec.outTokens += e.usage.output_tokens ?? 0; }
             if (e.type === "turn.failed") rec.error = JSON.stringify(e.error ?? e).slice(0, 200);
           }
@@ -171,6 +196,7 @@ export async function cli(argv) {
   log(`starting ${sessions.length} sessions: ${sessions.map((s) => `${s.name} (${agentFor(s)})`).join(", ")}`);
   const lanes = await Promise.all(sessions.map((s) => runAgent({ agent: agentFor(s), cwd: wt[s.name], prompt: brief(s, sessions, regen, test), model, budget })));
   agents.push(...lanes);
+  const session = Object.fromEntries(sessions.map((s, i) => [s.name, lanes[i].sessionId]));
   sessions.forEach((s, i) => {
     const { reverted } = commitLane(wt[s.name], sessions, s, regen, `fanout: ${s.name}`);
     log(`${s.name}: done in ${lanes[i].seconds}s${lanes[i].error ? `, agent error: ${lanes[i].error}` : ""}${reverted.length ? `, reverted out-of-lane: ${reverted.join(", ")}` : ""}`);
@@ -190,8 +216,11 @@ export async function cli(argv) {
       log(`stopped: ${name ?? "a lane"} still breaks after ${maxFixes} fixes. Its work is in .fanout/lanes/${name}; fix it there, then run again.`);
       return 1;
     }
-    const fix = await runAgent({ agent: agentFor(s), cwd: wt[name], model, budget,
-      prompt: brief(s, sessions, regen, test, `\nYour branch was merged with the others in plan order and it broke:\n${r.log.join("\n")}\n\nFix it within the files you may change.`) });
+    const report = `Your branch was merged with the others in plan order and it broke:\n${r.log.join("\n")}\n\nFix it within the files you may change.`;
+    // Resume the lane's own session with just the break report; if that fails, send the full brief again.
+    const fix = await runAgent({ agent: agentFor(s), cwd: wt[name], model, budget, resume: session[name], prompt: report,
+      fallbackPrompt: brief(s, sessions, regen, test, `\n${report}`) });
+    session[name] = fix.sessionId ?? session[name];
     agents.push(fix);
     commitLane(wt[name], sessions, s, regen, `fanout: fix ${name}`);
   }
