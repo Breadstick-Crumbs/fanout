@@ -57,9 +57,10 @@ flowchart TD
 
 ```bash
 codex plugin marketplace add Breadstick-Crumbs/fanout
+codex plugin add fanout@fanout
 ```
 
-Then in Codex, open `/plugins` to install **fanout** and `/hooks` to trust its edit guard.
+That gives Codex the fanout skill. In Codex, out-of-lane work is caught when it's committed (by fanout's git hook, and by `fanout run`, which reverts it), not at the moment of the edit: in our tests, `codex exec` didn't run plugin hooks even after trusting fanout's in `/hooks`. In Claude Code, edits are blocked as they happen.
 
 **Any other agent**
 
