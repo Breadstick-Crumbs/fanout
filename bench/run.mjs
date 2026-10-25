@@ -8,7 +8,7 @@
 //
 // Fixtures: shop (4 small tasks), library (6 bigger ones) and sheet (6 large ones, minutes each). If bench/<fixture>-acceptance/ exists, its hidden
 // tests are copied in at the end and scored, so every setup is judged the same way.
-//   node bench/run.mjs [single|baseline|fanout|both|all] [--fixture shop|library|sheet] [--groups a+b,c+d] [--single-budget 5] [--dry]   (both = baseline + fanout; all adds single) [--model sonnet] [--budget 1] [--codex-lane receipt|none]
+//   node bench/run.mjs [single|baseline|fanout|both|all] [--fixture shop|library|sheet] [--groups a+b,c+d] [--lean] [--single-budget 5] [--dry]   (both = baseline + fanout; all adds single) [--model sonnet] [--budget 1] [--codex-lane receipt|none]
 // --dry swaps every agent for a no-op (the coordinator writes a canned plan) to test the plumbing.
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from "node:fs";
@@ -27,6 +27,9 @@ const MODE = argv[0] && !argv[0].startsWith("--") ? argv[0] : "both";
 const DRY = argv.includes("--dry");
 // --vague: the planner gets a one-line goal and picks the split itself; sessions read TASKS.md from the repo.
 const VAGUE = argv.includes("--vague");
+// --lean: fanout lanes write only a few tests of their own; rehearse tests the combined branches.
+const LEAN = argv.includes("--lean");
+const LEAN_NOTE = "\nTests: all branches are merged and tested together after you finish, so don't write a full test suite. Add at most 3 short tests for your main behaviour, whatever the spec says about tests.";
 const VAGUE_GOAL = "Add the features described in TASKS.md to this library. Split the work however you think best.";
 const MODEL = opt("--model", "sonnet"), BUDGET = opt("--budget", "1"), SINGLE_BUDGET = opt("--single-budget", "5");
 // The planner (fanout's coordinator) and the parallel session agents can run on other models than --model,
@@ -174,7 +177,7 @@ async function fanout() {
   const wts = Object.fromEntries(names.map((l) => [l, join(dir, l)]));
   for (const l of names) git(repo, "worktree", "add", "-q", "-b", `fanout/${l}`, wts[l], "main");
   // The same brief `fanout run` gives, with the full task spec appended (the plan's task: line is one line).
-  const brief = (s) => laneBrief(s, sessions, regen, planSetting(text, "test"), VAGUE ? "\nThe full spec is in TASKS.md: read the parts your task covers." : `\nFull task spec:\n${PREAMBLE}\n\n${TASKS[s.name]}`, repo);
+  const brief = (s) => laneBrief(s, sessions, regen, planSetting(text, "test"), (VAGUE ? "\nThe full spec is in TASKS.md: read the parts your task covers." : `\nFull task spec:\n${PREAMBLE}\n\n${TASKS[s.name]}`) + (LEAN ? LEAN_NOTE : ""), repo);
   // Commit a lane, as the git hook allows; files the plan forbids are reverted and counted.
   const commitLane = (l) => {
     const s = sessions.find((x) => x.name === l);
@@ -224,7 +227,7 @@ function report(results) {
   const agents = results.flatMap((R) => R.agents.map((a) => `| ${R.condition} | ${a.role} | ${a.lane} | ${a.kind} | ${a.seconds}s | ${a.modelSeconds ?? "?"}s | ${a.turns ?? "?"} | ${toolsOf(a)} | ${usd(a.costUsd)} | ${Math.round((a.inTokens + a.outTokens) / 1000)}k | ${a.error ?? ""} |`));
   return `# Benchmark ${new Date().toISOString().slice(0, 16).replace("T", " ")}${DRY ? " (dry run)" : ""}
 
-Models: ${MODEL} (single agent, integrator), planner ${PLANNER_MODEL}, sessions ${SESSION_MODEL}${CODEX_LANE === "none" ? "" : `, Codex for the "${CODEX_LANE}" lane`}. Fixture: ${FIXTURE}${VAGUE ? " (vague goal: the planner picks the split)" : ""}. Budget cap per Claude agent: ${BUDGET} (single agent: ${SINGLE_BUDGET}).
+Models: ${MODEL} (single agent, integrator), planner ${PLANNER_MODEL}, sessions ${SESSION_MODEL}${CODEX_LANE === "none" ? "" : `, Codex for the "${CODEX_LANE}" lane`}. Fixture: ${FIXTURE}${VAGUE ? " (vague goal: the planner picks the split)" : ""}${GROUPS ? `, lanes ${LANES.join(", ")}` : ""}${LEAN ? ", lean lanes (at most 3 tests each)" : ""}. Budget cap per Claude agent: ${BUDGET} (single agent: ${SINGLE_BUDGET}).
 
 | Condition | Conflicts merging into main | Merges that broke tests | Repair commits | Final tests pass | Hidden tests | Wall time | Agent cost | Tokens | Agent runs |
 |---|---|---|---|---|---|---|---|---|---|

@@ -219,6 +219,26 @@ Each agent's transcript records when every API call starts and ends, and how man
 - **One agent is still fastest on this task.** To beat it, fanout needs to save the planning step or the extra command time; the lanes themselves are now about as fast as they can be.
 - **Default to three or four lanes, not one per task:** above that, agents on one account slow each other down.
 
+### Why lanes cost more, and lean lanes (v0.18)
+
+Output tokens are most of the bill: on Sonnet, output costs about 5× input, and output alone was about $0.55 of the one agent's $0.58. The three Sonnet lanes wrote about the same amount of code as one agent (839 lines against 853) but almost 3× the tests (313 lines, 31 tests, against 118 lines, 8 tests), and each lane loads its own prompt and reads the code (830k input tokens against 291k, mostly cheap cached reads). The planner adds about $0.10.
+
+`--lean` tells each lane to write at most 3 short tests, since rehearse tests the merged branches. Same three lanes, one run each ([10:18](results/2026-10-25-10-18.md), [10:24](results/2026-10-25-10-24.md)):
+
+| Setup | Wall time | Agent cost | Lanes' cost | Test lines | Hidden tests |
+|---|---|---|---|---|---|
+| One agent, Sonnet | 4m 05s | $0.58 | - | 118 | 33/34 |
+| 3 Sonnet lanes | 4m 41s | $0.97 | $0.88 | 313 | 34/34 |
+| 3 Sonnet lanes, lean | 4m 51s | $0.78 | $0.69 | 135 | 33/34 |
+| 3 Haiku lanes | 7m 40s | $0.25 | $0.15 | - | 34/34 |
+| 3 Haiku lanes, lean | 6m 21s | $0.21 | $0.10 | 170 | 34/34 |
+
+- **Lean lanes cut the lanes' cost by about a fifth on Sonnet and a third on Haiku.** Test code dropped by more than half, but output only fell from about 55k tokens to 46k: most of a lane's output is its code, and a planner plus three agents' start-up don't shrink.
+- **Sonnet fanout still costs more than one Sonnet agent** ($0.78 against $0.58). Lean lanes close half the gap.
+- **The lean Sonnet run missed one hidden test** (the order `dependents` returns). Fewer tests of its own may have let that slip, or it's run-to-run noise; one run can't tell.
+- **Haiku lanes with lean tests are the cheapest full score yet:** $0.21, about a third of one Sonnet agent, all 34 hidden tests, and faster than full Haiku lanes (fewer edit-and-retest rounds).
+- **So for cost:** cheap session models are the big lever; lean tests are a smaller one on top. Haiku plus lean is the setup to try as a default, checked on more runs and a vaguer task first.
+
 ## What this does and doesn't show
 
 - **It shows** that on overlapping work, fanout kept `main` free of conflicts and breakage, with no integration step afterwards, at about the same Claude cost: $0.50–$0.92 against $0.59–$0.63.
