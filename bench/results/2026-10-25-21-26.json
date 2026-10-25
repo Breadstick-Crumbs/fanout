@@ -1,0 +1,196 @@
+[
+  {
+    "condition": "fanout",
+    "agents": [
+      {
+        "role": "coordinator",
+        "lane": "-",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 20,
+        "costUsd": 0.0529812,
+        "inTokens": 54400,
+        "outTokens": 1071,
+        "error": null,
+        "sessionId": "d6a6ff25-438d-4c9a-a2e4-09142a67741c",
+        "turns": 5,
+        "modelSeconds": 10,
+        "tools": {
+          "Bash": [
+            "cd <tmp>/fanout-bench-fanout-Ea2jQB/repo && ls src test; cat package.json; head -30 src/index.mjs; grep -n \"export\" src/sheet.mjs src/addr.mjs",
+            "cd <tmp>/fanout-bench-fanout-Ea2jQB/repo && cat > src/formula.mjs <<'EOF'\nexport function parseFormula(text) {\n  throw new Error(\"not implemented\");\n}\n\nexport function refsOf(ast) {\n  throw new Error(\"not implemented\");\n}\n\nexport function evaluate(ast, lookup) {\n  throw new Error(\"not implemented\");\n}\nEOF\ncat > src/recalc.mjs <<'EOF'\nexport function valueOf(raw) {\n  throw new Error(\"not implemented\");\n}\n\nexport function computeAll(sheet) {\n  throw new Error(\"not implemented\");\n}\n\nexport function dependents(sheet, addr) {\n  throw new Error(\"not implemented\");\n}\nEOF"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-Ea2jQB\\repo\\src\\formula.mjs",
+            "<tmp>\\fanout-bench-fanout-Ea2jQB\\repo\\src\\recalc.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "formula",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 122,
+        "costUsd": 0.21607050000000003,
+        "inTokens": 136755,
+        "outTokens": 13211,
+        "error": null,
+        "sessionId": "3023a1f9-eb21-4bba-84a5-603fa40df412",
+        "turns": 9,
+        "modelSeconds": 78,
+        "tools": {
+          "Bash": [
+            "cat src/addr.mjs; ls src test; cat package.json",
+            "cat src/formula.mjs; cat src/index.mjs",
+            "cat > src/formula.mjs <<'EOF'\nimport { parseAddr, toAddr } from \"./addr.mjs\";\n\nconst REF = /^\\$?[A-Za-z]{1,3}\\$?[1-9]\\d*$/;\nconst TOKEN = /\\s*(?:(\\d+\\.?\\d*(?:[eE][+-]?\\d+)?|\\.\\d+(?:[eE][+-]?\\d+)?)|\"((?:[^\"]|\"\")*)\"|(\\$?[A-Za-z_][A-Za-z0-9_.]*\\$?\\d*)|(<>|<=|>=|[-+*\\/^&=<>(),:]))/y;\n\nfunction tokenize(text) {\n  const out = [];\n  let pos = 0;\n  while (pos < text.length) {\n    if (/^\\s*$/.test(text.slice(pos))) break;\n    TOKEN.lastIndex = pos;\n    const m = TOKEN.exec(text);\n    if (!m) throw new SyntaxError(`unexpected character at ${pos}: ${text.slice(pos).trim()[0]}`);\n    pos = TOKEN.lastIndex;\n    if (m[1] !== undefined) out.push({ k: \"num\", v: Number(m[1]) });\n    else if (m[2] !== undefined) out.push({ k: \"str\", v: m[2].replace(/\"\"/g, '\"') });\n    else if (m[3] !== undefined) out.push({ k: \"id\", v: m[3] });\n    else out.push({ k: \"op\", v: m[4] });\n  }\n  return out;\n}\n\nconst norm = (s) => s.replace(/\\$/g, \"\").toUpperCase();\n\nexport function parseFormula(text) {\n  const toks = tokenize(String(text));\n  let i = 0;\n  const peekOp = (...ops) => toks[i] && toks[i].k === \"op\" && ops.includes(toks[i].v);\n  const expectOp = (op) => {\n    if (!peekOp(op)) throw new SyntaxError(`expected ${op}`);\n    i++;\n  };\n  const left = (next, ops) => () => {\n    let node = next();\n    while (peekOp(...ops)) {\n      const op = toks[i++].v;\n      node = { t: \"bin\", op, l: node, r: next() };\n    }\n    return node;\n  };\n  const primary = () => {\n    const tok = toks[i++];\n    if (!tok) throw new SyntaxError(\"unexpected end of formula\");\n    if (tok.k === \"num\") return { t: \"num\", v: tok.v };\n    if (tok.k === \"str\") return { t: \"str\", v: tok.v };\n    if (tok.k === \"op\") {\n      if (tok.v !== \"(\") throw new SyntaxError(`unexpected ${tok.v}`);\n      const e = comparison();\n      expectOp(\")\");\n      return e;\n    }\n    const up = tok.v.toUpperCase();\n    if (peekOp(\"(\")) {\n      if (!/^[A-Z_][A-Z0-9_.]*$/.test(up)) throw new SyntaxError(`bad function name ${tok.v}`);\n      i++;\n      const args = [];\n      if (!peekOp(\")\")) {\n        do args.push(comparison()); while (peekOp(\",\") && i++);\n      }\n      expectOp(\")\");\n      return { t: \"call\", name: up, args };\n    }\n    if (REF.test(tok.v)) {\n      const a = norm(tok.v);\n      if (peekOp(\":\")) {\n        i++;\n        const t2 = toks[i++];\n        if (!t2 || t2.k !== \"id\" || !REF.test(t2.v)) throw new SyntaxError(\"bad range\");\n        const p = parseAddr(a), q = parseAddr(norm(t2.v));\n        return {\n          t: \"range\",\n          c1: Math.min(p.col, q.col), c2: Math.max(p.col, q.col),\n          r1: Math.min(p.row, q.row), r2: Math.max(p.row, q.row),\n        };\n      }\n      return { t: \"ref\", addr: a };\n    }\n    if (up === \"TRUE\") return { t: \"bool\", v: true };\n    if (up === \"FALSE\") return { t: \"bool\", v: false };\n    return { t: \"name\", name: up };\n  };\n  const unary = () => {\n    if (peekOp(\"-\", \"+\")) {\n      const op = toks[i++].v;\n      return { t: \"un\", op, e: unary() };\n    }\n    return primary();\n  };\n  const power = left(unary, [\"^\"]);\n  const term = left(power, [\"*\", \"/\"]);\n  const sum = left(term, [\"+\", \"-\"]);\n  const concat = left(sum, [\"&\"]);\n  const comparison = left(concat, [\"=\", \"<>\", \"<\", \">\", \"<=\", \">=\"]);\n  const ast = comparison();\n  if (i < toks.length) throw new SyntaxError(`unexpected ${toks[i].v}`);\n  return ast;\n}\n\nfunction rangeAddrs(n) {\n  const out = [];\n  for (let r = n.r1; r <= n.r2; r++) for (let c = n.c1; c <= n.c2; c++) out.push(toAddr(c, r));\n  return out;\n}\n\nexport function refsOf(ast) {\n  const seen = new Set();\n  const walk = (n) => {\n    switch (n.t) {\n      case \"ref\": seen.add(n.addr); break;\n      case \"range\": for (const a of rangeAddrs(n)) seen.add(a); break;\n      case \"bin\": walk(n.l); walk(n.r); break;\n      case \"un\": walk(n.e); break;\n      case \"call\": n.args.forEach(walk); break;\n    }\n  };\n  walk(ast);\n  return [...seen];\n}\n\nconst isErr = (v) => typeof v === \"string\" && v.startsWith(\"#\");\nconst NUM = /^[+-]?(\\d+\\.?\\d*|\\.\\d+)([eE][+-]?\\d+)?$/;\n\nfunction toNum(v) {\n  if (isErr(v)) return v;\n  if (v === null) return 0;\n  if (typeof v === \"boolean\") return v ? 1 : 0;\n  if (typeof v === \"number\") return v;\n  const s = v.trim();\n  return NUM.test(s) ? Number(s) : \"#VALUE!\";\n}\n\nfunction toBool(v) {\n  if (isErr(v)) return v;\n  if (v === null) return false;\n  if (typeof v === \"boolean\") return v;\n  if (typeof v === \"number\") return v !== 0;\n  const s = v.toUpperCase();\n  return s === \"TRUE\" ? true : s === \"FALSE\" ? false : \"#VALUE!\";\n}\n\nfunction toText(v) {\n  if (isErr(v)) return v;\n  if (v === null) return \"\";\n  if (typeof v === \"boolean\") return v ? \"TRUE\" : \"FALSE\";\n  return String(v);\n}\n\nconst finite = (n) => (Number.isFinite(n) ? n : \"#NUM!\");\nconst rank = (v) => (typeof v === \"number\" ? 0 : typeof v === \"string\" ? 1 : 2);\n\nfunction compare(a, b) {\n  if (a === null && b === null) return 0;\n  if (a === null) a = b === null ? null : typeof b === \"number\" ? 0 : typeof b === \"string\" ? \"\" : false;\n  else if (b === null) b = typeof a === \"number\" ? 0 : typeof a === \"string\" ? \"\" : false;\n  if (rank(a) !== rank(b)) return rank(a) - rank(b);\n  if (typeof a === \"string\") {\n    a = a.toLowerCase();\n    b = b.toLowerCase();\n  }\n  return a < b ? -1 : a > b ? 1 : 0;\n}\n\nfunction round(x, d) {\n  d = Math.trunc(d);\n  const abs = Math.abs(x);\n  let r;\n  const s = String(abs);\n  if (!s.includes(\"e\") && Math.abs(d) < 300) r = Number(Math.round(Number(`${s}e${d}`)) + `e${-d}`);\n  else r = Math.round(abs * 10 ** d) / 10 ** d;\n  return finite(Math.sign(x) * r);\n}\n\nexport function evaluate(ast, lookup) {\n  const ev = (n) => {\n    switch (n.t) {\n      case \"num\": case \"str\": case \"bool\": return n.v;\n      case \"ref\": return lookup(n.addr);\n      case \"range\": return \"#VALUE!\";\n      case \"name\": return \"#NAME?\";\n      case \"un\": {\n        const x = toNum(ev(n.e));\n        if (typeof x === \"string\") return x;\n        return n.op === \"-\" ? finite(-x) : x;\n      }\n      case \"bin\": return binary(n);\n      case \"call\": return call(n);\n    }\n  };\n\n  const binary = (n) => {\n    const a = ev(n.l), b = ev(n.r);\n    if (isErr(a)) return a;\n    if (isErr(b)) return b;\n    switch (n.op) {\n      case \"&\": return toText(a) + toText(b);\n      case \"=\": return compare(a, b) === 0;\n      case \"<>\": return compare(a, b) !== 0;\n      case \"<\": return compare(a, b) < 0;\n      case \">\": return compare(a, b) > 0;\n      case \"<=\": return compare(a, b) <= 0;\n      case \">=\": return compare(a, b) >= 0;\n    }\n    const x = toNum(a);\n    if (typeof x === \"string\") return x;\n    const y = toNum(b);\n    if (typeof y === \"string\") return y;\n    switch (n.op) {\n      case \"+\": return finite(x + y);\n      case \"-\": return finite(x - y);\n      case \"*\": return finite(x * y);\n      case \"/\": return y === 0 ? \"#DIV/0!\" : finite(x / y);\n      case \"^\": return finite(x ** y);\n    }\n  };\n\n  // Calls fn(value) for each value of an argument; ranges are expanded. Returns an error to stop early.\n  const values = (arg) => (arg.t === \"range\" ? rangeAddrs(arg).map((a) => lookup(a)) : null);\n\n  const call = (n) => {\n    const { name, args } = n;\n    const arity = (min, max = min) => args.length >= min && args.length <= max;\n    const scalar = (k) => (args[k].t === \"range\" ? \"#VALUE!\" : ev(args[k]));\n    switch (name) {\n      case \"SUM\": case \"AVERAGE\": case \"MIN\": case \"MAX\": {\n        const nums = [];\n        for (const arg of args) {\n          const vs = values(arg);\n          if (vs) {\n            for (const v of vs) {\n              if (isErr(v)) return v;\n              if (typeof v === \"number\") nums.push(v);\n            }\n          } else {\n            const x = toNum(ev(arg));\n            if (typeof x === \"string\") return x;\n            nums.push(x);\n          }\n        }\n        if (name === \"SUM\") return finite(nums.reduce((s, x) => s + x, 0));\n        if (name === \"AVERAGE\") {\n          return nums.length ? finite(nums.reduce((s, x) => s + x, 0) / nums.length) : \"#DIV/0!\";\n        }\n        if (!nums.length) return 0;\n        return name === \"MIN\" ? Math.min(...nums) : Math.max(...nums);\n      }\n      case \"COUNT\": {\n        let c = 0;\n        for (const arg of args) {\n          const vs = values(arg);\n          if (vs) c += vs.filter((v) => typeof v === \"number\").length;\n          else if (typeof ev(arg) === \"number\") c++;\n        }\n        return c;\n      }\n      case \"IF\": {\n        if (!arity(2, 3)) return \"#VALUE!\";\n        const c = toBool(scalar(0));\n        if (typeof c === \"string\") return c;\n        if (c) return scalar(1);\n        return args.length > 2 ? scalar(2) : false;\n      }\n      case \"AND\": case \"OR\": {\n        if (!arity(1, Infinity)) return \"#VALUE!\";\n        const bs = [];\n        for (const arg of args) {\n          const vs = values(arg);\n          if (vs) {\n            for (const v of vs) {\n              if (isErr(v)) return v;\n              if (typeof v === \"number\" || typeof v === \"boolean\") bs.push(v !== 0 && v !== false);\n            }\n          } else {\n            const b = toBool(ev(arg));\n            if (typeof b === \"string\") return b;\n            bs.push(b);\n          }\n        }\n        return name === \"AND\" ? bs.every(Boolean) : bs.some(Boolean);\n      }\n      case \"NOT\": {\n        if (!arity(1)) return \"#VALUE!\";\n        const b = toBool(scalar(0));\n        return typeof b === \"string\" ? b : !b;\n      }\n      case \"ROUND\": {\n        if (!arity(2)) return \"#VALUE!\";\n        const x = toNum(scalar(0));\n        if (typeof x === \"string\") return x;\n        const d = toNum(scalar(1));\n        if (typeof d === \"string\") return d;\n        return round(x, d);\n      }\n      case \"ABS\": {\n        if (!arity(1)) return \"#VALUE!\";\n        const x = toNum(scalar(0));\n        return typeof x === \"string\" ? x : Math.abs(x);\n      }\n      case \"LEN\": case \"UPPER\": case \"LOWER\": {\n        if (!arity(1)) return \"#VALUE!\";\n        const s = toText(scalar(0));\n        if (isErr(s)) return s;\n        return name === \"LEN\" ? s.length : name === \"UPPER\" ? s.toUpperCase() : s.toLowerCase();\n      }\n      case \"CONCAT\": {\n        let out = \"\";\n        for (const arg of args) {\n          for (const v of values(arg) ?? [ev(arg)]) {\n            if (isErr(v)) return v;\n            out += toText(v);\n          }\n        }\n        return out;\n      }\n      default: return \"#NAME?\";\n    }\n  };\n\n  return ev(ast);\n}\nEOF\ncat > test/formula.test.mjs <<'EOF'\nimport { test } from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { parseFormula, refsOf, evaluate } from \"../src/formula.mjs\";\n\nconst run = (f, cells = {}) => evaluate(parseFormula(f), (a) => cells[a] ?? null);\n\ntest(\"precedence and operators\", () => {\n  assert.equal(run(\"-2^2\"), 4);\n  assert.equal(run(\"2^3^2\"), 64);\n  assert.equal(run('\"a\"&1+2'), \"a3\");\n  assert.equal(run(\"1/0\"), \"#DIV/0!\");\n  assert.equal(run('\"b\">\"A\"'), true);\n  assert.equal(run(\"A1:B2+1\"), \"#VALUE!\");\n  assert.throws(() => parseFormula(\"1+\"), SyntaxError);\n});\n\ntest(\"refsOf\", () => {\n  assert.deepEqual(refsOf(parseFormula(\"sum(B2:A1)+$a$1\")), [\"A1\", \"B1\", \"A2\", \"B2\"]);\n});\n\ntest(\"functions\", () => {\n  const c = { A1: 1, A2: \"x\", A3: 4 };\n  assert.equal(run(\"SUM(A1:A3,2)\", c), 7);\n  assert.equal(run(\"IF(TRUE,1,1/0)\"), 1);\n  assert.equal(run(\"ROUND(-2.5,0)\"), -3);\n  assert.equal(run(\"ROUND(1234,-2)\"), 1200);\n  assert.equal(run(\"FOO(1)\"), \"#NAME?\");\n  assert.equal(run(\"COUNT(A1:A3,\\\"3\\\",5)\", c), 3 - 1 + 1);\n});\nEOF\nnpm run gen >/dev/null; npm test 2>&1 | tail -25",
+            "ls src test; npm test 2>&1 | tail -25",
+            "git status --short; wc -l src/formula.mjs",
+            "npm run gen 2>&1 | tail -3; npm test 2>&1 | grep -E \"^(not ok|# (pass|fail))|Error|expected|actual\" | head -20"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-Ea2jQB\\formula\\src\\formula.mjs",
+            "<tmp>\\fanout-bench-fanout-Ea2jQB\\formula\\test\\formula.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "recalc",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 104,
+        "costUsd": 0.1428802,
+        "inTokens": 116826,
+        "outTokens": 8223,
+        "error": null,
+        "sessionId": "f3efc157-48e8-45c6-bdca-68c4d41b3ce1",
+        "turns": 9,
+        "modelSeconds": 56,
+        "tools": {
+          "Bash": [
+            "cat src/sheet.mjs src/addr.mjs; ls src test; cat package.json",
+            "cat src/recalc.mjs; cat src/index.mjs",
+            "cat > src/recalc.mjs <<'EOF'\nimport { parseFormula, refsOf, evaluate } from \"./formula.mjs\";\nimport { parseAddr, toAddr, colIndex } from \"./addr.mjs\";\n\nexport function valueOf(raw) {\n  if (raw === \"\" || raw == null) return null;\n  const t = raw.trim();\n  if (t !== \"\" && Number.isFinite(Number(t))) return Number(t);\n  const u = t.toUpperCase();\n  if (u === \"TRUE\") return true;\n  if (u === \"FALSE\") return false;\n  if (raw.startsWith(\"'\")) return raw.slice(1);\n  return raw;\n}\n\nconst key = (addr) => { const a = parseAddr(addr); return a.row * 1e6 + a.col; };\n\n// Expands a reference (a cell or an \"A1:B2\" range) into normalized addresses.\nfunction expand(ref) {\n  const parts = String(ref).replace(/\\$/g, \"\").split(\":\");\n  const a = parseAddr(parts[0]), b = parseAddr(parts[parts.length - 1]);\n  const out = [];\n  for (let r = Math.min(a.row, b.row); r <= Math.max(a.row, b.row); r++)\n    for (let c = Math.min(a.col, b.col); c <= Math.max(a.col, b.col); c++) out.push(toAddr(c, r));\n  return out;\n}\n\nfunction parseCells(sheet) {\n  const formulas = new Map(); // addr -> { ast, deps: Set } or { error: true }\n  for (const [addr, raw] of sheet.cells) {\n    if (!raw.startsWith(\"=\")) continue;\n    let ast;\n    try { ast = parseFormula(raw); } catch { formulas.set(addr, { error: true, deps: new Set() }); continue; }\n    const deps = new Set();\n    try { for (const r of refsOf(ast)) for (const d of expand(r)) deps.add(d); } catch { /* bad refs: evaluate reports */ }\n    formulas.set(addr, { ast, deps });\n  }\n  return formulas;\n}\n\nfunction cycleCells(formulas) {\n  // iterative Tarjan over formula cells\n  const index = new Map(), low = new Map(), onStack = new Set(), stack = [], cyc = new Set();\n  let n = 0;\n  for (const root of formulas.keys()) {\n    if (index.has(root)) continue;\n    const work = [[root, formulas.get(root).deps[Symbol.iterator]()]];\n    index.set(root, n); low.set(root, n++); stack.push(root); onStack.add(root);\n    while (work.length) {\n      const [v, it] = work[work.length - 1];\n      const nx = it.next();\n      if (!nx.done) {\n        const w = nx.value;\n        if (!formulas.has(w)) continue;\n        if (w === v) cyc.add(v);\n        if (!index.has(w)) {\n          index.set(w, n); low.set(w, n++); stack.push(w); onStack.add(w);\n          work.push([w, formulas.get(w).deps[Symbol.iterator]()]);\n        } else if (onStack.has(w)) low.set(v, Math.min(low.get(v), index.get(w)));\n      } else {\n        work.pop();\n        if (work.length) { const p = work[work.length - 1][0]; low.set(p, Math.min(low.get(p), low.get(v))); }\n        if (low.get(v) === index.get(v)) {\n          const comp = [];\n          let w;\n          do { w = stack.pop(); onStack.delete(w); comp.push(w); } while (w !== v);\n          if (comp.length > 1) for (const c of comp) cyc.add(c);\n        }\n      }\n    }\n  }\n  return cyc;\n}\n\n// Kahn's algorithm over `nodes`, ties broken by row then column.\nfunction topo(nodes, formulas) {\n  const set = new Set(nodes), indeg = new Map(), rev = new Map();\n  for (const v of nodes) {\n    let d = 0;\n    for (const w of formulas.get(v).deps) if (set.has(w)) { d++; (rev.get(w) ?? rev.set(w, []).get(w)).push(v); }\n    indeg.set(v, d);\n  }\n  const heap = [];\n  const less = (a, b) => key(a) < key(b);\n  const push = (x) => {\n    let i = heap.push(x) - 1;\n    while (i > 0) { const p = (i - 1) >> 1; if (!less(heap[i], heap[p])) break; [heap[i], heap[p]] = [heap[p], heap[i]]; i = p; }\n  };\n  const pop = () => {\n    const top = heap[0], last = heap.pop();\n    if (heap.length) {\n      heap[0] = last;\n      for (let i = 0; ;) {\n        let m = i; const l = 2 * i + 1, r = l + 1;\n        if (l < heap.length && less(heap[l], heap[m])) m = l;\n        if (r < heap.length && less(heap[r], heap[m])) m = r;\n        if (m === i) break;\n        [heap[i], heap[m]] = [heap[m], heap[i]]; i = m;\n      }\n    }\n    return top;\n  };\n  for (const v of nodes) if (indeg.get(v) === 0) push(v);\n  const order = [];\n  while (heap.length) {\n    const v = pop();\n    order.push(v);\n    for (const u of rev.get(v) ?? []) { indeg.set(u, indeg.get(u) - 1); if (indeg.get(u) === 0) push(u); }\n  }\n  return order;\n}\n\nexport function computeAll(sheet) {\n  const formulas = parseCells(sheet);\n  const cyc = cycleCells(formulas);\n  const values = new Map();\n  for (const [addr, raw] of sheet.cells) if (!formulas.has(addr)) values.set(addr, valueOf(raw));\n  for (const a of cyc) values.set(a, \"#CYCLE!\");\n  const lookup = (a) => values.get(String(a).replace(/\\$/g, \"\").toUpperCase()) ?? null;\n  const live = [];\n  for (const [addr, f] of formulas) {\n    if (f.error) values.set(addr, \"#ERROR!\");\n    else if (!cyc.has(addr)) live.push(addr);\n  }\n  for (const addr of topo(live, formulas)) values.set(addr, evaluate(formulas.get(addr).ast, lookup));\n  const out = new Map();\n  for (const addr of sheet.cells.keys()) out.set(addr, values.get(addr));\n  return out;\n}\n\nexport function dependents(sheet, addr) {\n  const target = toAddr(parseAddr(addr).col, parseAddr(addr).row);\n  const formulas = parseCells(sheet);\n  const cyc = cycleCells(formulas);\n  const rev = new Map();\n  for (const [v, f] of formulas) for (const d of f.deps) (rev.get(d) ?? rev.set(d, []).get(d)).push(v);\n  const seen = new Set([target]), stack = [target], found = [];\n  while (stack.length) {\n    for (const u of rev.get(stack.pop()) ?? []) if (!seen.has(u)) { seen.add(u); stack.push(u); found.push(u); }\n  }\n  return topo(found.filter((a) => !cyc.has(a)), formulas);\n}\nEOF\nsed -i 's/, colIndex } from/ } from/' src/recalc.mjs\ncat > test/recalc.test.mjs <<'EOF'\nimport { test } from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { createSheet, setCell, computeAll, dependents, valueOf } from \"../src/index.mjs\";\n\ntest(\"valueOf\", () => {\n  assert.deepEqual([\"\", \" 4 \", \"true\", \"'x\", \"hi\"].map(valueOf), [null, 4, true, \"x\", \"hi\"]);\n});\n\ntest(\"computeAll handles cycles, errors and long chains\", () => {\n  const s = createSheet();\n  setCell(s, \"A1\", \"1\");\n  for (let i = 2; i <= 10000; i++) setCell(s, `A${i}`, `=A${i - 1}+1`);\n  setCell(s, \"B1\", \"=B2\"); setCell(s, \"B2\", \"=B1\"); setCell(s, \"C1\", \"=(\");\n  const v = computeAll(s);\n  assert.equal(v.get(\"A10000\"), 10000);\n  assert.equal(v.get(\"B1\"), \"#CYCLE!\");\n  assert.equal(v.get(\"C1\"), \"#ERROR!\");\n});\n\ntest(\"dependents ordered\", () => {\n  const s = createSheet();\n  setCell(s, \"A1\", \"1\"); setCell(s, \"B1\", \"=A1\"); setCell(s, \"A2\", \"=B1+A1\"); setCell(s, \"C1\", \"=A1\");\n  assert.deepEqual(dependents(s, \"A1\"), [\"B1\", \"C1\", \"A2\"]);\n});\nEOF\nnpm test 2>&1 | tail -30",
+            "git status --short",
+            "npm run gen 2>&1 | tail -3; npm test 2>&1 | tail -30",
+            "npm test 2>&1 | grep -E \"^not ok|error:|Error\" | head"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-Ea2jQB\\recalc\\src\\recalc.mjs",
+            "<tmp>\\fanout-bench-fanout-Ea2jQB\\recalc\\test\\recalc.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "numfmt",
+        "kind": "codex",
+        "agent": "codex",
+        "seconds": 196,
+        "costUsd": null,
+        "inTokens": 215131,
+        "outTokens": 3295,
+        "error": null,
+        "sessionId": "01a174f0-bb92-79f3-9d1a-2ef36b46e2e0"
+      },
+      {
+        "role": "lane",
+        "lane": "csv",
+        "kind": "codex",
+        "agent": "codex",
+        "seconds": 165,
+        "costUsd": null,
+        "inTokens": 264047,
+        "outTokens": 2419,
+        "error": null,
+        "sessionId": "01a174f0-c2f2-7661-8371-f2fcc335eb4a"
+      },
+      {
+        "role": "lane",
+        "lane": "structure",
+        "kind": "codex",
+        "agent": "codex",
+        "seconds": 201,
+        "costUsd": null,
+        "inTokens": 284153,
+        "outTokens": 2729,
+        "error": null,
+        "sessionId": "01a174f0-d0b2-78a0-928b-fdd71046a682"
+      },
+      {
+        "role": "lane",
+        "lane": "table",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 74,
+        "costUsd": 0.1030432,
+        "inTokens": 79142,
+        "outTokens": 5549,
+        "error": null,
+        "sessionId": "9f10e57a-e7be-4ec6-bab4-418ed31ff685",
+        "turns": 7,
+        "modelSeconds": 41,
+        "tools": {
+          "Bash": [
+            "cat src/sheet.mjs src/addr.mjs; ls src test; cat package.json",
+            "cat > src/table.mjs <<'EOF'\nimport { parseAddr, toAddr, colIndex, colName } from \"./addr.mjs\";\nimport { getCell, setCell } from \"./sheet.mjs\";\nimport { valueOf } from \"./recalc.mjs\";\n\nconst parseRange = (range) => {\n  const [a, b] = range.split(\":\");\n  const p = parseAddr(a), q = parseAddr(b ?? a);\n  return { c1: Math.min(p.col, q.col), c2: Math.max(p.col, q.col), r1: Math.min(p.row, q.row), r2: Math.max(p.row, q.row) };\n};\n\nconst isEmpty = (v) => v == null || v === \"\";\nconst rank = (v) => (typeof v === \"number\" ? 0 : typeof v === \"string\" ? 1 : 2);\n\n// Orders non-empty values: numbers, then strings (case-insensitive), then booleans (false first).\nfunction compareValues(a, b) {\n  const ra = rank(a), rb = rank(b);\n  if (ra !== rb) return ra - rb;\n  if (ra === 0) return a - b;\n  if (ra === 1) {\n    const x = a.toLowerCase(), y = b.toLowerCase();\n    return x < y ? -1 : x > y ? 1 : 0;\n  }\n  return Number(a) - Number(b);\n}\n\nexport function sortRange(sheet, range, keys, options = {}) {\n  const { c1, c2, r1, r2 } = parseRange(range);\n  const start = options.header ? r1 + 1 : r1;\n  const rows = [];\n  for (let r = start; r <= r2; r++) {\n    const raws = [];\n    for (let c = c1; c <= c2; c++) raws.push(getCell(sheet, toAddr(c, r)));\n    const vals = keys.map((k) => {\n      const col = colIndex(k.col);\n      return col >= c1 && col <= c2 ? valueOf(raws[col - c1]) : null;\n    });\n    rows.push({ raws, vals, idx: r });\n  }\n  rows.sort((x, y) => {\n    for (let i = 0; i < keys.length; i++) {\n      const a = x.vals[i], b = y.vals[i];\n      const ea = isEmpty(a), eb = isEmpty(b);\n      if (ea || eb) {\n        if (ea && eb) continue;\n        return ea ? 1 : -1;\n      }\n      const d = compareValues(a, b);\n      if (d) return keys[i].desc ? -d : d;\n    }\n    return x.idx - y.idx;\n  });\n  rows.forEach((row, i) => {\n    for (let c = c1; c <= c2; c++) setCell(sheet, toAddr(c, start + i), row.raws[c - c1]);\n  });\n}\n\nexport function pivot(values, range, { rows, value, agg }) {\n  const { c1, c2, r1, r2 } = parseRange(range);\n  const find = (name) => {\n    for (let c = c1; c <= c2; c++) if (String(values.get(toAddr(c, r1))) === String(name)) return c;\n    throw new Error(`no such column: ${name}`);\n  };\n  const kc = find(rows), vc = find(value);\n  const groups = new Map();\n  for (let r = r1 + 1; r <= r2; r++) {\n    let key = values.get(toAddr(kc, r));\n    if (isEmpty(key)) key = null;\n    if (!groups.has(key)) groups.set(key, []);\n    groups.get(key).push(values.get(toAddr(vc, r)));\n  }\n  const aggregate = (vs) => {\n    if (agg === \"count\") return vs.filter((v) => !isEmpty(v)).length;\n    const nums = vs.filter((v) => typeof v === \"number\");\n    if (agg === \"sum\") return nums.reduce((s, n) => s + n, 0);\n    if (!nums.length) return null;\n    if (agg === \"avg\") return nums.reduce((s, n) => s + n, 0) / nums.length;\n    if (agg === \"min\") return Math.min(...nums);\n    if (agg === \"max\") return Math.max(...nums);\n    throw new Error(`unknown aggregation: ${agg}`);\n  };\n  const keys = [...groups.keys()].filter((k) => k !== null).sort(compareValues);\n  if (groups.has(null)) keys.push(null);\n  return keys.map((k) => ({ key: k === null ? \"(blank)\" : k, value: aggregate(groups.get(k)) }));\n}\nEOF\nsed -i 's/import { parseAddr, toAddr, colIndex, colName }/import { parseAddr, toAddr, colIndex }/' src/table.mjs\ncat > test/table.test.mjs <<'EOF'\nimport { test } from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { createSheet, setCell, getCell } from \"../src/sheet.mjs\";\nimport { sortRange, pivot } from \"../src/table.mjs\";\n\ntest(\"sortRange sorts rows with header, empty last\", () => {\n  const s = createSheet();\n  [\"k\", \"b\", \"\", \"a\", \"3\", \"TRUE\"].forEach((v, i) => { setCell(s, `A${i + 1}`, v); setCell(s, `B${i + 1}`, `r${i}`); });\n  sortRange(s, \"A1:B6\", [{ col: \"A\" }], { header: true });\n  assert.deepEqual([1, 2, 3, 4, 5, 6].map((r) => getCell(s, `A${r}`)), [\"k\", \"3\", \"a\", \"b\", \"TRUE\", \"\"]);\n  assert.equal(getCell(s, \"B2\"), \"r4\");\n});\n\ntest(\"pivot groups and aggregates\", () => {\n  const v = new Map([[\"A1\", \"g\"], [\"B1\", \"n\"], [\"A2\", \"y\"], [\"B2\", 2], [\"A3\", 1], [\"B3\", 5], [\"A4\", \"y\"], [\"B4\", 4], [\"B5\", 1]]);\n  assert.deepEqual(pivot(v, \"A1:B5\", { rows: \"g\", value: \"n\", agg: \"sum\" }),\n    [{ key: 1, value: 5 }, { key: \"y\", value: 6 }, { key: \"(blank)\", value: 1 }]);\n  assert.throws(() => pivot(v, \"A1:B5\", { rows: \"zz\", value: \"n\", agg: \"sum\" }), /zz/);\n});\nEOF\nnpm run gen >/dev/null; npm test 2>&1 | tail -30",
+            "ls src; git status --short",
+            "npm run gen 2>&1 | tail -3; npm test 2>&1 | tail -40"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-Ea2jQB\\table\\src\\table.mjs",
+            "<tmp>\\fanout-bench-fanout-Ea2jQB\\table\\test\\table.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "fix",
+        "lane": "recalc",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 21,
+        "costUsd": 0.0527804,
+        "inTokens": 59235,
+        "outTokens": 744,
+        "error": null,
+        "sessionId": "9379eb81-c10a-4e92-9887-21b2e6a87017",
+        "turns": 5,
+        "modelSeconds": 10,
+        "tools": {
+          "Bash": [
+            "cat src/recalc.mjs test/recalc.test.mjs; cat src/formula.mjs | head -150; ls src",
+            "sed -i 's/ast = parseFormula(raw);/ast = parseFormula(raw.slice(1));/' src/recalc.mjs && npm test 2>&1 | tail -15",
+            "npm test 2>&1 | tail -15"
+          ],
+          "Edit": [
+            "<tmp>\\fanout-bench-fanout-Ea2jQB\\recalc\\src\\recalc.mjs"
+          ]
+        }
+      }
+    ],
+    "conflicts": [],
+    "brokeAfter": [],
+    "repairCommits": 1,
+    "rehearsals": [
+      "# tests 8\n# pass 6\n# fail 2",
+      "CHECK OK structure\nCHECK OK table\nAll branches merge and pass together."
+    ],
+    "blockedFiles": [
+      "csv: src/index.mjs",
+      "table: src/index.mjs"
+    ],
+    "flags": [],
+    "plan": "test: npm test\nregen: src/index.mjs via npm run gen\n\n## formula\nowns: src/formula.mjs, test/formula.test.mjs\ntask: Add `src/formula.mjs`\ncheck: node --test test/formula.test.mjs\nexposes: src/formula.mjs\n\n## recalc\nowns: src/recalc.mjs, test/recalc.test.mjs\ntask: Add `src/recalc.mjs`, built on `parseFormula`, `refsOf` and `evaluate` from `src/formula.mjs`\ncheck: node --test test/recalc.test.mjs\nexposes: src/recalc.mjs\nuses: src/formula.mjs\n\n## numfmt\nowns: src/numfmt.mjs, test/numfmt.test.mjs\ntask: Add `src/numfmt.mjs` with `formatNumber(value, pattern)`, a subset of spreadsheet number formats\ncheck: node --test test/numfmt.test.mjs\n\n## csv\nowns: src/csv.mjs, test/csv.test.mjs\ntask: Add `src/csv.mjs`\ncheck: node --test test/csv.test.mjs\n\n## structure\nowns: src/structure.mjs, test/structure.test.mjs\ntask: Add `src/structure.mjs` with `insertRows(sheet, at, count = 1)`, `deleteRows(sheet, at, count = 1)`, `insertCols(sheet, at, count = 1)` and `deleteCols(sheet, a\ncheck: node --test test/structure.test.mjs\n\n## table\nowns: src/table.mjs, test/table.test.mjs\ntask: Add `src/table.mjs`\ncheck: node --test test/table.test.mjs\nuses: src/recalc.mjs\n",
+    "broughtIn": [
+      "formula -> recalc"
+    ],
+    "finalTestsPass": true,
+    "seconds": 309,
+    "acceptance": {
+      "pass": 34,
+      "total": 34,
+      "failed": []
+    }
+  }
+]

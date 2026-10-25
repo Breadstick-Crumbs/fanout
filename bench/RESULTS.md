@@ -329,6 +329,19 @@ Six sessions on the sheet task, one per module, three in Claude (formula, recalc
 - **The result was right:** 34/34 hidden tests, rehearse passed first time, no fix round. Codex's change to the generated `src/index.mjs` was reverted when its work was committed, as designed (Codex sessions are guarded at commit time only).
 - **What it's good for:** Claude cost fell to $0.49, since Codex sessions use your ChatGPT plan's quota instead. Mixing in Codex saves Claude spend and quota, not time. For speed, keep to at most four Claude sessions; give Codex parts that nothing else waits on. A faster Codex setting (lower reasoning effort) wasn't tried.
 
+**Codex on low reasoning effort** (`FANOUT_CODEX_EFFORT=low`, passed to `codex exec` as `-c model_reasoning_effort=low`). Same six sessions, one run ([21:26](results/2026-10-25-21-26.md)):
+
+| Setup | Wall time | Claude cost | Hidden tests | Codex sessions | Fix rounds |
+|---|---|---|---|---|---|
+| 3 Claude + 3 Codex, default effort | 11m 29s | $0.49 | 34/34 | 287s, 413s, 611s | 0 |
+| 3 Claude + 3 Codex, low effort | 5m 09s | $0.57 | 34/34 | 165s, 196s, 201s | 1 (21s, $0.05) |
+| 4 Claude sessions (median of 3) | 3m 59s | $0.72 | 33–34/34 | - | 0 |
+
+- **Low effort made the Codex sessions 2–3× faster** (165–201s), with all 34 hidden tests still passing. The whole run took 5m 09s against 11m 29s.
+- **Against four Claude sessions it's about a minute slower and $0.15 cheaper in Claude spend,** with six sessions instead of four. The Codex sessions are still the slowest ones, so the run waits on them.
+- **The run had one break** (recalc against formula, both Claude). Its fix round took 21s and $0.05: the first in-run measurement of v0.21's fix step.
+- **So for mixed runs, run Codex on low effort.** One run; whether low effort holds up on harder parts is untested.
+
 ## What this does and doesn't show
 
 - **It shows** that on overlapping work, fanout kept `main` free of conflicts and breakage, with no integration step afterwards, at about the same Claude cost: $0.50–$0.92 against $0.59–$0.63.

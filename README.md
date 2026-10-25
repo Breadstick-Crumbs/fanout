@@ -237,6 +237,8 @@ fanout's checks don't: they're plain scripts with no AI calls, and a failure rep
 **Does `fanout run` use my personal Claude settings?**
 Its session agents start with your project's settings only, which makes each start several seconds faster and cheaper: your personal hooks, plugins and global `CLAUDE.md` aren't loaded, and fanout's own guard is loaded directly. If an agent can't start that way (for example your provider or API key setup lives in your user settings), fanout retries it with your settings and says so. Set `FANOUT_USER_SETTINGS=1` to always use them.
 
+Codex sessions run with Codex's default reasoning effort; `FANOUT_CODEX_EFFORT=low` lowers it. On the [sheet benchmark](bench/RESULTS.md#claude-and-codex-sessions-together-v0211), three Claude and three Codex sessions took 11m 29s at the default and 5m 09s on low, both with every hidden test passing. Mixing in Codex saves Claude spend and quota; for speed alone, four Claude sessions were faster (3m 59s median).
+
 **Can I mix Claude Code and Codex?**
 Yes. Sessions are just git branches. Run some in Claude, some in Codex, or headless (`claude -p`, `codex exec`).
 

@@ -109,6 +109,11 @@ test("codex run records thread id and resumes it", async () => {
   const c = calls()[1];
   assert.deepEqual(c.args.slice(-2), ["resume", "thread-7"]);
   assert.equal(c.stdin, "just the break");
+  assert.ok(!calls()[0].args.some((a) => a.includes("model_reasoning_effort")));
+  process.env.FANOUT_CODEX_EFFORT = "low";
+  await runAgent({ agent: "codex", cwd: dir, prompt: "brief" });
+  delete process.env.FANOUT_CODEX_EFFORT;
+  assert.ok(calls()[2].args.includes("model_reasoning_effort=low"));
 });
 
 test("shell-command agents have no session to resume", async () => {
