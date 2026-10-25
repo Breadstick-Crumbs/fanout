@@ -146,6 +146,16 @@ A client's WordPress theme: move About, Contact, the quote cart and search resul
 - Run 1 found a real gap: the planner prompt says to commit the contracts, but nothing checked. Since v0.16, `fanout run` commits whatever the planner leaves (the tree was clean before planning).
 - Without being told, the planner gave each page its own `inc/f-<page>.php` and `f-<page>.css`, with the shared file loading each part only if it exists. So no two lanes touched one file.
 - The cart lane removed 323 lines (inline styles moved to its CSS file) and kept every form field name and id. A static lint can't show how a page looks, so the branches still need a look on staging before merging.
+- On staging (after merging by hand): all four pages worked, and a real quote submit went through. One bug the lint couldn't see: the About lane hard-coded a link to `/quotation-inquiry/`, which doesn't exist (the RFQ page is `/cart/`). v0.17 adds per-session `check:` commands for this.
+
+**Same job, one agent** (Sonnet, same goal, same commit, same tool limits as a fanout lane):
+
+| | Wall time | Cost | Lint | Dead links | Quote form fields |
+|---|---|---|---|---|---|
+| fanout, 4 sessions (run 2) | 7m 08s | $1.16 | ok | 1 | unchanged |
+| One agent | 4m 02s | $0.64 | ok | 0 | unchanged |
+
+One agent was faster and cheaper and made no link mistake. It put all four pages in one new file (`inc/f-pages.php`, 554 lines). This matches the benchmark: four pages of 2–3 minutes each is too small for parallel to pay. fanout's planning (about 1.5 minutes) plus the slowest lane is longer than one agent doing all of it. Parallel needs parts that each take much longer than planning does. One run each; looks were not compared.
 
 ## What this does and doesn't show
 

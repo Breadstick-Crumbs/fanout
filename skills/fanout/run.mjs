@@ -92,13 +92,18 @@ async function withSettingsFallback(opts) {
   return again;
 }
 
-function runOnce({ agent = "claude", cwd, prompt, model, budget, plugin = false, allowGit = false, resume, userSettings = false }) {
+// The plan's own commands (test:, check:) are allowed exactly as written, so a session can run them
+// before it finishes (on a real project the test was `bash tools/check-theme.sh`, which agents were
+// refused). Commands with quotes or commas are left out: they can't go through --allowedTools safely.
+export const allowCommands = (cmds) => cmds.filter((c) => c && !/["',]/.test(c)).map((c) => `Bash(${c})`);
+
+function runOnce({ agent = "claude", cwd, prompt, model, budget, plugin = false, allowGit = false, allow = [], resume, userSettings = false }) {
   // Only Claude reports a dollar cost; for any other agent it is unknown (null), not zero.
   const rec = { agent, seconds: 0, costUsd: agent === "claude" ? 0 : null, inTokens: 0, outTokens: 0, error: null, sessionId: null };
   const t0 = Date.now();
   let cmd;
   if (agent === "claude") {
-    const tools = ["Read", "Edit", "Write", "Glob", "Grep", "Bash(node:*)", "Bash(npm:*)", ...READ_ONLY_BASH, ...(allowGit ? ["Bash(git:*)"] : [])];
+    const tools = ["Read", "Edit", "Write", "Glob", "Grep", "Bash(node:*)", "Bash(npm:*)", ...READ_ONLY_BASH, ...(allowGit ? ["Bash(git:*)"] : []), ...allowCommands(allow)];
     const sources = settingSources(userSettings);
     cmd = [bin("claude"), "-p", ...(resume ? ["--resume", resume] : []), "--tools", CLAUDE_TOOLS, "--permission-mode", "acceptEdits", "--allowedTools", q(tools.join(",")), "--output-format", "stream-json", "--verbose",
       "--strict-mcp-config", ...sources, ...guardSettings(), ...(model ? ["--model", model] : []), ...(budget ? ["--max-budget-usd", budget] : [])].join(" ");
@@ -186,6 +191,7 @@ export function brief(s, sessions, regen, test, note = "", root = null) {
     `You are session "${s.name}" of a parallel fan-out. ${others.length ? `Other agents are working on ${others.join(", ")} at the same time.` : ""}`,
     `Task: ${s.task || s.done || s.name}`,
     s.done ? `Done when: ${s.done}` : "",
+    s.check ? `After all branches merge, this must pass: \`${s.check}\`.` : "",
     `You may change only: ${s.owns.join(", ")}. Edits anywhere else are refused or reverted.`,
     s.uses.length ? `Shared interfaces you build against (frozen: read them, don't edit them): ${s.uses.join(", ")}.` : "",
     inlineContracts(s, root),
@@ -226,6 +232,7 @@ regen: <generated paths> via <command>      (one line per set of generated files
 owns: <paths or globs only this session may change>
 task: <one line: what this session builds>
 done: <how to tell it is finished>
+check: <a command that exits 0 only when done: holds on the merged code: a grep, a script, a request>
 exposes: <files of its own that other sessions build against>   (optional)
 uses: <exposed files from other sessions it builds against>      (optional)
 
@@ -348,7 +355,7 @@ export async function cli(argv) {
     let r;
     for (let attempt = 0; attempt < 2; attempt++) {
       setLive(s.name, { state: attempt ? "retrying" : "working", since: Date.now() });
-      r = track("lane", s.name, await runAgent({ agent: agentFor(s), cwd: wt[s.name], prompt: brief(s, sessions, regen, test, "", root), model: modelFor(s), budget }));
+      r = track("lane", s.name, await runAgent({ agent: agentFor(s), cwd: wt[s.name], prompt: brief(s, sessions, regen, test, "", root), model: modelFor(s), budget, allow: [test, s.check] }));
       if (!r.error) {
         const { reverted } = commitLane(wt[s.name], sessions, s, regen, `fanout: ${s.name}`);
         r.noChanges = ahead(s) === 0;
@@ -379,11 +386,11 @@ export async function cli(argv) {
   // 4. Rehearse, and send each break back to the lane that caused it
   live.phase = "rehearse"; writeLive();
   for (;;) {
-    const r = rehearse(order, { cwd: root, base, test, regen });
+    const r = rehearse(order, { cwd: root, base, test, regen, checks: sessions });
     testRuns += r.testRuns;
     if (r.ok) { log("rehearse: all branches merge and pass together"); break; }
-    const head = r.log.find((l) => /^(BROKE after|CONFLICT merging|REGEN FAILED after) /.test(l)) ?? "";
-    const name = head.match(/(?:after|merging) ([^\s:]+)/)?.[1];
+    const head = r.log.find((l) => /^(BROKE after|CONFLICT merging|REGEN FAILED after|CHECK FAILED) /.test(l)) ?? "";
+    const name = head.match(/(?:after|merging|FAILED) ([^\s:]+)/)?.[1];
     const s = sessions.find((x) => x.name === name);
     if (!s) {
       // FLAKY or BASE FAILS: no lane caused it, so no agent is sent to fix it.
@@ -400,7 +407,7 @@ export async function cli(argv) {
     const report = `Your branch was merged with the others in plan order and it broke:\n${r.log.join("\n")}\n\nFix it within the files you may change.`;
     setLive(name, { state: `fixing (${fixes[name]})`, since: Date.now() });
     // Resume the lane's own session with just the break report; if that fails, send the full brief again.
-    const fix = await runAgent({ agent: agentFor(s), cwd: wt[name], model: modelFor(s), budget, resume: session[name], prompt: report,
+    const fix = await runAgent({ agent: agentFor(s), cwd: wt[name], model: modelFor(s), budget, allow: [test, s.check], resume: session[name], prompt: report,
       fallbackPrompt: brief(s, sessions, regen, test, `\n${report}`, root) });
     session[name] = fix.sessionId ?? session[name];
     track("fix", name, fix);

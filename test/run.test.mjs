@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runAgent, brief, plannerPrompt, staggered } from "../skills/fanout/run.mjs";
+import { runAgent, brief, plannerPrompt, staggered, allowCommands } from "../skills/fanout/run.mjs";
 import { parsePlan } from "../skills/fanout/fanout.mjs";
 import { scrub } from "../bench/scrub.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -309,4 +309,8 @@ test("contracts the planner leaves uncommitted are committed before the lanes br
   const g = (...a) => execFileSync("git", a, { cwd: repo, encoding: "utf8" }).trim();
   assert.equal(g("log", "-1", "--format=%s", "main"), "fanout: contracts");
   assert.equal(g("show", "fanout/a:contract.txt"), "shared"); // the lane branched with it
+});
+
+test("the plan's test and check commands are allowed for session agents, as written", () => {
+  assert.deepEqual(allowCommands(["bash tools/check-theme.sh", "", undefined, `node -e "x"`, "a, b"]), ["Bash(bash tools/check-theme.sh)"]);
 });

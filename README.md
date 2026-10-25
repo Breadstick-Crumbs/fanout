@@ -136,6 +136,7 @@ done: no hard-coded currency left
 | `after` | Extra merge-order dependencies, if needed. |
 | `agent` | Optional. Which agent runs this session (`claude`, `codex`, or any command). |
 | `done` | What finished looks like. |
+| `check` | Optional. A command that proves `done` on the merged code (a grep, a script, a request). Rehearse runs it after the test passes; a failure goes back to this session. Worth it when the test is only a lint or a build. |
 | `test` | Your test command, run after every merge during rehearsal. |
 | `regen` | Generated files nobody owns, and the command that rebuilds them after merging. |
 
@@ -182,7 +183,7 @@ Same four overlapping tasks, four parallel agents, with and without fanout ([ful
 
 Breaks still happened with fanout, but `rehearse` caught them before `main` and the agent that caused each one fixed it. One pair of runs mixed Claude and Codex, with the same result. It's a small benchmark. Rerun it with `node bench/run.mjs both`.
 
-On a real WordPress theme (four pages moved to a new design, one session each, Sonnet), `fanout run` went from a one-paragraph goal to four tested, merge-ready branches in about 7 minutes for $1.16. There were no conflicts and no fixes, and the quote form's fields came through unchanged.
+On a real WordPress theme (four pages moved to a new design, one session each, Sonnet), `fanout run` went from a one-paragraph goal to four tested, merge-ready branches in about 7 minutes for $1.16, with no conflicts. One Sonnet agent did the same job in 4 minutes for $0.64. At that size, one agent wins ([details](bench/RESULTS.md#real-project-four-theme-pages-v016)).
 
 ## When to use it
 

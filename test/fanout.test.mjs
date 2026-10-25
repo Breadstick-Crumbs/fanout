@@ -417,3 +417,46 @@ test("status: table, last results, from a lane worktree, and no plan", () => {
     assert.match(r.stdout, /last rehearse: 2026-01-02 03:04  pass/);
   }
 });
+
+test("rehearse: each session's check runs on the merged code and a failure names that session", () => {
+  const d = dir();
+  const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(d, "x.txt"), "1"); g("add", "-A"); g("commit", "-qm", "init");
+  for (const l of ["a", "b"]) {
+    g("checkout", "-q", "main"); g("checkout", "-qb", "fanout/" + l);
+    writeFileSync(join(d, l + ".txt"), l === "a" ? "link /cart/" : "link /wrong/"); g("add", "-A"); g("commit", "-qm", l);
+  }
+  g("checkout", "-q", "main");
+  mkdirSync(join(d, ".fanout")); writeFileSync(join(d, ".git/info/exclude"), ".fanout/\n");
+  const has = (f, s) => `node -e "process.exit(require('fs').readFileSync('${f}','utf8').includes('${s}')?0:1)"`;
+  const plan = (bCheck) => `test: node -e "0"\n## a\nowns: a.txt\ncheck: ${has("a.txt", "/cart/")}\n## b\nowns: b.txt\ncheck: ${has("b.txt", bCheck)}\n`;
+  writeFileSync(join(d, ".fanout/plan.md"), plan("/cart/"));
+  const r = run(["rehearse"], { cwd: d });
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stdout, /CHECK OK a/);
+  assert.match(r.stdout, /CHECK FAILED b: /); // the test passed, but b doesn't do its job
+  assert.match(readFileSync(join(d, ".fanout/log.jsonl"), "utf8"), /"result":"CHECK FAILED b"/);
+  writeFileSync(join(d, ".fanout/plan.md"), plan("/wrong/"));
+  assert.equal(run(["rehearse"], { cwd: d }).status, 0);
+  // check: is a known session field; a plan without any gets a NOTE
+  assert.equal(run(["check"], { cwd: d }).stdout.includes("NOTE no session has"), false);
+  writeFileSync(join(d, ".fanout/plan.md"), "test: node -e \"0\"\n## a\nowns: a.txt\n");
+  assert.match(run(["check"], { cwd: d }).stdout, /NOTE no session has a "check:" line/);
+});
+
+test("status: warns when the base has commits the lanes don't", () => {
+  const d = dir();
+  const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  g("init", "-q", "-b", "master"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(d, "x.txt"), "1"); g("add", "-A"); g("commit", "-qm", "init");
+  g("checkout", "-qb", "fanout/a"); writeFileSync(join(d, "a.txt"), "a"); g("add", "-A"); g("commit", "-qm", "a");
+  g("checkout", "-q", "master");
+  mkdirSync(join(d, ".fanout")); writeFileSync(join(d, ".git/info/exclude"), ".fanout/\n");
+  writeFileSync(join(d, ".fanout/plan.md"), "## a\nowns: a.txt\n");
+  const before = run(["status"], { cwd: d }).stdout;
+  assert.match(before, /^a\s+fanout\/a\s+1/m); // base master found without --base
+  assert.doesNotMatch(before, /commit\(s\) the lanes don't/);
+  writeFileSync(join(d, "y.txt"), "2"); g("add", "-A"); g("commit", "-qm", "moved on");
+  assert.match(run(["status"], { cwd: d }).stdout, /master has 1 commit\(s\) the lanes don't/);
+});

@@ -13,7 +13,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { resolve, relative, isAbsolute, join, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
-const SESSION_KEYS = ["owns", "after", "exposes", "uses", "done", "task", "agent", "model"];
+const SESSION_KEYS = ["owns", "after", "exposes", "uses", "done", "task", "check", "agent", "model"];
 const PLAN_KEYS = ["test", "regen"];
 
 export function parsePlan(text) {
@@ -24,7 +24,7 @@ export function parsePlan(text) {
     const list = (k) => get(k).split(",").map((s) => s.trim()).filter(Boolean);
     const keys = rest.map((l) => l.match(/^([A-Za-z_-]+):/)?.[1]).filter(Boolean);
     sessions.push({ name: name.trim(), owns: list("owns"), after: list("after"), exposes: list("exposes"), uses: list("uses"),
-      task: get("task"), done: get("done"), agent: get("agent"), model: get("model"), keys });
+      task: get("task"), done: get("done"), check: get("check"), agent: get("agent"), model: get("model"), keys });
   }
   return sessions;
 }
@@ -194,7 +194,10 @@ const defaultPlan = (cwd) => resolve(mainRoot(cwd), ".fanout", "plan.md");
 // to name the branch whose merge broke things, so a passing rehearsal costs one test run, not n.
 // The worktree sits in .fanout/ inside the main checkout so node_modules etc. still resolve.
 // Output is a few lines plus the tail of a failing run: cheap for an agent to read and act on.
-export function rehearse(order, { cwd, base = "main", test, regen = [], tail = 20 }) {
+// A session's "check:" is a command proving its own done: (a grep, a curl, a script). The test alone can
+// pass on code that doesn't do the job (a lint can't see a dead link or a missing switch), so once all
+// branches merge and pass, each session's check runs on the merged code; a failure names that session.
+export function rehearse(order, { cwd, base = "main", test, regen = [], checks = [], tail = 20 }) {
   const log = [], root = mainRoot(cwd), wt = join(root, ".fanout", "rehearse");
   let testRuns = 0;
   const sh = (cmd) => { if (cmd === test) testRuns++; return spawnSync(cmd, { cwd: wt, shell: true, encoding: "utf8" }); };
@@ -233,8 +236,14 @@ export function rehearse(order, { cwd, base = "main", test, regen = [], tail = 2
     const n = merged.length - 1;
     if (ok && n) {
       const full = probe(n);
-      if (full.pass) log.push(...(test ? [`OK after ${merged[n][0]} (all ${n} merged)`] : merged.slice(1).map(([name]) => `MERGED ${name}`)));
-      else {
+      if (full.pass) {
+        log.push(...(test ? [`OK after ${merged[n][0]} (all ${n} merged)`] : merged.slice(1).map(([name]) => `MERGED ${name}`)));
+        for (const c of checks.filter((c) => c.check && merged.some(([m]) => m === c.name))) {
+          const r = sh(c.check);
+          if (r.status === 0) log.push(`CHECK OK ${c.name}`);
+          else { log.push(`CHECK FAILED ${c.name}: \`${c.check}\` exited ${r.status}`, tailOf(r)); ok = false; }
+        }
+      } else {
         // Invariant: state lo passes (the base is assumed to until checked below), state hi fails.
         let lo = 0, hi = n, bad = full;
         while (hi - lo > 1) {
@@ -254,7 +263,7 @@ export function rehearse(order, { cwd, base = "main", test, regen = [], tail = 2
       }
     }
   } finally { drop(); }
-  if (ok) log.push(test ? "All branches merge and pass together." : "All branches merge cleanly (no test command: add `test:` to the plan).");
+  if (ok) log.push(test || checks.some((c) => c.check) ? "All branches merge and pass together." : "All branches merge cleanly (no test command: add `test:` to the plan).");
   return { ok, log, testRuns };
 }
 
@@ -289,6 +298,7 @@ function showStatus(cwd, base) {
   const sessions = parsePlan(text), regen = parseRegen(text);
   if (!sessions.length) { console.log("No plan"); return 0; }
   const live = readLive(root);
+  let behind = 0; // commits on base that some lane doesn't have
   const rows = [["session", "branch", "ahead", "files", "worktree", "verify"]];
   for (const s of sessions) {
     const branch = BRANCH_PREFIX + s.name, lane = existsSync(join(root, ".fanout", "lanes", s.name)) ? "yes" : "no";
@@ -296,6 +306,7 @@ function showStatus(cwd, base) {
     catch { rows.push([s.name, "not started", "-", "-", lane, "-"]); continue; }
     try {
       const ahead = git(["rev-list", "--count", `${base}..${branch}`], root).trim();
+      behind = Math.max(behind, Number(git(["rev-list", "--count", `${branch}..${base}`], root).trim()) || 0);
       const changed = git(["diff", "--name-only", `${base}...${branch}`], root).split("\n").filter(Boolean);
       const contracts = contractChanges(sessions, changed);
       const frozen = contracts.filter((f) => contractOwner(sessions, f).name !== s.name);
@@ -314,6 +325,8 @@ function showStatus(cwd, base) {
   rows.forEach((r) => console.log(r.map((c, i) => c.padEnd(w[i])).join("  ").trimEnd()));
   let recs = [];
   try { recs = readFileSync(join(root, ".fanout", "log.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean); } catch { /* none yet */ }
+  // On a real project the base moved on while lanes waited for review, and the merge then conflicted.
+  if (behind) console.log(`${base} has ${behind} commit(s) the lanes don't. Run \`fanout rehearse\` again before merging: it tests them on ${base} as it is now.`);
   if (live?.running) {
     const cost = Object.values(live.sessions).reduce((a, x) => (a == null || x.costUsd === null ? null : a + (x.costUsd ?? 0)), 0);
     console.log(`run in progress: ${live.phase}, ${mins((Date.now() - Date.parse(live.startedAt)) / 1000)} so far, ${cost == null ? "cost unknown" : `$${cost.toFixed(2)}`} for finished agent runs`);
@@ -361,6 +374,7 @@ function main(argv) {
     const { problems, order } = check(sessions, cwd, regen);
     problems.forEach((p) => console.log(p));
     if (!planSetting(text, "test")) console.log('NOTE no "test:" line above the first "##": rehearse can only check that branches merge, not that they work together.');
+    if (sessions.length && !sessions.some((s) => s.check)) console.log(`NOTE no session has a "check:" line. A test can pass on code that doesn't do the job (a lint can't see a dead link); give each session a command that proves its done:.`);
     console.log("Merge order:", order.join(" -> "));
     return problems.length ? 1 : 0;
   }
@@ -368,10 +382,10 @@ function main(argv) {
     const { problems, order } = check(sessions, cwd, regen);
     if (problems.length) { problems.forEach((p) => console.log(p)); console.log("Fix the plan first (fanout check)."); return 1; }
     const t0 = Date.now();
-    const { ok, log, testRuns } = rehearse(order, { cwd, base: arg(argv, "--base") ?? defaultBase(cwd), test: arg(argv, "--test") ?? planSetting(text, "test"), regen });
+    const { ok, log, testRuns } = rehearse(order, { cwd, base: arg(argv, "--base") ?? defaultBase(cwd), test: arg(argv, "--test") ?? planSetting(text, "test"), regen, checks: sessions });
     log.forEach((l) => console.log(l));
     appendLog(cwd, { kind: "rehearse", sessions: order.length, seconds: Math.round((Date.now() - t0) / 1000), testRuns,
-      result: ok ? "pass" : (log.find((l) => /^(BROKE|CONFLICT|REGEN FAILED|FLAKY|BASE FAILS)/.test(l)) ?? "fail").split(":")[0] });
+      result: ok ? "pass" : (log.find((l) => /^(BROKE|CONFLICT|REGEN FAILED|CHECK FAILED|FLAKY|BASE FAILS)/.test(l)) ?? "fail").split(":")[0] });
     return ok ? 0 : 1;
   }
   const name = arg(argv, "--session") ?? currentSession(cwd);
