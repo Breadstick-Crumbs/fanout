@@ -17,7 +17,7 @@ import { scrub } from "./scrub.mjs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parsePlan, parseRegen, planSetting, blockReason } from "../skills/fanout/fanout.mjs";
-import { runAgent, staggered, plannerPrompt, contractsPrompt, contractsReady, bringIn, brief as laneBrief } from "../skills/fanout/run.mjs";
+import { runAgent, staggered, plannerPrompt, contractsPrompt, contractsReady, bringIn, brief as laneBrief, signInProblem } from "../skills/fanout/run.mjs";
 import { draftPlan } from "../skills/fanout/draft.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -176,7 +176,10 @@ async function fanout() {
     const prompt = contractsPrompt({ goal: TASKS_MD, base: "main", plan: d.text, maxSessions: MAX_SESSIONS, flags: d.flags, full: REVIEW });
     let retry = "";
     for (let i = 0; i < (REVIEW || d.flags.length || d.contracts ? 2 : 0); i++) {
-      R.agents.push(await agent({ lane: "-", role: "coordinator", cwd: repo, prompt: prompt + retry, plugin: true }));
+      const a = await agent({ lane: "-", role: "coordinator", cwd: repo, prompt: prompt + retry, plugin: true });
+      R.agents.push(a);
+      // A failed coordinator (signed out, budget) leaves no contracts: the score after it would mean nothing.
+      if (a.error) { R.error = `coordinator failed: ${a.error}`; return R; }
       const t = contractsReady(repo, readFileSync(join(repo, ".fanout/plan.md"), "utf8"));
       if (t.ok) break;
       retry = `\n\nAfter your changes, the tests fail on main:\n${tail(t.out)}\nFix it.`;
@@ -184,8 +187,12 @@ async function fanout() {
   }
   const coord = DRAFT ? null : VAGUE ? plannerPrompt({ goal: VAGUE_GOAL, base: "main", root: repo })
     : plannerPrompt({ goal: TASKS_MD, base: "main", root: repo, extra: GROUPS ? `\nUse exactly ${LANES.length} sessions, each doing the tasks it is named after: ${LANES.join(", ")}.\n` : `\nUse exactly one session per task, named ${LANES.join(", ")}.\n` });
-  if (coord) R.agents.push(await agent({ lane: "-", role: "coordinator", cwd: repo, prompt: coord, plugin: true, allowGit: true,
-    dryAction: () => { mkdirSync(join(repo, ".fanout"), { recursive: true }); writeFileSync(join(repo, ".fanout/plan.md"), FIXTURE === "shop" ? CANNED_PLAN : `test: npm test\n\n${LANES.map((l) => `## ${l}\nowns: ${membersOf(l).map((m) => `src/${m}.mjs, test/${m}.test.mjs`).join(", ")}\ntask: ${l}\n`).join("\n")}`); } }));
+  if (coord) {
+    const a = await agent({ lane: "-", role: "coordinator", cwd: repo, prompt: coord, plugin: true, allowGit: true,
+      dryAction: () => { mkdirSync(join(repo, ".fanout"), { recursive: true }); writeFileSync(join(repo, ".fanout/plan.md"), FIXTURE === "shop" ? CANNED_PLAN : `test: npm test\n\n${LANES.map((l) => `## ${l}\nowns: ${membersOf(l).map((m) => `src/${m}.mjs, test/${m}.test.mjs`).join(", ")}\ntask: ${l}\n`).join("\n")}`); } });
+    R.agents.push(a);
+    if (a.error) { R.error = `coordinator failed: ${a.error}`; return R; }
+  }
   commitAll(repo, "coordinator leftovers");
   const planPath = join(repo, ".fanout/plan.md");
   if (!existsSync(planPath)) { R.error = "coordinator wrote no plan"; return R; }
@@ -279,6 +286,8 @@ function acceptance(repo) {
 const timed = async (fn) => { const t0 = Date.now(), R = await fn(); R.seconds = Math.round((Date.now() - t0) / 1000); R.acceptance = acceptance(R.repo); delete R.repo; results.push(R); };
 const want = { single: ["single"], baseline: ["baseline"], fanout: ["fanout"], both: ["baseline", "fanout"], all: ["single", "baseline", "fanout"] }[MODE];
 if (!want) { console.error("usage: node bench/run.mjs [single|baseline|fanout|both|all] [--dry] ..."); process.exit(2); }
+const signIn = DRY ? null : signInProblem(["claude", ...(CODEX_LANE !== "none" ? ["codex"] : [])]);
+if (signIn) { console.error(`bench: ${signIn}`); process.exit(2); }
 for (const c of want) await timed({ single, baseline, fanout }[c]);
 const md = report(results);
 const out = join(ROOT, "bench", "results");

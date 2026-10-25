@@ -14,7 +14,11 @@ const logFile = join(dir, "calls.jsonl");
 const fake = join(dir, "fake.mjs");
 writeFileSync(fake, `
 import { appendFileSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
-const args = process.argv.slice(2), stdin = readFileSync(0, "utf8");
+const args = process.argv.slice(2);
+// Sign-in checks (claude auth status / codex login status) aren't agent calls, so they aren't logged.
+if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: process.env.FAKE_SIGNED_OUT !== "claude" })); process.exit(0); }
+if (args[0] === "login") { console.log(process.env.FAKE_SIGNED_OUT === "codex" ? "Not logged in" : "Logged in"); process.exit(process.env.FAKE_SIGNED_OUT === "codex" ? 1 : 0); }
+const stdin = readFileSync(0, "utf8");
 appendFileSync(${JSON.stringify(logFile)}, JSON.stringify({ args, stdin }) + "\\n");
 const who = stdin.match(/session "(\\w+)"/)?.[1];
 if (who && process.env.FAKE_FAIL_SESSION === who) { console.log(JSON.stringify({ is_error: true, result: "crashed", num_turns: 3 })); process.exit(1); }
@@ -27,7 +31,11 @@ if (stdin.startsWith("fanout drafted")) {
   else if (process.env.FAKE_BAD) unlinkSync("BAD");
 }
 if (process.env.FAKE_PLAN && stdin.startsWith("Plan a parallel fan-out")) { writeFileSync(".fanout/plan.md", process.env.FAKE_PLAN); writeFileSync("contract.txt", "shared"); }
+// Another session writing in the main checkout while fanout runs.
+if (process.env.FAKE_STRAY && (who || stdin.startsWith("Plan a parallel fan-out"))) writeFileSync(process.env.FAKE_STRAY, "someone else's");
 const resuming = args.includes("--resume") || args.includes("resume");
+// An early-test failure report: the session fixes its file.
+if (resuming && process.env.FAKE_FIX_FILE && stdin.includes("fails there")) writeFileSync(process.env.FAKE_FIX_FILE, "fixed");
 if (resuming && process.env.FAKE_FAIL_RESUME) { console.log(JSON.stringify({ is_error: true, result: "no such session" })); process.exit(1); }
 if (process.env.FAKE_FAIL_LEAN && args.includes("--setting-sources")) { console.log(JSON.stringify({ is_error: true, result: "auth failed", num_turns: Number(process.env.FAKE_FAIL_LEAN) - 1 || undefined })); process.exit(1); }
 if (args[0] === "exec") {
@@ -46,13 +54,16 @@ const useFake = () => {
   delete process.env.FANOUT_USER_SETTINGS;
   delete process.env.FAKE_FAIL_SESSION;
   delete process.env.FAKE_NOWRITE;
+  delete process.env.FAKE_SIGNED_OUT;
   process.env.FAKE_WRITE = "1"; // session agents write <name>.txt, so they leave a change to commit
 };
-const mkRepo = (plan) => {
+const mkRepo = (plan, files = {}) => {
   const repo = mkdtempSync(join(tmpdir(), "fanout-rr-"));
   const g = (...a) => execFileSync("git", a, { cwd: repo, stdio: "ignore" });
   g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
-  writeFileSync(join(repo, "x.txt"), "1"); g("add", "-A"); g("commit", "-qm", "init");
+  writeFileSync(join(repo, "x.txt"), "1");
+  for (const [f, body] of Object.entries(files)) writeFileSync(join(repo, f), body);
+  g("add", "-A"); g("commit", "-qm", "init");
   mkdirSync(join(repo, ".fanout"));
   writeFileSync(join(repo, ".fanout/plan.md"), plan);
   return repo;
@@ -109,12 +120,17 @@ test("codex run records thread id and resumes it", async () => {
   const c = calls()[1];
   assert.deepEqual(c.args.slice(-2), ["resume", "thread-7"]);
   assert.equal(c.stdin, "just the break");
-  assert.ok(!calls()[0].args.some((a) => a.includes("model_reasoning_effort")));
-  process.env.FANOUT_CODEX_EFFORT = "low"; process.env.FANOUT_CODEX_TIER = "fast";
+  // Low reasoning effort by default, no tier; FANOUT_CODEX_EFFORT overrides, "default" leaves Codex's own.
+  assert.ok(calls()[0].args.includes("model_reasoning_effort=low"));
+  assert.ok(!calls()[0].args.some((a) => a.includes("service_tier")));
+  process.env.FANOUT_CODEX_EFFORT = "high"; process.env.FANOUT_CODEX_TIER = "fast";
   await runAgent({ agent: "codex", cwd: dir, prompt: "brief" });
-  delete process.env.FANOUT_CODEX_EFFORT; delete process.env.FANOUT_CODEX_TIER;
-  assert.ok(calls()[2].args.includes("model_reasoning_effort=low"));
+  process.env.FANOUT_CODEX_EFFORT = "default"; delete process.env.FANOUT_CODEX_TIER;
+  await runAgent({ agent: "codex", cwd: dir, prompt: "brief" });
+  delete process.env.FANOUT_CODEX_EFFORT;
+  assert.ok(calls()[2].args.includes("model_reasoning_effort=high"));
   assert.ok(calls()[2].args.includes("service_tier=priority"));
+  assert.ok(!calls()[3].args.some((a) => a.includes("model_reasoning_effort")));
 });
 
 test("shell-command agents have no session to resume", async () => {
@@ -319,17 +335,47 @@ test("status shows each session's agent state and cost from the run's live.json"
   assert.doesNotMatch(st.stdout, /run in progress/);
 });
 
-test("contracts the planner leaves uncommitted are committed before the lanes branch", () => {
+test("contracts the planner leaves uncommitted are committed before the lanes branch; others' files are not", () => {
   useFake();
   const repo = mkRepo(PLAN_A);
   rmSync(join(repo, ".fanout/plan.md")); // no plan yet: the (fake) planner writes it, plus a contract it doesn't commit
+  // While it plans, another session writes stray.txt in the same checkout: no session owns it, so it stays out.
   const r = spawnSync(process.execPath, [join(import.meta.dirname, "../skills/fanout/fanout.mjs"), "run", "add a", "--yes", "--no-merge"],
-    { cwd: repo, encoding: "utf8", env: { ...process.env, FANOUT_STAGGER_MS: "0", FAKE_PLAN: PLAN_A } });
+    { cwd: repo, encoding: "utf8", env: { ...process.env, FANOUT_STAGGER_MS: "0", FAKE_PLAN: "## a\nowns: a.txt, contract.txt\ntask: a\n", FAKE_STRAY: join(repo, "stray.txt") } });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /committed 1 file\(s\) the planner left uncommitted/);
+  assert.match(r.stdout, /left 1 uncommitted file\(s\) outside the plan alone: stray\.txt/);
   const g = (...a) => execFileSync("git", a, { cwd: repo, encoding: "utf8" }).trim();
   assert.equal(g("log", "-1", "--format=%s", "main"), "fanout: contracts");
+  assert.equal(g("show", "--name-only", "--format=", "main"), "contract.txt");
   assert.equal(g("show", "fanout/a:contract.txt"), "shared"); // the lane branched with it
+  assert.match(g("status", "--porcelain"), /^\?\? stray\.txt$/m);
+});
+
+test("after merging, only the generated files are committed, not others' work in the checkout", () => {
+  useFake();
+  const repo = mkRepo("test: node -e \"\"\nregen: gen.txt via node gen.mjs\n\n" + PLAN_AB, { "gen.mjs": `import { writeFileSync } from "node:fs"; writeFileSync("gen.txt", "generated");` });
+  const r = spawnSync(process.execPath, [join(import.meta.dirname, "../skills/fanout/fanout.mjs"), "run", "--yes"],
+    { cwd: repo, encoding: "utf8", env: { ...process.env, FANOUT_STAGGER_MS: "0", FAKE_STRAY: join(repo, "stray.txt") } });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const g = (...a) => execFileSync("git", a, { cwd: repo, encoding: "utf8" }).trim();
+  assert.equal(g("log", "-1", "--format=%s"), "fanout: regenerate");
+  assert.equal(g("show", "--name-only", "--format=", "HEAD"), "gen.txt");
+  assert.match(g("status", "--porcelain"), /^\?\? stray\.txt$/m);
+});
+
+test("a signed-out CLI stops the run before any agent starts", () => {
+  useFake();
+  const r = runCli(mkRepo(PLAN_AB), { FAKE_SIGNED_OUT: "claude" });
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  assert.match(r.stderr, /claude is not signed in/);
+  assert.equal(calls().length, 0);
+  const codex = runCli(mkRepo(PLAN_A + "agent: codex\n\n## b\nowns: b.txt\ntask: b\n"), { FAKE_SIGNED_OUT: "codex" });
+  assert.equal(codex.status, 1, codex.stdout + codex.stderr);
+  assert.match(codex.stderr, /codex is not signed in/);
+  assert.equal(calls().length, 0);
+  // Signed out of Codex doesn't matter when no session uses it.
+  assert.equal(runCli(mkRepo(PLAN_AB), { FAKE_SIGNED_OUT: "codex" }).status, 0);
 });
 
 // A repo for drafted plans: src/ exists, and the test fails while a file named BAD exists.

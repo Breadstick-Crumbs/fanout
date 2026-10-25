@@ -21,7 +21,7 @@ import { createInterface } from "node:readline/promises";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { parsePlan, parseRegen, planSetting, check, rehearse, blockReason, mainRoot, appendLog } from "./fanout.mjs";
+import { parsePlan, parseRegen, planSetting, check, rehearse, blockReason, mainRoot, appendLog, matches, ownsFile } from "./fanout.mjs";
 import { draftPlan } from "./draft.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -41,6 +41,28 @@ const q = (s) => (WIN ? `"${s}"` : `'${s.replaceAll("'", `'\\''`)}'`);
 
 // Binaries can be swapped (tests point these at a fake agent).
 const bin = (name) => process.env[`FANOUT_${name.toUpperCase()}_BIN`] || name;
+
+// Sign-in check before any agent runs. A signed-out CLI otherwise fails every agent one by one (seen on the
+// benchmark: each Claude agent ended with "OAuth session expired" and the run went on to a meaningless score).
+// Returns one line saying what to do, or null. API-key and cloud-provider setups don't use the CLI's login,
+// and output the check can't read is let through rather than blocking a CLI that answers differently.
+const signedIn = {};
+export function signInProblem(kinds) {
+  for (const k of new Set(kinds)) {
+    if (k === "claude" && !(process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_CODE_USE_BEDROCK || process.env.CLAUDE_CODE_USE_VERTEX)) {
+      signedIn.claude ??= (() => {
+        const r = sh(`${bin("claude")} auth status`);
+        try { return JSON.parse(r.out.slice(r.out.indexOf("{"))).loggedIn === true; } catch { return true; }
+      })();
+      if (!signedIn.claude) return "claude is not signed in (`claude auth status`): run `claude auth login`, then run again.";
+    }
+    if (k === "codex") {
+      signedIn.codex ??= sh(`${bin("codex")} login status`).ok;
+      if (!signedIn.codex) return "codex is not signed in (`codex login status` failed): run `codex login`, then run again.";
+    }
+  }
+  return null;
+}
 
 // Runs one agent with the prompt on stdin. Never throws; returns cost, tokens, seconds, any error and
 // the agent's session id. With `resume` (a session id from an earlier run) it continues that session
@@ -112,10 +134,11 @@ function runOnce({ agent = "claude", cwd, prompt, model, budget, plugin = false,
     cmd = [bin("claude"), "-p", ...(resume ? ["--resume", resume] : []), "--tools", CLAUDE_TOOLS, "--permission-mode", "acceptEdits", "--allowedTools", q(tools.join(",")), "--output-format", "stream-json", "--verbose",
       "--strict-mcp-config", ...sources, ...guardSettings(), ...(model ? ["--model", model] : []), ...(budget ? ["--max-budget-usd", budget] : [])].join(" ");
   } else if (agent === "codex") {
-    // FANOUT_CODEX_EFFORT (minimal|low|medium|high) sets Codex's reasoning effort for its sessions;
-    // FANOUT_CODEX_TIER sets its service tier ("fast" = Codex's Fast tier, service_tier=priority: about a
-    // fifth quicker on the sheet benchmark, at more usage).
-    const effort = process.env.FANOUT_CODEX_EFFORT, tier = process.env.FANOUT_CODEX_TIER === "fast" ? "priority" : process.env.FANOUT_CODEX_TIER;
+    // Codex sessions run on low reasoning effort: on the sheet benchmark they took 165-201s against
+    // 287-611s at Codex's default, with the same hidden-test score. FANOUT_CODEX_EFFORT (minimal|low|medium|
+    // high) overrides it; "default" leaves Codex's own setting. FANOUT_CODEX_TIER sets its service tier
+    // ("fast" = Codex's Fast tier, service_tier=priority: about a fifth quicker there, at more usage).
+    const effort = (process.env.FANOUT_CODEX_EFFORT ?? "low") === "default" ? null : process.env.FANOUT_CODEX_EFFORT ?? "low", tier = process.env.FANOUT_CODEX_TIER === "fast" ? "priority" : process.env.FANOUT_CODEX_TIER;
     const conf = (k, v) => (v && /^\w+$/.test(v) ? ["-c", `${k}=${v}`] : []);
     cmd = [bin("codex"), "exec", "--json", "-s", "workspace-write", "--skip-git-repo-check", "-C", q(cwd), ...(model ? ["-m", model] : []),
       ...conf("model_reasoning_effort", effort), ...conf("service_tier", tier), ...(resume ? ["resume", resume] : [])].join(" ");
@@ -167,6 +190,25 @@ function runOnce({ agent = "claude", cwd, prompt, model, budget, plugin = false,
 // sometimes left their shells without PATH ("npm: command not found"), and each agent then lost turns.
 export const staggered = (items, fn, gapMs = Number(process.env.FANOUT_STAGGER_MS ?? 1500)) =>
   Promise.all(items.map((x, i) => new Promise((r) => setTimeout(r, i * gapMs)).then(() => fn(x))));
+
+// Uncommitted files in a checkout (changed, deleted or new, not ignored), outside .fanout/.
+const changedPaths = (cwd) => [...new Set(git(cwd, "ls-files", "-z", "--modified", "--deleted", "--others", "--exclude-standard").out.split("\0"))]
+  .filter((f) => f && !f.startsWith(".fanout/"));
+
+// Commits just these paths in the main checkout. Other sessions may be working there too: `git add -A`
+// would sweep their uncommitted files into fanout's commit, and `commit -- <paths>` leaves anything
+// they staged out of it as well.
+export function commitPaths(root, paths, msg) {
+  if (!paths.length) return false;
+  git(root, "add", "-A", "--", ...paths);
+  return git(root, "commit", "-qm", msg, "--", ...paths).ok;
+}
+
+// What fanout itself writes in the main checkout: the planner's contracts and shared changes go in files
+// some session owns (a contract is in its owner's owns:), and regen rebuilds generated files. A file
+// outside all of those was written by someone else.
+export const fanoutPaths = (paths, sessions, regen) =>
+  paths.filter((f) => sessions.some((s) => ownsFile(s, f)) || regen.some((g) => g.paths.some((p) => matches(p, f))));
 
 // Stages a lane's work, reverts files the plan forbids it to change, commits the rest.
 export function commitLane(wt, sessions, s, regen, msg) {
@@ -300,7 +342,7 @@ uses: <exposed files from other sessions it builds against>      (optional)
 Rules: every file has at most one owner. Keep sessions few, substantial and independent; if the goal is small, use one session. Use at most ${maxSessions} sessions: group related tasks into one session rather than giving each its own, because more agents running at once slow each other down. Anything several sessions need (shared types, function signatures, changes to a shared module) belongs to one owner and is listed under its exposes and the others' uses.
 
 2. Run \`node "${SCRIPT}" check\` and fix the plan until it reports no problems and no NOTE.
-3. If anything is exposed, write those files on ${base} now as working interfaces or stubs the other sessions can build against, run the tests, and commit ("fanout: contracts"). Don't implement the rest of the tasks, create worktrees or start sessions: that happens next. Treat the plan as approved.
+3. If anything is exposed, write those files on ${base} now as working interfaces or stubs the other sessions can build against, run the tests, and commit ("fanout: contracts") just the files you wrote (\`git add <file>...\`, not \`git add -A\`: others may be working in this checkout). Don't implement the rest of the tasks, create worktrees or start sessions: that happens next. Treat the plan as approved.
 ${extra}
 Files in the repository:
 ${list}
@@ -320,6 +362,10 @@ export async function cli(argv) {
   const root = mainRoot(process.cwd());
   const base = git(root, "branch", "--show-current").out.trim();
   if (!base) { console.error("fanout run: check out the branch to build on first (e.g. main)."); return 2; }
+  // A clean start is still needed although fanout commits only its own paths: the lanes branch from the
+  // base's last commit and rehearse tests commits, so uncommitted work would be missing from both; git
+  // refuses to merge into a checkout whose index has staged changes; and a file you had changed that the
+  // planner also writes couldn't be told apart from the planner's change.
   if (git(root, "status", "--porcelain").out.split("\n").some((l) => l && !l.slice(3).startsWith(".fanout/"))) {
     console.error("fanout run: commit or stash your changes first; the run builds on a clean " + base + ".");
     return 2;
@@ -359,6 +405,8 @@ export async function cli(argv) {
     return code;
   };
 
+  const signInStop = (kinds) => { const p = signInProblem(kinds); if (p) console.error(`fanout run: ${p}`); return p; };
+
   // 1. Plan
   if (!existsSync(planPath)) {
     if (!goal) { console.error('fanout run: no .fanout/plan.md. Pass a goal: fanout run "add coupons and tax", or --goal-file TASKS.md'); return 2; }
@@ -372,6 +420,7 @@ export async function cli(argv) {
       // The draft can't see what the goal doesn't name; it flags what a session uses from another session's
       // file, and only that (or --review) gets an agent's review. With neither flags nor contracts, no agent.
       const full = flag("--review"), work = [full ? "reviewing it" : draft.flags.length ? `checking ${draft.flags.length} name(s) used across sessions` : "", draft.contracts ? "writing the contracts" : ""].filter(Boolean);
+      if (work.length && signInStop(["claude"])) { rmSync(planPath); return 2; }
       log(`drafted the plan from the goal's sections${work.length ? `; ${work.join(" and ")}…` : ""}`);
       const prompt = contractsPrompt({ goal, base, plan: draft.text, maxSessions, flags: draft.flags, full });
       let retry = "";
@@ -382,6 +431,7 @@ export async function cli(argv) {
         retry = `\n\nAfter your changes, ${c.ok ? "the tests fail on " + base : "the plan fails the check"}:\n${tail(t.out)}\nFix it.`;
       }
     } else {
+      if (signInStop(["claude"])) return 2;
       log("planning…");
       const prompt = plannerPrompt({ goal, base, root, maxSessions });
       for (let i = 0; i < 2; i++) {
@@ -393,20 +443,21 @@ export async function cli(argv) {
   if (!existsSync(planPath)) { console.error("fanout run: no plan was written."); return finish(1, "no plan"); }
   // The planner is told to commit the contracts, but doesn't always (seen on a real project: the shared
   // change was written and left uncommitted, so every lane branched without it and rehearse tested code
-  // that never switched the new pages on). The tree was clean before planning, so anything left is its.
-  const leftover = git(root, "status", "--porcelain").out.split("\n").filter((l) => l && !l.slice(3).startsWith(".fanout/"));
-  if (leftover.length) {
-    git(root, "add", "-A"); git(root, "reset", "-q", "--", ".fanout");
-    git(root, "commit", "-qm", "fanout: contracts");
-    log(`committed ${leftover.length} file(s) the planner left uncommitted as "fanout: contracts"`);
-  }
+  // that never switched the new pages on). The tree was clean before planning, but another session can
+  // write in this checkout meanwhile, so only files the plan gives to a session or to regen are taken.
   const text = readFileSync(planPath, "utf8"), regen = parseRegen(text), test = planSetting(text, "test");
   sessions = parsePlan(text);
+  const leftover = changedPaths(root), contracts = fanoutPaths(leftover, sessions, regen);
+  if (commitPaths(root, contracts, "fanout: contracts")) log(`committed ${contracts.length} file(s) the planner left uncommitted as "fanout: contracts"`);
+  const stray = leftover.filter((f) => !contracts.includes(f));
+  if (stray.length) log(`left ${stray.length} uncommitted file(s) outside the plan alone: ${stray.slice(0, 5).join(", ")}${stray.length > 5 ? ", ..." : ""}`);
   phase("plan");
   const { problems, order } = check(sessions, root, regen);
   if (problems.length) { problems.forEach((p) => console.log(p)); console.error("fanout run: fix the plan, then run again."); return finish(1, "plan invalid"); }
 
   // 2. Approve
+  const agentFor = (s) => s.agent || defaultAgent;
+  if (signInStop(sessions.map(agentFor))) return finish(1, "not signed in");
   console.log(`\n${text.trim()}\n\nMerge order: ${order.join(" -> ")}`);
   if (!flag("--yes")) {
     if (!process.stdin.isTTY) { console.log("\nRun again with --yes to start these sessions."); return agents.length ? finish(0, "planned") : 0; }
@@ -428,7 +479,6 @@ export async function cli(argv) {
       if (!r.ok) { console.error(`fanout run: can't create the worktree for ${s.name}:\n${r.out}`); return finish(1, "worktree failed"); }
     }
   }
-  const agentFor = (s) => s.agent || defaultAgent;
   log(`starting ${sessions.length} sessions: ${sessions.map((s) => `${s.name} (${agentFor(s)})`).join(", ")}`);
   const ahead = (s) => Number(git(root, "rev-list", "--count", `${base}..fanout/${s.name}`).out.trim()) || 0;
   // An agent run that errors (crash, budget, non-zero exit) is tried once more with the same brief; its
@@ -516,7 +566,7 @@ export async function cli(argv) {
     if (!m.ok) { git(root, "merge", "--abort"); console.error(`fanout run: merging ${name} into ${base} conflicted, though rehearse passed. Is ${base} changed?\n${tail(m.out)}`); return finish(1, "merge conflict"); }
   }
   for (const g of regen) if (g.cmd) sh(g.cmd, root);
-  git(root, "add", "-A"); git(root, "commit", "-qm", "fanout: regenerate");
+  commitPaths(root, fanoutPaths(changedPaths(root), [], regen), "fanout: regenerate");
   const final = test ? sh(test, root) : { ok: true };
   if (test) testRuns++;
   for (const s of sessions) { git(root, "worktree", "remove", "--force", wt[s.name]); git(root, "branch", "-D", `fanout/${s.name}`); }
