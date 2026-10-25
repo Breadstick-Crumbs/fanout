@@ -432,8 +432,23 @@ ${list}
 Goal: ${goal}`;
 }
 
+// The common options only; the README's Options section has the rest.
+export const RUN_HELP = `usage: fanout run ["goal" | --goal-file TASKS.md] [options]
+
+Plans the work, runs one agent per session in parallel, tests their branches together, sends each break
+back to the session that caused it, and merges into the current branch. With no goal it uses .fanout/plan.md.
+
+  --yes                 start without asking to approve the plan
+  --agent <a>           claude (default), codex, or any command that reads the brief on stdin
+  --no-merge            stop when everything passes, before merging
+  --session-model <m>   model for the sessions (e.g. haiku); --model sets the planner's
+
+More: --mix, --max-sessions 4, --budget <usd>, --fixes 2, --full-tests, --review, --no-draft
+(README, "Options").`;
+
 export async function cli(argv) {
   const flag = (f) => argv.includes(f);
+  if (flag("--help") || flag("-h")) { console.log(RUN_HELP); return 0; }
   const opt = (f, d) => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1] : d; };
   const goalFile = opt("--goal-file");
   const goal = argv[0] && !argv[0].startsWith("--") ? argv[0] : goalFile && existsSync(goalFile) ? readFileSync(goalFile, "utf8") : null;

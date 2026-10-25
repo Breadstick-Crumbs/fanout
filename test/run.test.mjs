@@ -520,6 +520,17 @@ test("contracts that break the tests go back to the agent once, with the failure
   assert.match(planner[1].stdin, /the tests fail on main/);
 });
 
+test("fanout run --help prints the options and starts nothing, even with a plan there", () => {
+  useFake();
+  const repo = mkRepo(PLAN_AB);
+  const r = spawnSync(process.execPath, [join(import.meta.dirname, "../skills/fanout/fanout.mjs"), "run", "--help"], { cwd: repo, encoding: "utf8" });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /^usage: fanout run/);
+  assert.match(r.stdout, /--no-merge/);
+  assert.doesNotMatch(r.stdout, /## a/);
+  assert.equal(calls().length, 0);
+});
+
 test("the plan's test and check commands are allowed for session agents, as written", () => {
   assert.deepEqual(allowCommands(["bash tools/check-theme.sh", "", undefined, `node -e "x"`, "a, b"]), ["Bash(bash tools/check-theme.sh)"]);
 });

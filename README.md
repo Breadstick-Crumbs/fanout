@@ -7,9 +7,37 @@
 
 <p align="center"><b>Run several coding agents at once. Merge once. Nothing breaks.</b></p>
 
-fanout splits a job across parallel agents (Claude Code, Codex, or both), gives each one its own git worktree and its own files, and tests all their branches together before anything reaches `main`. No dependencies, no config. Just Node 18+ and git.
+fanout is a safety layer for parallel coding agents (Claude Code, Codex, or both). Each agent gets its own git worktree and its own files, shared interfaces are frozen while they work, and all their branches are tested together before anything reaches `main`. No dependencies, no config. Just Node 18+ and git.
 
-Already have several sessions open on one repo? `fanout overlap` needs no plan. It lists every checkout (worktrees, other sessions, your own), what each has changed, committed or not, and which files two of them are both changing, with a dry-run merge to show whether they'd really conflict.
+It keeps parallel work from colliding. It isn't mainly a speed-up: on most jobs one agent is about as fast (see [When to use it](#when-to-use-it)).
+
+## Quick start
+
+**1. See whether the sessions you already have will collide.** No plan, no install:
+
+```bash
+npx github:Breadstick-Crumbs/fanout overlap
+```
+
+It lists every checkout of the repo (worktrees, other agent sessions, your own), what each has changed, committed or not, and the files two of them are both changing, with a dry-run merge to show whether they'd really conflict.
+
+**2. Split a job across agents.** Write the goal as one `##` section per part, naming its files in backticks:
+
+```md
+## currency
+Add `src/money.mjs`: format prices in the user's currency.
+
+## receipt
+Add `src/receipt.mjs`, built on `src/money.mjs`: print the items and the total.
+```
+
+```bash
+npx github:Breadstick-Crumbs/fanout run --goal-file TASKS.md
+```
+
+fanout drafts the plan from the sections (no AI call), shows it, and asks once. Then it runs one agent per section in parallel, tests their branches together, sends any break back to the agent that caused it, and merges into your current branch. A one-line goal works too (`run "add coupons and tax"`); an agent then writes the plan.
+
+Inside Claude Code you can skip the command: install the plugin (below) and ask *"split this into parallel sessions"*.
 
 ## The problem
 
@@ -46,6 +74,14 @@ flowchart TD
     rehearse -- "all green" --> merged
 ```
 
+1. **Plan.** Who owns which files, and the merge order. You approve it. That's the only question you get.
+2. **Contracts.** Shared interfaces (types, function signatures) are committed first, so every agent builds against the real thing.
+3. **Sessions.** Each agent works on its own branch in its own folder. If it touches a file it doesn't own, it's stopped. A session that builds on others is tested against their real code as soon as they and it are done, and a failure goes straight back to it.
+4. **Rehearse.** Every branch is merged on a scratch copy and your tests run once. If something breaks, fanout finds the branch that did it, and that agent gets the failing tests and fixes it.
+5. **Merge.** Everything merges into `main` in order.
+
+You only hear about problems if the same agent fails twice.
+
 ## Install
 
 **Claude Code**
@@ -62,7 +98,7 @@ codex plugin marketplace add Breadstick-Crumbs/fanout
 codex plugin add fanout@fanout
 ```
 
-That gives Codex the fanout skill. In Codex, out-of-lane work is caught when it's committed (by fanout's git hook, and by `fanout run`, which reverts it), not at the moment of the edit. Two reasons: Codex 0.164 lists plugin hooks as removed, and it skips any hook you haven't trusted in `/hooks`. Also, Codex often writes files through the shell (`Set-Content`, `cat >`) rather than `apply_patch`, so an edit hook would miss those writes anyway. In Claude Code, edits are blocked as they happen.
+That gives Codex the fanout skill. In Codex, out-of-lane work is caught when it's committed (by fanout's git hook, and by `fanout run`, which reverts it), not at the moment of the edit: Codex 0.164 lists plugin hooks as removed and skips hooks you haven't trusted, and it often writes files through the shell, which an edit hook would miss anyway. In Claude Code, edits are blocked as they happen.
 
 **Any other agent**
 
@@ -74,41 +110,9 @@ cp -r fanout/skills/fanout ~/.claude/skills/     # Claude Code
 
 The git hook (`install-git-hook`, below) enforces the plan no matter which agent commits.
 
-## Use
-
-Ask your agent:
-
-> Split this into parallel sessions: add Arabic support, fix the currency bug, and redo the landing page.
-
-1. It shows you a plan: who owns which files, and the merge order. You approve it. That's the only question you get.
-2. Shared interfaces (types, function signatures) are committed first, so every agent builds against the real thing.
-3. Each agent works on its own branch in its own folder. If it touches a file it doesn't own, it's stopped.
-4. fanout rehearses: it merges every branch on a scratch copy and runs your tests once. If something breaks, it finds the branch that did it, and that agent gets the failing tests and fixes it, with the branches merged ahead of it brought into its own folder so it works against their real code.
-5. Everything merges into `main` in order.
-
-You only hear about problems if the same agent fails twice.
-
-### Or do it all in one command
-
-```bash
-fanout run "add Arabic support, fix the currency bug, redo the landing page"
-```
-
-`fanout run` does the whole fan-out: writes the plan, runs the agents in parallel, rehearses, sends each break back to the agent that caused it, and merges.
-
-- No goal: it uses your existing `.fanout/plan.md`.
-- `--yes` skips the one approval prompt.
-- `--agent claude`, `--agent codex`, or `--agent "<any command>"` picks the agent. A session can override it with `agent:` in the plan.
-
-No install needed:
-
-```bash
-npx github:Breadstick-Crumbs/fanout run "<goal>"
-```
-
 ## The plan
 
-Your agent writes it to `.fanout/plan.md`. You read it and approve it.
+Your agent (or `fanout run`) writes it to `.fanout/plan.md`. You read it and approve it.
 
 ```md
 test: npm test
@@ -137,10 +141,13 @@ done: no hard-coded currency left
 | `uses` | Contracts this session depends on. It merges after whoever exposes them. |
 | `after` | Extra merge-order dependencies, if needed. |
 | `agent` | Optional. Which agent runs this session (`claude`, `codex`, or any command). |
+| `model` | Optional. The model for this session's agent. |
 | `done` | What finished looks like. |
 | `check` | Optional. A command that proves `done` on the merged code (a grep, a script, a request). Rehearse runs it after the test passes; a failure goes back to this session. Worth it when the test is only a lint or a build. |
 | `test` | Your test command, run after every merge during rehearsal. |
 | `regen` | Generated files nobody owns, and the command that rebuilds them after merging. |
+
+**Writing the goal as sections.** With one `## name` section per part and the files in backticks, `fanout run` drafts the plan without AI. A file goes to the section that adds or changes it; other sections that mention it build against it. Text above the first section can set the plan-wide lines: a sentence saying files are generated, naming them (a glob like `css/*-rtl.css` works) and a command in backticks, becomes a `regen:` line, and a sentence naming a test command (``Test with `bash tools/check.sh`.``) becomes the `test:` line; without one, `npm test` is used when `package.json` has a test script. The draft can only see the files the goal names, so it flags any name a section uses from a file another session owns (JavaScript exports, PHP functions), and an agent checks just those and writes the shared interfaces. With no flags and nothing shared, no planning agent runs at all. Each session gets its own sections in full, plus the lines from other sections that describe the functions it builds on.
 
 ## What it catches
 
@@ -155,23 +162,27 @@ done: no hard-coded currency left
 | A flaky test, or tests that already fail on `main` | `rehearse` reruns before blaming anyone and reports `FLAKY` or `BASE FAILS` instead of pointing at an innocent branch. |
 | An agent without hooks (Cursor, scripts) | The git pre-commit hook refuses the commit. |
 
-Your agent runs the checks. You can too:
-
-```bash
-node skills/fanout/fanout.mjs check              # is the plan safe? prints the merge order
-node skills/fanout/fanout.mjs verify             # in a session's folder: anything outside its lane?
-node skills/fanout/fanout.mjs rehearse           # merge every branch on a scratch copy, test once
-node skills/fanout/fanout.mjs install-git-hook   # enforce the plan on every commit
-node skills/fanout/fanout.mjs status             # each session: branch, commits, files, anything flagged; during a run, its agent state and cost
-node skills/fanout/fanout.mjs overlap            # no plan needed: which checkouts are changing the same files, and would they conflict?
-node skills/fanout/fanout.mjs log                # past runs and rehearsals: time, cost, fixes, result
-```
-
 | A session agent... | `fanout run`... |
 |---|---|
 | crashes or hits its budget | retries it once, then stops and keeps its folder so you can look |
 | finishes but changes nothing | flags it and carries on; stops if no session changed anything |
 | already has commits from an earlier run | skips it, so you can run again after a stop |
+| would run on a CLI that's signed out | stops before any agent starts, with one line saying how to sign in |
+
+## Commands
+
+Your agent runs these. You can too (`npx github:Breadstick-Crumbs/fanout <command>`, or `node skills/fanout/fanout.mjs <command>` in a clone):
+
+```bash
+fanout run ["goal" | --goal-file f]   # the whole fan-out: plan, agents, rehearse, fix, merge (fanout run --help)
+fanout overlap            # no plan needed: which checkouts are changing the same files, and would they conflict?
+fanout check              # is the plan safe? prints the merge order
+fanout verify             # in a session's folder: anything outside its lane?
+fanout rehearse           # merge every branch on a scratch copy, test once
+fanout status             # each session: branch, commits, files, anything flagged; during a run, its agent state and cost
+fanout install-git-hook   # enforce the plan on every commit
+fanout log                # past runs and rehearsals: time, cost, fixes, result
+```
 
 ## Does it work?
 
@@ -184,7 +195,7 @@ Same four overlapping tasks, four parallel agents, with and without fanout ([ful
 | Repair commits on `main` | 4 every run | 0 |
 | Claude cost per run | $0.59–$0.63 | $0.50–$0.92 |
 
-Breaks still happened with fanout, but `rehearse` caught them before `main` and the agent that caused each one fixed it. One pair of runs mixed Claude and Codex, with the same result. It's a small benchmark. Rerun it with `node bench/run.mjs both`.
+Breaks still happened with fanout, but `rehearse` caught them before `main` and the agent that caused each one fixed it. It's a small benchmark of the project's own tasks. Rerun it with `node bench/run.mjs both`.
 
 On a real WordPress theme (four pages moved to a new design, one session each, Sonnet), `fanout run` went from a one-paragraph goal to four tested, merge-ready branches in about 7 minutes for $1.16, with no conflicts. One Sonnet agent did the same job in 4 minutes for $0.64. At that size, one agent wins ([details](bench/RESULTS.md#real-project-four-theme-pages-v016)).
 
@@ -192,7 +203,7 @@ On a real WordPress theme (four pages moved to a new design, one session each, S
 
 Parallel agents aren't free. Each one loads and reads the code on its own, so splitting work only pays when the work is big enough.
 
-**Use one agent** unless each part is substantial. On our six-feature benchmark (21 hidden tests, passed by every setup), one Sonnet agent finished in about 1m 40s for $0.25; six agents with fanout took about 2m 45s. Each parallel agent pays its own start-up and reading time, roughly a minute, so parts need to take several minutes each before splitting saves time. Running the sessions on a cheaper model brings the cost down to about $0.15 ([full results](bench/RESULTS.md)).
+**Use one agent** unless each part is substantial. On our six-feature benchmark (21 hidden tests, passed by every setup), one Sonnet agent finished in about 1m 40s for $0.25; six agents with fanout took about 2m 45s. Each parallel agent pays its own start-up and reading time, roughly a minute, so parts need to take several minutes each before splitting saves time.
 
 On a bigger job, splitting does pay. On our six-module spreadsheet benchmark (34 hidden tests, minutes per module), `fanout run` with four Sonnet sessions took a median of 3m 59s against 5m 44s for one Sonnet agent, at about 15% more cost ($0.72 against $0.62; three runs each, and the ranges overlap) ([details](bench/RESULTS.md#repeats-with-the-new-defaults-v021)).
 
@@ -222,36 +233,51 @@ fanout runs before your CI, not instead of it.
 **How do I run multiple Claude Code (or Codex) agents in parallel without merge conflicts?**
 Ask your agent to "split this into parallel sessions", or run `fanout run "<goal>"`. Each agent gets its own git worktree and its own files, so two agents never edit the same file, and every branch is tested together before it reaches `main`.
 
-**I already have several sessions open on one repo. Will they conflict?**
-Run `fanout overlap`. No plan needed. It shows which checkouts are changing the same files and dry-runs the merge to tell you whether they really conflict.
-
 **Do I need to configure anything?**
-No. The plan is the only file, and your agent writes it.
+No. The plan is the only file, and your agent writes it. The defaults are the ones that did best on the benchmark; the [options](#options) are there if you need them.
 
 **Does it get in the way of normal work?**
-No. It only acts on branches named `fanout/*`.
+No. It only acts on branches named `fanout/*`. In your main checkout it commits only its own files (the contracts and regenerated files), so another session's uncommitted work stays out; the checkout has to be clean when a run starts.
 
 **Will it burn tokens?**
-fanout's checks don't: they're plain scripts with no AI calls, and a failure report is a few lines, not a full log. Running several agents does cost more than one, so split work only when it's big enough (see [When to use it](#when-to-use-it)). The planning step is the largest single cost of a `fanout run`; inside Claude Code, your own session plans for free. To cut a run's cost about 4×, plan with your strongest model and run the sessions on a cheaper one: `fanout run "<goal>" --session-model haiku`. That held on our benchmark's well-specified tasks; check the results on fuzzier work before making it your default. By default `fanout run` also plans at most 4 sessions (`--max-sessions`), since more agents writing at once slow each other down, and asks sessions to keep their own tests short (`--full-tests` to turn that off), since rehearse tests the merged result. On the [sheet benchmark](bench/RESULTS.md#large-task-a-spreadsheet-engine-v018), three sessions instead of six cut the wall time from 7m 32s to 4m 41s, and short tests cut the sessions' cost by a fifth to a third. A goal written as `## name` sections that name their files in backticks (`fanout run --goal-file TASKS.md`) is first drafted into a plan without AI. Text above the first section can set the plan-wide lines: a sentence saying files are generated, naming them (a glob like `css/*-rtl.css` works) and a command in backticks, becomes a `regen:` line, and a sentence naming a test command (``Test with `bash tools/check.sh`.``) becomes the `test:` line; without one, `npm test` is used when `package.json` has a test script. The flags cover JavaScript exports and PHP functions. The draft can only see the files the goal names, so it flags any name a session's section uses from a file another session owns (a `createStore` that one session must change and another only mentions, say). An agent checks just those flags and writes the shared interfaces; fanout runs the tests and commits them. Each session gets its own sections in full, plus the lines from other sections that describe the functions it builds on (found by the names the shared files export), so a rule like "takes the text without the leading `=`" reaches the sessions calling it. With no flags and no shared interfaces, no planning agent runs at all. A dependency the goal doesn't name in backticks isn't flagged: pass `--review` to have the agent review the whole plan, or `--no-draft` to plan the usual way.
-
-**Does `fanout run` use my personal Claude settings?**
-Its session agents start with your project's settings only, which makes each start several seconds faster and cheaper: your personal hooks, plugins and global `CLAUDE.md` aren't loaded, and fanout's own guard is loaded directly. If an agent can't start that way (for example your provider or API key setup lives in your user settings), fanout retries it with your settings and says so. Set `FANOUT_USER_SETTINGS=1` to always use them.
-
-Codex sessions run on low reasoning effort: on the [sheet benchmark](bench/RESULTS.md#claude-and-codex-sessions-together-v0211), three Claude and three Codex sessions took 5m 09s on low against 11m 29s at Codex's default, both with every hidden test passing. `FANOUT_CODEX_EFFORT` sets another level (`minimal`, `medium`, `high`, or `default` for Codex's own setting), and `FANOUT_CODEX_TIER=fast` puts them on Codex's Fast tier (about a fifth quicker in our test, using more of your Codex quota). Mixing in Codex saves Claude spend and quota; for speed alone, four Claude sessions were faster (3m 59s median).
-
-Before any agent starts, `fanout run` checks that each CLI it will use is signed in (`claude auth status`, `codex login status`) and stops with one line if not, instead of letting every agent fail. It commits only its own files in your checkout (the planner's contracts and the regenerated files), so another session's uncommitted work there stays out of its commits; the checkout still has to be clean when the run starts.
+fanout's checks don't: they're plain scripts with no AI calls, and a failure report is a few lines, not a full log. Running several agents does cost more than one, so split work only when it's big enough. Planning is the largest single cost of a `fanout run`: a goal written as sections skips most of it, and inside Claude Code your own session plans for free. Sessions on a cheaper model (`--session-model haiku`) cut a run's cost about 4× on our benchmark, but lost a hidden test or two.
 
 **Can I mix Claude Code and Codex?**
-Yes. Sessions are just git branches. Run some in Claude, some in Codex, or headless (`claude -p`, `codex exec`). `fanout run --mix` picks for you: three sessions run in Claude and the rest in Codex. Sessions that others build on (another session `uses` what they expose, or is `after` them) get the Claude slots first, then the rest in plan order. Codex sessions took 2–3× as long as Claude ones on our benchmark, so they go where nothing waits on them. The plan shows the assignment before you approve it, and a session's own `agent:` line wins.
-
-**What happens when a session breaks another's code?**
-As soon as a session that builds on others is done and so are they, `fanout run` merges their branches into its branch and runs the plan's test there, while the other sessions are still working. If it fails, that session gets the failure straight away (its own agent session is resumed). If it passes, the merge is undone and no agent runs. Then `rehearse` tests everything together as before.
+Yes. Sessions are just git branches: give a session `agent: codex` in the plan, or let `fanout run --mix` choose. Codex sessions took 2–3× as long as Claude ones on our benchmark, so mixing saves Claude spend and quota rather than time.
 
 **What if two tasks need the same file?**
 Give it to one session. If others depend on it, make it a contract (`exposes` / `uses`). If it's generated, list it under `regen`.
 
 **What doesn't it do?**
 It isn't CI. It won't fix flaky tests or speed up a slow suite. It makes sure what your agents hand to CI already works together.
+
+## Options
+
+You shouldn't need these to start. `fanout run` options:
+
+| Option | What it does |
+|---|---|
+| `--yes` | Start without asking to approve the plan. |
+| `--goal-file TASKS.md` | Read the goal from a file. |
+| `--agent claude\|codex\|"<cmd>"` | Which agent runs the sessions (default `claude`). Any command works: it gets the brief on stdin and runs in the session's folder. A session's `agent:` line wins. |
+| `--no-merge` | Stop when everything passes, before merging. |
+| `--model m` / `--session-model m` | The planner's model / the sessions' model. A session's `model:` line wins. |
+| `--mix` | Three sessions in Claude (those others build on first, then plan order), the rest in Codex. Shown with the plan. |
+| `--max-sessions 4` | Most sessions to plan. Above about four, one account's agents slow each other down (six ran at about half speed). |
+| `--budget usd` | Spending cap per Claude agent run. |
+| `--fixes 2` | Fix rounds per session before the run stops for you. |
+| `--full-tests` | Let sessions write full test suites (by default they keep their own tests short, since rehearse tests the merged result). |
+| `--review` | Have an agent review the whole drafted plan, for goals that may hide dependencies they don't name in backticks. |
+| `--no-draft` | Always plan with an agent, even for a goal in sections. |
+
+Environment variables:
+
+| Variable | What it does |
+|---|---|
+| `FANOUT_USER_SETTINGS=1` | Start Claude session agents with your user settings. By default they load only the project's (faster and cheaper: no personal hooks, plugins or global `CLAUDE.md`), and fall back to yours if a start fails. |
+| `FANOUT_CODEX_EFFORT` | Codex sessions' reasoning effort: `low` by default (2–3× faster than Codex's default on our benchmark, same score), or `minimal`, `medium`, `high`, `default`. |
+| `FANOUT_CODEX_TIER=fast` | Codex's Fast tier: about a fifth quicker in our test, using more of your Codex quota. |
+| `FANOUT_TRACE_DIR` | Save each Claude agent's full event stream there, to see where its time went. |
 
 ## Development
 

@@ -464,7 +464,20 @@ function main(argv) {
   if (cmd === "status") return showStatus(cwd, arg(argv, "--base") ?? defaultBase(cwd));
   if (cmd === "overlap") return showOverlap(cwd, arg(argv, "--base") ?? repoDefaultBranch(cwd), argv.includes("--all"));
   if (cmd === "log") return showLog(cwd, Number(arg(argv, "--last", "20")));
-  if (!["check", "verify", "rehearse"].includes(cmd)) { console.error("usage: fanout check [plan.md] | verify [--session name] [--base <branch>] | rehearse [--base <branch>] [--test cmd] | run [\"goal\"] [--yes] | status [--base <branch>] | overlap [--base <branch>] [--all] | log [--last 20] | install-git-hook [--force] | guard"); return 2; }
+  if (!["check", "verify", "rehearse"].includes(cmd)) {
+    const help = cmd === "--help" || cmd === "-h" || cmd === "help";
+    (help ? console.log : console.error)(`usage: fanout <command>
+  run ["goal" | --goal-file f] [--yes]   the whole fan-out: plan, agents, rehearse, fix, merge (fanout run --help)
+  overlap [--base <branch>] [--all]       no plan needed: which checkouts change the same files, would they conflict
+  check [plan.md]                         is the plan safe? prints the merge order
+  verify [--session name] [--base <b>]    anything outside a session's lane?
+  rehearse [--base <branch>] [--test cmd] merge every branch on a scratch copy, test once
+  status [--base <branch>]                each session's branch, commits, files, flags, agent state and cost
+  log [--last 20]                         past runs and rehearsals
+  install-git-hook [--force]              enforce the plan on every commit
+  guard                                   the edit hook (installed by the plugin)`);
+    return help ? 0 : 2;
+  }
   const planPath = explicitPlan(argv) ?? defaultPlan(cwd);
   let text;
   try { text = readFileSync(planPath, "utf8"); } catch { console.error(`No plan at ${planPath}`); return 2; }
