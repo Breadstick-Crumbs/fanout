@@ -66,3 +66,10 @@ test("draft: no draft for prose, one section, or a new file nobody adds", () => 
   assert.equal(draftPlan({ goal: "## a\nUse `src/new.mjs`.\n## b\nRead `src/new.mjs`.", root }), null);
   assert.equal(draftPlan({ goal: "## a\nTidy things.\n## b\nAdd `src/b.mjs`.", root }), null); // a owns nothing
 });
+
+test("draft: flags a name a session uses from a file another session owns, not one it builds on", () => {
+  const root = repoWith({ "package.json": "{}", "src/store.mjs": "export function createStore() {}\nexport const addBook = () => {};\n", "src/lib.mjs": "export { helper as help };\n" });
+  const goal = "## holds\nChange `src/store.mjs` to keep holds.\n\n## fines\nAdd `src/fines.mjs`. `createStore` must start with `payments: []`; use `help()` and `Map`.\n\n## csv\nAdd `src/csv.mjs`, built on `src/store.mjs`: calls `addBook`.\n";
+  const d = draftPlan({ goal, root });
+  assert.deepEqual(d.flags, [{ session: "fines", name: "createStore", file: "src/store.mjs", owner: "holds" }]);
+});

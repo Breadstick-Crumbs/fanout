@@ -1,5 +1,6 @@
-// Drafts .fanout/plan.md from a goal written as sections ("## name" headings), with no AI call. A planner
-// agent then reviews the draft (it can't see dependencies the goal doesn't name) and writes the contracts. On the sheet benchmark the planner spent most
+// Drafts .fanout/plan.md from a goal written as sections ("## name" headings), with no AI call. An agent
+// then writes the contracts, and reviews the names the draft flags (`flags`: what a section uses from a file
+// another session owns). On the sheet benchmark the planner spent most
 // of its minute reading the code and deciding the split; a goal that already names its parts and files
 // doesn't need that.
 //
@@ -96,6 +97,28 @@ export function draftPlan({ goal, root, maxSessions = 4 }) {
   });
   for (const s of sessions) s.exposes = s.owns.filter((p) => sessions.some((o) => o !== s && o.uses.includes(p)));
 
+  // Names a session's sections mention (`createStore`, `f(x)`) that an existing file another session owns
+  // defines, when the session doesn't build on that file: the goal may need it changed without naming the
+  // file (library benchmark: fines needs `createStore` to start with `payments: []`, and holds owns
+  // src/store.mjs). Only these need an agent to look; a draft with none skips the review.
+  const defs = new Map();
+  for (const f of files) {
+    if (!/\.(m?[jt]sx?|cjs)$/.test(f) || generated.has(f)) continue;
+    let src = "";
+    try { src = readFileSync(join(root, f), "utf8"); } catch { continue; }
+    const names = [...src.matchAll(/^export\s+(?:default\s+)?(?:async\s+)?(?:function\*?|const|let|var|class)\s+([A-Za-z_$][\w$]*)/gm)].map((m) => m[1]);
+    for (const m of src.matchAll(/^export\s*\{([^}]*)\}/gm)) names.push(...m[1].split(",").map((x) => x.trim().split(/\s+as\s+/).pop()).filter(Boolean));
+    for (const n of names) (defs.get(n) ?? defs.set(n, new Set()).get(n)).add(f);
+  }
+  const flags = [];
+  for (const s of sessions) for (const t of s.members.flatMap((m) => ticks(m.text))) {
+    const id = t.match(/^([A-Za-z_$][\w$]*)\s*(?:\(.*\))?$/)?.[1];
+    for (const f of defs.get(id) ?? []) {
+      const o = sessions.find((x) => x !== s && x.owns.includes(f));
+      if (o && !s.uses.includes(f) && !flags.some((x) => x.session === s.name && x.name === id)) flags.push({ session: s.name, name: id, file: f, owner: o.name });
+    }
+  }
+
   for (const s of sessions) {
     const tests = s.owns.filter((p) => /\.test\.[A-Za-z]+$/.test(p));
     s.check = nodeTest && tests.length ? `node --test ${tests.join(" ")}` : "";
@@ -109,5 +132,5 @@ export function draftPlan({ goal, root, maxSessions = 4 }) {
   ].filter((l, i) => l || i > 0).join("\n");
   // Each session's brief gets its own sections in full, after the goal's opening text.
   const specs = Object.fromEntries(sessions.map((s) => [s.name, [preamble, ...s.members.map((m) => `## ${m.heading}\n${m.text}`)].filter(Boolean).join("\n\n")]));
-  return { text, specs, contracts: sessions.some((s) => s.exposes.length) };
+  return { text, specs, contracts: sessions.some((s) => s.exposes.length), flags };
 }

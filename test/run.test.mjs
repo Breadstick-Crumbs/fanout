@@ -341,16 +341,35 @@ const draftRepo = (goal) => {
 const runDraft = (repo, env = {}) => spawnSync(process.execPath, [join(import.meta.dirname, "../skills/fanout/fanout.mjs"), "run", "--goal-file", "GOAL.md", "--yes", "--no-merge"],
   { cwd: repo, encoding: "utf8", env: { ...process.env, FANOUT_STAGGER_MS: "0", FAKE_WRITE_DIR: "src/", ...env } });
 
-test("a drafted plan is always reviewed by an agent, even when nothing is shared", () => {
+test("a drafted plan with no flags and nothing shared needs no planning agent; --review asks for one", () => {
   useFake();
-  const repo = draftRepo("## a\nAdd `src/a.txt`, all of it.\n\n## b\nAdd `src/b.txt`.\n");
-  const r = runDraft(repo);
+  const goal = "## a\nAdd `src/a.txt`, all of it.\n\n## b\nAdd `src/b.txt`.\n";
+  const r = runDraft(draftRepo(goal));
   assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(calls().filter((c) => c.stdin.startsWith("fanout drafted")).length, 0);
+  assert.equal(calls().length, 2); // the two sessions
+  assert.match(calls().find((c) => c.stdin.includes('session "a"')).stdin, /Full spec for this session:\n## a\nAdd `src\/a.txt`, all of it\./);
+  useFake();
+  const full = spawnSync(process.execPath, [join(import.meta.dirname, "../skills/fanout/fanout.mjs"), "run", "--goal-file", "GOAL.md", "--yes", "--no-merge", "--review"],
+    { cwd: draftRepo(goal), encoding: "utf8", env: { ...process.env, FANOUT_STAGGER_MS: "0", FAKE_WRITE_DIR: "src/" } });
+  assert.equal(full.status, 0, full.stdout + full.stderr);
   const review = calls().filter((c) => c.stdin.startsWith("fanout drafted"));
   assert.equal(review.length, 1);
   assert.match(review[0].stdin, /without naming the file/);
-  assert.equal(calls().length, 3); // the review and the two sessions
-  assert.match(calls().find((c) => c.stdin.includes('session "a"')).stdin, /Full spec for this session:\n## a\nAdd `src\/a.txt`, all of it\./);
+});
+
+test("a name one session uses from a file another owns goes to an agent, with just that to check", () => {
+  useFake();
+  const repo = draftRepo("## a\nChange `src/store.mjs`: add `holds` to every store.\n\n## b\nAdd `src/b.txt`; `createStore` must start every store with `fines: []`.\n");
+  writeFileSync(join(repo, "src/store.mjs"), "export function createStore() { return {}; }\n");
+  execFileSync("git", ["add", "-A"], { cwd: repo }); execFileSync("git", ["commit", "-qm", "store"], { cwd: repo, stdio: "ignore" });
+  const r = runDraft(repo);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /checking 1 name\(s\) used across sessions/);
+  const review = calls().filter((c) => c.stdin.startsWith("fanout drafted"));
+  assert.equal(review.length, 1);
+  assert.match(review[0].stdin, /- b: `createStore` \(src\/store\.mjs, owned by a\)/);
+  assert.doesNotMatch(review[0].stdin, /without naming the file|working interface/);
 });
 
 test("with shared files, an agent only writes the contracts; fanout tests and commits them", () => {

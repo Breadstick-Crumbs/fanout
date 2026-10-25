@@ -1,9 +1,9 @@
 // fanout run: the whole fan-out as one command.
-//   fanout run ["goal" | --goal-file TASKS.md] [--yes] [--agent claude|codex|"<cmd>"] [--model m] [--session-model m] [--budget usd] [--fixes 2] [--max-sessions 4] [--full-tests] [--no-draft] [--no-merge]
+//   fanout run ["goal" | --goal-file TASKS.md] [--yes] [--agent claude|codex|"<cmd>"] [--model m] [--session-model m] [--budget usd] [--fixes 2] [--max-sessions 4] [--full-tests] [--no-draft] [--review] [--no-merge]
 //
 // 1. Plan: uses .fanout/plan.md if it exists. A goal written as "## name" sections with the files in
-//    backticks is drafted into a plan without AI (draft.mjs); a planning agent always reviews it and
-//    writes the contract files, and fanout tests and commits them. Otherwise a coordinator agent writes the
+//    backticks is drafted into a plan without AI (draft.mjs); an agent writes the contract files and
+//    checks the names the draft flags (all of the plan with --review), and fanout tests and commits them. Otherwise a coordinator agent writes the
 //    plan from the goal and the plan rules (plannerPrompt), and commits the contract files.
 // 2. Approve: shows the plan once (skip with --yes).
 // 3. Lanes: one agent per session, in parallel, each in .fanout/lanes/<name> on branch fanout/<name>.
@@ -230,15 +230,21 @@ const log = (...a) => console.log("fanout:", ...a);
 // The planner gets the plan rules and the repo's file list up front instead of reading the whole skill
 // and exploring (it took 17 turns that way on the library benchmark). It reads only the code it needs
 // to write the contracts.
-// When draftPlan wrote the plan, the planner reviews it (always: the draft only sees files the goal names)
-// and writes the contract files. Running the
-// tests and committing are left to fanout (contractsReady, then the leftover commit), which saves the
-// planner's turns for them.
-export function contractsPrompt({ goal, base, plan, maxSessions = 4 }) {
+// When draftPlan wrote the plan, an agent writes the contract files and looks at the names the draft
+// flagged (a session using something from a file another session owns). With `full` (--review) it reviews
+// the whole plan instead: on the sheet benchmark that took 76s against 26s for contracts alone, and the
+// flags caught the one hidden dependency it found on the library task. Running the tests and committing
+// are left to fanout (contractsReady, then the leftover commit), which saves the planner's turns for them.
+export function contractsPrompt({ goal, base, plan, maxSessions = 4, flags = [], full = false }) {
+  const fix = `Change the plan only where it's wrong. Keep at most ${maxSessions} sessions. If you change it, run the check until it reports no problems.`;
+  const steps = [
+    full ? `Review the plan against the goal and the code. The draft only knows the files the goal names, so look for what it can't see: a task that changes existing behaviour without naming the file (find where that code lives, and give the file to that session or make it a shared contract), a session whose task needs a file another session owns, a missing uses/exposes, a file in the wrong session. ${fix}`
+      : flags.length ? `The draft found sessions whose spec names something defined in a file another session owns:\n${flags.map((f) => `- ${f.session}: \`${f.name}\` (${f.file}, owned by ${f.owner})`).join("\n")}\nFor each, read the spec and that code. If the session only calls it as it is, leave it. If the goal needs it changed for that session, make that change on ${base} now as a small shared change that keeps the tests passing, or give the file to that session in the plan. ${fix}` : "",
+    /exposes:/.test(plan) ? `The plan exposes files: write each one on ${base} as a working interface the other sessions can build against: the real module with its exports and signatures, and bodies that throw "not implemented" where the work belongs to a session. Read only the code you need for that.` : "",
+  ].filter(Boolean);
   return `fanout drafted .fanout/plan.md for the goal below from the goal's sections, without AI. It passes \`node "${SCRIPT}" check\`. Do this, then stop:
 
-1. Review the plan against the goal and the code. The draft only knows the files the goal names, so look for what it can't see: a task that changes existing behaviour without naming the file (find where that code lives, and give the file to that session or make it a shared contract), a session whose task needs a file another session owns, a missing uses/exposes, a file in the wrong session. Change the plan only where it's wrong. Keep at most ${maxSessions} sessions. If you change it, run the check until it reports no problems.
-2. If the plan exposes files, write each one on ${base} as a working interface the other sessions can build against: the real module with its exports and signatures, and bodies that throw "not implemented" where the work belongs to a session. Read only the code you need for that.
+${steps.map((s, i) => `${i + 1}. ${s}`).join("\n")}
 
 Don't implement the tasks, run the tests or commit: fanout tests the contracts and commits them.
 
@@ -358,11 +364,13 @@ export async function cli(argv) {
     }
     if (draft) {
       specs = draft.specs;
-      // The draft can't see dependencies the goal doesn't name, so an agent always reviews it.
-      log(`drafted the plan from the goal's sections; reviewing it${draft.contracts ? " and writing the contracts" : ""}…`);
-      const prompt = contractsPrompt({ goal, base, plan: draft.text, maxSessions });
+      // The draft can't see what the goal doesn't name; it flags what a session uses from another session's
+      // file, and only that (or --review) gets an agent's review. With neither flags nor contracts, no agent.
+      const full = flag("--review"), work = [full ? "reviewing it" : draft.flags.length ? `checking ${draft.flags.length} name(s) used across sessions` : "", draft.contracts ? "writing the contracts" : ""].filter(Boolean);
+      log(`drafted the plan from the goal's sections${work.length ? `; ${work.join(" and ")}…` : ""}`);
+      const prompt = contractsPrompt({ goal, base, plan: draft.text, maxSessions, flags: draft.flags, full });
       let retry = "";
-      for (let i = 0; i < 2; i++) {
+      for (let i = 0; i < (work.length ? 2 : 0); i++) {
         track("plan", null, await runAgent({ agent: "claude", cwd: root, prompt: prompt + retry, model, budget, plugin: true }));
         const c = sh(`node "${SCRIPT}" check`, root), t = c.ok ? contractsReady(root, readFileSync(planPath, "utf8")) : c;
         if (t.ok) break;
