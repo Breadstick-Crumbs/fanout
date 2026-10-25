@@ -248,6 +248,25 @@ Output tokens are most of the bill: on Sonnet, output costs about 5× input, and
 - **Tests stayed short:** 240 lines, between full (313) and the benchmark's own lean note (135).
 - One run: it shows the defaults work, not that they beat the hand-picked split.
 
+### Drafting the plan without AI, with a mandatory review (v0.20)
+
+The planner spent its minute reading the code (about 5s), deciding the split (10–15s of thinking), writing the plan and the contract file, and running gen and the tests (10–12s), then committing. `fanout run` now drafts the plan itself from a goal written as `## name` sections ([skills/fanout/draft.mjs](../skills/fanout/draft.mjs)): owners from the files each section names, contracts where one section builds on another's file, regen and test lines, per-session checks, and sections merged down to 4 sessions. An agent then reviews the draft and writes the contracts; fanout runs the tests and commits. Sessions also get their own sections of the goal in full. `--draft` runs this in the benchmark. One run each, Sonnet, short tests:
+
+| Run | Planning | Wall time | Cost | Hidden tests | Fix rounds |
+|---|---|---|---|---|---|
+| sheet, AI plans from scratch (3 hand-picked lanes) | 80s, $0.09 | 4m 51s | $0.78 | 33/34 | 0 |
+| sheet, draft, agent only writes contracts ([11:39](results/2026-10-25-11-39.md)) | 26s, $0.05 | 4m 40s | $0.72 | 34/34 | 0 |
+| sheet, same with Haiku sessions ([11:44](results/2026-10-25-11-44.md)) | 30s, $0.05 | 5m 05s | $0.16 | 33/34 | 0 |
+| sheet, draft + mandatory review ([12:04](results/2026-10-25-12-04.md)) | 76s, $0.06 | 7m 21s | $0.97 | 34/34 | 1 |
+| library, draft + mandatory review ([12:08](results/2026-10-25-12-08.md)) | 41s, $0.06 | 3m 19s | $0.40 | 21/21 | 0 |
+| sheet, one agent, same day ([11:51](results/2026-10-25-11-51.md)) | - | 6m 44s | $0.71 | 34/34 | - |
+
+- **Drafting alone cut planning from about 80s to 26s.** But a draft only sees the files the goal names. On the library task it gave `src/store.mjs` to holds alone, though fines also needs `createStore` changed and never names the file. So the review is mandatory: an agent always checks the draft for what it can't see.
+- **The review caught it.** On the library task the reviewer added `payments` and `holds` to `createStore` on main as a shared change before the sessions started, and all 21 hidden tests passed with no fix round, in 3m 19s for $0.40 (earlier fanout runs on the same task with six one-task sessions took 2m 44s–2m 51s for $0.61–$0.66).
+- **On the sheet task the review gave back most of the time:** 76s, close to planning from scratch, though at about two-thirds of the cost. The review prompt asks it to look through the code for hidden dependencies, and it did.
+- **The 7m 21s sheet run is mostly a fix round, not the review:** recalc+table broke once merged with formula and took 165s to fix, as in the earlier vague-goal run. recalc builds against formula's stub, so its own tests can't catch a mismatch with the real formula; that is the next thing to look at.
+- **One agent varies a lot between runs:** 4m 05s and $0.58 earlier, 6m 44s and $0.71 today, both scoring full or nearly full marks. Single runs of any setup are signals, not results.
+
 ## What this does and doesn't show
 
 - **It shows** that on overlapping work, fanout kept `main` free of conflicts and breakage, with no integration step afterwards, at about the same Claude cost: $0.50–$0.92 against $0.59–$0.63.

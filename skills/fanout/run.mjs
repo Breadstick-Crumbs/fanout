@@ -1,8 +1,10 @@
 // fanout run: the whole fan-out as one command.
-//   fanout run ["goal"] [--yes] [--agent claude|codex|"<cmd>"] [--model m] [--session-model m] [--budget usd] [--fixes 2] [--max-sessions 4] [--full-tests] [--no-merge]
+//   fanout run ["goal" | --goal-file TASKS.md] [--yes] [--agent claude|codex|"<cmd>"] [--model m] [--session-model m] [--budget usd] [--fixes 2] [--max-sessions 4] [--full-tests] [--no-draft] [--no-merge]
 //
-// 1. Plan: uses .fanout/plan.md if it exists; otherwise a coordinator agent writes it from the goal,
-//    from the plan rules (plannerPrompt), and commits the contract files.
+// 1. Plan: uses .fanout/plan.md if it exists. A goal written as "## name" sections with the files in
+//    backticks is drafted into a plan without AI (draft.mjs); a planning agent always reviews it and
+//    writes the contract files, and fanout tests and commits them. Otherwise a coordinator agent writes the
+//    plan from the goal and the plan rules (plannerPrompt), and commits the contract files.
 // 2. Approve: shows the plan once (skip with --yes).
 // 3. Lanes: one agent per session, in parallel, each in .fanout/lanes/<name> on branch fanout/<name>.
 //    Their work is committed for them; files the plan forbids are reverted.
@@ -13,12 +15,13 @@
 // Agents: "claude" and "codex" run headless; anything else is a shell command that gets the brief on
 // stdin and runs in the lane's folder, so any CLI agent works. A session can pick its own with "agent:".
 import { spawn, execFileSync, spawnSync } from "node:child_process";
-import { readFileSync, existsSync, appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { readFileSync, existsSync, appendFileSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { parsePlan, parseRegen, planSetting, check, rehearse, blockReason, mainRoot, appendLog } from "./fanout.mjs";
+import { draftPlan } from "./draft.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "fanout.mjs");
@@ -210,6 +213,31 @@ const log = (...a) => console.log("fanout:", ...a);
 // The planner gets the plan rules and the repo's file list up front instead of reading the whole skill
 // and exploring (it took 17 turns that way on the library benchmark). It reads only the code it needs
 // to write the contracts.
+// When draftPlan wrote the plan, the planner reviews it (always: the draft only sees files the goal names)
+// and writes the contract files. Running the
+// tests and committing are left to fanout (contractsReady, then the leftover commit), which saves the
+// planner's turns for them.
+export function contractsPrompt({ goal, base, plan, maxSessions = 4 }) {
+  return `fanout drafted .fanout/plan.md for the goal below from the goal's sections, without AI. It passes \`node "${SCRIPT}" check\`. Do this, then stop:
+
+1. Review the plan against the goal and the code. The draft only knows the files the goal names, so look for what it can't see: a task that changes existing behaviour without naming the file (find where that code lives, and give the file to that session or make it a shared contract), a session whose task needs a file another session owns, a missing uses/exposes, a file in the wrong session. Change the plan only where it's wrong. Keep at most ${maxSessions} sessions. If you change it, run the check until it reports no problems.
+2. If the plan exposes files, write each one on ${base} as a working interface the other sessions can build against: the real module with its exports and signatures, and bodies that throw "not implemented" where the work belongs to a session. Read only the code you need for that.
+
+Don't implement the tasks, run the tests or commit: fanout tests the contracts and commits them.
+
+The plan:
+${plan}
+
+Goal: ${goal}`;
+}
+
+// After the contracts are written: rebuild generated files and run the plan's test on the base branch.
+export function contractsReady(root, text) {
+  for (const g of parseRegen(text)) sh(g.cmd, root);
+  const test = planSetting(text, "test");
+  return test ? sh(test, root) : { ok: true, out: "" };
+}
+
 // maxSessions: above about four agents writing at once, one account's agents slow each other down
 // (sheet benchmark: three lanes ran at full speed, six at about a third of it).
 export function plannerPrompt({ goal, base, root, extra = "", maxSessions = 4 }) {
@@ -255,7 +283,8 @@ Goal: ${goal}`;
 export async function cli(argv) {
   const flag = (f) => argv.includes(f);
   const opt = (f, d) => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1] : d; };
-  const goal = argv[0] && !argv[0].startsWith("--") ? argv[0] : null;
+  const goalFile = opt("--goal-file");
+  const goal = argv[0] && !argv[0].startsWith("--") ? argv[0] : goalFile && existsSync(goalFile) ? readFileSync(goalFile, "utf8") : null;
   const defaultAgent = opt("--agent", "claude"), model = opt("--model"), budget = opt("--budget");
   // Sessions can run on a cheaper model than the planner: a session's own "model:" wins, then --session-model, then --model.
   const sessionModel = opt("--session-model"), modelFor = (s) => s.model || sessionModel || model;
@@ -273,7 +302,9 @@ export async function cli(argv) {
   const planPath = join(root, ".fanout", "plan.md");
   const start = git(root, "rev-parse", "HEAD").out.trim();
   const agents = [], fixes = {}, phases = {}, t0 = Date.now();
-  let testRuns = 0, phaseStart = t0, sessions = [];
+  let testRuns = 0, phaseStart = t0, sessions = [], specs = {};
+  // A drafted plan's one-line tasks leave out most of the goal, so each session's brief gets its own sections.
+  const specNote = (s) => (specs[s.name] ? `\nFull spec for this session:\n${specs[s.name]}` : "");
   const phase = (name) => { const now = Date.now(); phases[name] = Math.round((now - phaseStart) / 1000); phaseStart = now; };
   // .fanout/live.json: where the run is, for `fanout status` in another terminal. Cost is known per
   // finished agent run (Claude reports it at the end), so a running session shows its time so far.
@@ -302,12 +333,31 @@ export async function cli(argv) {
 
   // 1. Plan
   if (!existsSync(planPath)) {
-    if (!goal) { console.error('fanout run: no .fanout/plan.md. Pass a goal: fanout run "add coupons and tax"'); return 2; }
-    log("planning…");
-    const prompt = plannerPrompt({ goal, base, root, maxSessions });
-    for (let i = 0; i < 2; i++) {
-      track("plan", null, await runAgent({ agent: "claude", cwd: root, prompt: i ? `${prompt}\n\nThe plan you wrote fails the check:\n${tail(sh(`node "${SCRIPT}" check`, root).out)}\nFix it.` : prompt, model, budget, plugin: true, allowGit: true }));
-      if (existsSync(planPath) && sh(`node "${SCRIPT}" check`, root).ok) break;
+    if (!goal) { console.error('fanout run: no .fanout/plan.md. Pass a goal: fanout run "add coupons and tax", or --goal-file TASKS.md'); return 2; }
+    let draft = flag("--no-draft") ? null : draftPlan({ goal, root, maxSessions });
+    if (draft) {
+      writeFileSync(planPath, draft.text);
+      if (!sh(`node "${SCRIPT}" check`, root).ok) { rmSync(planPath); draft = null; }
+    }
+    if (draft) {
+      specs = draft.specs;
+      // The draft can't see dependencies the goal doesn't name, so an agent always reviews it.
+      log(`drafted the plan from the goal's sections; reviewing it${draft.contracts ? " and writing the contracts" : ""}…`);
+      const prompt = contractsPrompt({ goal, base, plan: draft.text, maxSessions });
+      let retry = "";
+      for (let i = 0; i < 2; i++) {
+        track("plan", null, await runAgent({ agent: "claude", cwd: root, prompt: prompt + retry, model, budget, plugin: true }));
+        const c = sh(`node "${SCRIPT}" check`, root), t = c.ok ? contractsReady(root, readFileSync(planPath, "utf8")) : c;
+        if (t.ok) break;
+        retry = `\n\nAfter your changes, ${c.ok ? "the tests fail on " + base : "the plan fails the check"}:\n${tail(t.out)}\nFix it.`;
+      }
+    } else {
+      log("planning…");
+      const prompt = plannerPrompt({ goal, base, root, maxSessions });
+      for (let i = 0; i < 2; i++) {
+        track("plan", null, await runAgent({ agent: "claude", cwd: root, prompt: i ? `${prompt}\n\nThe plan you wrote fails the check:\n${tail(sh(`node "${SCRIPT}" check`, root).out)}\nFix it.` : prompt, model, budget, plugin: true, allowGit: true }));
+        if (existsSync(planPath) && sh(`node "${SCRIPT}" check`, root).ok) break;
+      }
     }
   }
   if (!existsSync(planPath)) { console.error("fanout run: no plan was written."); return finish(1, "no plan"); }
@@ -360,7 +410,7 @@ export async function cli(argv) {
     let r;
     for (let attempt = 0; attempt < 2; attempt++) {
       setLive(s.name, { state: attempt ? "retrying" : "working", since: Date.now() });
-      r = track("lane", s.name, await runAgent({ agent: agentFor(s), cwd: wt[s.name], prompt: brief(s, sessions, regen, test, "", root, { shortTests }), model: modelFor(s), budget, allow: [test, s.check] }));
+      r = track("lane", s.name, await runAgent({ agent: agentFor(s), cwd: wt[s.name], prompt: brief(s, sessions, regen, test, specNote(s), root, { shortTests }), model: modelFor(s), budget, allow: [test, s.check] }));
       if (!r.error) {
         const { reverted } = commitLane(wt[s.name], sessions, s, regen, `fanout: ${s.name}`);
         r.noChanges = ahead(s) === 0;
@@ -413,7 +463,7 @@ export async function cli(argv) {
     setLive(name, { state: `fixing (${fixes[name]})`, since: Date.now() });
     // Resume the lane's own session with just the break report; if that fails, send the full brief again.
     const fix = await runAgent({ agent: agentFor(s), cwd: wt[name], model: modelFor(s), budget, allow: [test, s.check], resume: session[name], prompt: report,
-      fallbackPrompt: brief(s, sessions, regen, test, `\n${report}`, root, { shortTests }) });
+      fallbackPrompt: brief(s, sessions, regen, test, `${specNote(s)}\n${report}`, root, { shortTests }) });
     session[name] = fix.sessionId ?? session[name];
     track("fix", name, fix);
     commitLane(wt[name], sessions, s, regen, `fanout: fix ${name}`);

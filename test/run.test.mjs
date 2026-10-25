@@ -13,12 +13,19 @@ const dir = mkdtempSync(join(tmpdir(), "fanout-run-"));
 const logFile = join(dir, "calls.jsonl");
 const fake = join(dir, "fake.mjs");
 writeFileSync(fake, `
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 const args = process.argv.slice(2), stdin = readFileSync(0, "utf8");
 appendFileSync(${JSON.stringify(logFile)}, JSON.stringify({ args, stdin }) + "\\n");
 const who = stdin.match(/session "(\\w+)"/)?.[1];
 if (who && process.env.FAKE_FAIL_SESSION === who) { console.log(JSON.stringify({ is_error: true, result: "crashed", num_turns: 3 })); process.exit(1); }
-if (who && process.env.FAKE_WRITE && process.env.FAKE_NOWRITE !== who) writeFileSync(who + ".txt", "x");
+if (who && process.env.FAKE_WRITE && process.env.FAKE_NOWRITE !== who) writeFileSync((process.env.FAKE_WRITE_DIR ?? "") + who + ".txt", "x");
+// The contracts agent for a drafted plan: writes the contract; with FAKE_BAD it breaks the test until told.
+if (stdin.startsWith("fanout drafted")) {
+  const [f, body] = (process.env.FAKE_CONTRACT ?? "").split("=");
+  if (f) writeFileSync(f, body);
+  if (process.env.FAKE_BAD && !stdin.includes("the tests fail")) writeFileSync("BAD", "");
+  else if (process.env.FAKE_BAD) unlinkSync("BAD");
+}
 if (process.env.FAKE_PLAN && stdin.startsWith("Plan a parallel fan-out")) { writeFileSync(".fanout/plan.md", process.env.FAKE_PLAN); writeFileSync("contract.txt", "shared"); }
 const resuming = args.includes("--resume") || args.includes("resume");
 if (resuming && process.env.FAKE_FAIL_RESUME) { console.log(JSON.stringify({ is_error: true, result: "no such session" })); process.exit(1); }
@@ -317,6 +324,57 @@ test("contracts the planner leaves uncommitted are committed before the lanes br
   const g = (...a) => execFileSync("git", a, { cwd: repo, encoding: "utf8" }).trim();
   assert.equal(g("log", "-1", "--format=%s", "main"), "fanout: contracts");
   assert.equal(g("show", "fanout/a:contract.txt"), "shared"); // the lane branched with it
+});
+
+// A repo for drafted plans: src/ exists, and the test fails while a file named BAD exists.
+const draftRepo = (goal) => {
+  const repo = mkdtempSync(join(tmpdir(), "fanout-dr-"));
+  const g = (...a) => execFileSync("git", a, { cwd: repo, stdio: "ignore" });
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  mkdirSync(join(repo, "src"));
+  writeFileSync(join(repo, "src/keep.txt"), "");
+  writeFileSync(join(repo, "package.json"), JSON.stringify({ scripts: { test: `node -e "process.exit(require('fs').existsSync('BAD')?1:0)"` } }));
+  writeFileSync(join(repo, "GOAL.md"), goal);
+  g("add", "-A"); g("commit", "-qm", "init");
+  return repo;
+};
+const runDraft = (repo, env = {}) => spawnSync(process.execPath, [join(import.meta.dirname, "../skills/fanout/fanout.mjs"), "run", "--goal-file", "GOAL.md", "--yes", "--no-merge"],
+  { cwd: repo, encoding: "utf8", env: { ...process.env, FANOUT_STAGGER_MS: "0", FAKE_WRITE_DIR: "src/", ...env } });
+
+test("a drafted plan is always reviewed by an agent, even when nothing is shared", () => {
+  useFake();
+  const repo = draftRepo("## a\nAdd `src/a.txt`, all of it.\n\n## b\nAdd `src/b.txt`.\n");
+  const r = runDraft(repo);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const review = calls().filter((c) => c.stdin.startsWith("fanout drafted"));
+  assert.equal(review.length, 1);
+  assert.match(review[0].stdin, /without naming the file/);
+  assert.equal(calls().length, 3); // the review and the two sessions
+  assert.match(calls().find((c) => c.stdin.includes('session "a"')).stdin, /Full spec for this session:\n## a\nAdd `src\/a.txt`, all of it\./);
+});
+
+test("with shared files, an agent only writes the contracts; fanout tests and commits them", () => {
+  useFake();
+  const repo = draftRepo("## a\nAdd `src/a.txt`.\n\n## b\nAdd `src/b.txt`, built on `src/a.txt`.\n");
+  const r = runDraft(repo, { FAKE_CONTRACT: "src/a.txt=stub" });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const planner = calls().filter((c) => c.stdin.startsWith("fanout drafted"));
+  assert.equal(planner.length, 1);
+  assert.match(planner[0].stdin, /exposes: src\/a.txt/);
+  assert.ok(!planner[0].args.join(" ").includes("Bash(git:*)")); // fanout commits, not the agent
+  const g = (...a) => execFileSync("git", a, { cwd: repo, encoding: "utf8" }).trim();
+  assert.equal(g("log", "-1", "--format=%s", "main"), "fanout: contracts");
+  assert.equal(g("show", "fanout/b:src/a.txt"), "stub");
+});
+
+test("contracts that break the tests go back to the agent once, with the failure", () => {
+  useFake();
+  const repo = draftRepo("## a\nAdd `src/a.txt`.\n\n## b\nAdd `src/b.txt`, built on `src/a.txt`.\n");
+  const r = runDraft(repo, { FAKE_CONTRACT: "src/a.txt=stub", FAKE_BAD: "1" });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const planner = calls().filter((c) => c.stdin.startsWith("fanout drafted"));
+  assert.equal(planner.length, 2);
+  assert.match(planner[1].stdin, /the tests fail on main/);
 });
 
 test("the plan's test and check commands are allowed for session agents, as written", () => {

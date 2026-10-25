@@ -8,7 +8,7 @@
 //
 // Fixtures: shop (4 small tasks), library (6 bigger ones) and sheet (6 large ones, minutes each). If bench/<fixture>-acceptance/ exists, its hidden
 // tests are copied in at the end and scored, so every setup is judged the same way.
-//   node bench/run.mjs [single|baseline|fanout|both|all] [--fixture shop|library|sheet] [--groups a+b,c+d] [--lean] [--single-budget 5] [--dry]   (both = baseline + fanout; all adds single) [--model sonnet] [--budget 1] [--codex-lane receipt|none]
+//   node bench/run.mjs [single|baseline|fanout|both|all] [--fixture shop|library|sheet] [--groups a+b,c+d] [--lean] [--draft [--max-sessions 4]] [--single-budget 5] [--dry]   (both = baseline + fanout; all adds single) [--model sonnet] [--budget 1] [--codex-lane receipt|none]
 // --dry swaps every agent for a no-op (the coordinator writes a canned plan) to test the plumbing.
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from "node:fs";
@@ -17,7 +17,8 @@ import { scrub } from "./scrub.mjs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parsePlan, parseRegen, planSetting, blockReason } from "../skills/fanout/fanout.mjs";
-import { runAgent, staggered, plannerPrompt, brief as laneBrief } from "../skills/fanout/run.mjs";
+import { runAgent, staggered, plannerPrompt, contractsPrompt, contractsReady, brief as laneBrief } from "../skills/fanout/run.mjs";
+import { draftPlan } from "../skills/fanout/draft.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const FANOUT = join(ROOT, "skills", "fanout", "fanout.mjs");
@@ -29,6 +30,7 @@ const DRY = argv.includes("--dry");
 const VAGUE = argv.includes("--vague");
 // --lean: fanout lanes get fanout run's short-tests brief (fanout run's default; the benchmark's default stays full).
 const LEAN = argv.includes("--lean");
+const DRAFT = argv.includes("--draft"), MAX_SESSIONS = Number(opt("--max-sessions", "4"));
 const VAGUE_GOAL = "Add the features described in TASKS.md to this library. Split the work however you think best.";
 const MODEL = opt("--model", "sonnet"), BUDGET = opt("--budget", "1"), SINGLE_BUDGET = opt("--single-budget", "5");
 // The planner (fanout's coordinator) and the parallel session agents can run on other models than --model,
@@ -160,9 +162,27 @@ async function fanout() {
   log("fanout: repo", repo);
   run(process.execPath, [FANOUT, "install-git-hook"], repo);
   // The same planner prompt `fanout run` uses; the benchmark only pins the session names to its tasks.
-  const coord = VAGUE ? plannerPrompt({ goal: VAGUE_GOAL, base: "main", root: repo })
+  // --draft: fanout run's path for a goal in sections: the plan is drafted without AI, an agent reviews it and
+  // writes the contracts, and the test runs on main before the lanes start (one retry with the failure).
+  let specs = null;
+  if (DRAFT) {
+    const d = draftPlan({ goal: TASKS_MD, root: repo, maxSessions: MAX_SESSIONS });
+    if (!d) { R.error = "no draft"; return R; }
+    mkdirSync(join(repo, ".fanout"), { recursive: true });
+    writeFileSync(join(repo, ".fanout/plan.md"), d.text);
+    specs = d.specs;
+    const prompt = contractsPrompt({ goal: TASKS_MD, base: "main", plan: d.text, maxSessions: MAX_SESSIONS });
+    let retry = "";
+    for (let i = 0; i < 2; i++) {
+      R.agents.push(await agent({ lane: "-", role: "coordinator", cwd: repo, prompt: prompt + retry, plugin: true }));
+      const t = contractsReady(repo, readFileSync(join(repo, ".fanout/plan.md"), "utf8"));
+      if (t.ok) break;
+      retry = `\n\nAfter your changes, the tests fail on main:\n${tail(t.out)}\nFix it.`;
+    }
+  }
+  const coord = DRAFT ? null : VAGUE ? plannerPrompt({ goal: VAGUE_GOAL, base: "main", root: repo })
     : plannerPrompt({ goal: TASKS_MD, base: "main", root: repo, extra: GROUPS ? `\nUse exactly ${LANES.length} sessions, each doing the tasks it is named after: ${LANES.join(", ")}.\n` : `\nUse exactly one session per task, named ${LANES.join(", ")}.\n` });
-  R.agents.push(await agent({ lane: "-", role: "coordinator", cwd: repo, prompt: coord, plugin: true, allowGit: true,
+  if (coord) R.agents.push(await agent({ lane: "-", role: "coordinator", cwd: repo, prompt: coord, plugin: true, allowGit: true,
     dryAction: () => { mkdirSync(join(repo, ".fanout"), { recursive: true }); writeFileSync(join(repo, ".fanout/plan.md"), FIXTURE === "shop" ? CANNED_PLAN : `test: npm test\n\n${LANES.map((l) => `## ${l}\nowns: ${membersOf(l).map((m) => `src/${m}.mjs, test/${m}.test.mjs`).join(", ")}\ntask: ${l}\n`).join("\n")}`); } }));
   commitAll(repo, "coordinator leftovers");
   const planPath = join(repo, ".fanout/plan.md");
@@ -170,13 +190,13 @@ async function fanout() {
   const text = readFileSync(planPath, "utf8"), sessions = parsePlan(text), regen = parseRegen(text);
   R.plan = text;
   const chk = run(process.execPath, [FANOUT, "check"], repo);
-  if (!chk.ok || (!VAGUE && LANES.some((l) => !sessions.find((s) => s.name === l)))) { R.error = "plan invalid: " + tail(chk.out); return R; }
+  if (!chk.ok || (!VAGUE && !DRAFT && LANES.some((l) => !sessions.find((s) => s.name === l)))) { R.error = "plan invalid: " + tail(chk.out); return R; }
   const order = chk.out.match(/Merge order: (.*)/)[1].trim().split(" -> ");
-  const names = VAGUE ? sessions.map((s) => s.name) : LANES;
+  const names = VAGUE || DRAFT ? sessions.map((s) => s.name) : LANES;
   const wts = Object.fromEntries(names.map((l) => [l, join(dir, l)]));
   for (const l of names) git(repo, "worktree", "add", "-q", "-b", `fanout/${l}`, wts[l], "main");
   // The same brief `fanout run` gives, with the full task spec appended (the plan's task: line is one line).
-  const brief = (s) => laneBrief(s, sessions, regen, planSetting(text, "test"), (VAGUE ? "\nThe full spec is in TASKS.md: read the parts your task covers." : `\nFull task spec:\n${PREAMBLE}\n\n${TASKS[s.name]}`), repo, { shortTests: LEAN });
+  const brief = (s) => laneBrief(s, sessions, regen, planSetting(text, "test"), (specs?.[s.name] ? `\nFull spec for this session:\n${specs[s.name]}` : VAGUE ? "\nThe full spec is in TASKS.md: read the parts your task covers." : `\nFull task spec:\n${PREAMBLE}\n\n${TASKS[s.name]}`), repo, { shortTests: LEAN });
   // Commit a lane, as the git hook allows; files the plan forbids are reverted and counted.
   const commitLane = (l) => {
     const s = sessions.find((x) => x.name === l);
@@ -226,7 +246,7 @@ function report(results) {
   const agents = results.flatMap((R) => R.agents.map((a) => `| ${R.condition} | ${a.role} | ${a.lane} | ${a.kind} | ${a.seconds}s | ${a.modelSeconds ?? "?"}s | ${a.turns ?? "?"} | ${toolsOf(a)} | ${usd(a.costUsd)} | ${Math.round((a.inTokens + a.outTokens) / 1000)}k | ${a.error ?? ""} |`));
   return `# Benchmark ${new Date().toISOString().slice(0, 16).replace("T", " ")}${DRY ? " (dry run)" : ""}
 
-Models: ${MODEL} (single agent, integrator), planner ${PLANNER_MODEL}, sessions ${SESSION_MODEL}${CODEX_LANE === "none" ? "" : `, Codex for the "${CODEX_LANE}" lane`}. Fixture: ${FIXTURE}${VAGUE ? " (vague goal: the planner picks the split)" : ""}${GROUPS ? `, lanes ${LANES.join(", ")}` : ""}${LEAN ? ", lean lanes (at most 3 tests each)" : ""}. Budget cap per Claude agent: ${BUDGET} (single agent: ${SINGLE_BUDGET}).
+Models: ${MODEL} (single agent, integrator), planner ${PLANNER_MODEL}, sessions ${SESSION_MODEL}${CODEX_LANE === "none" ? "" : `, Codex for the "${CODEX_LANE}" lane`}. Fixture: ${FIXTURE}${VAGUE ? " (vague goal: the planner picks the split)" : ""}${GROUPS ? `, lanes ${LANES.join(", ")}` : ""}${LEAN ? ", lean lanes (at most 3 tests each)" : ""}${DRAFT ? ", plan drafted without AI" : ""}. Budget cap per Claude agent: ${BUDGET} (single agent: ${SINGLE_BUDGET}).
 
 | Condition | Conflicts merging into main | Merges that broke tests | Repair commits | Final tests pass | Hidden tests | Wall time | Agent cost | Tokens | Agent runs |
 |---|---|---|---|---|---|---|---|---|---|

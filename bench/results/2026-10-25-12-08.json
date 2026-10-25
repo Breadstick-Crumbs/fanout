@@ -1,0 +1,170 @@
+[
+  {
+    "condition": "fanout",
+    "agents": [
+      {
+        "role": "coordinator",
+        "lane": "-",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 41,
+        "costUsd": 0.0606025,
+        "inTokens": 63330,
+        "outTokens": 1956,
+        "error": null,
+        "sessionId": "4a390989-48b2-423c-892d-008c745ae82e",
+        "turns": 6,
+        "modelSeconds": 22,
+        "tools": {
+          "Bash": [
+            "cd <tmp>/fanout-bench-fanout-O4UrPK/repo && ls -a . src test data .fanout && cat package.json src/store.mjs src/index.mjs && cat .fanout/plan.md | head -5 && grep -rn \"availableCopies\\|checkout\" src --include=*.mjs -l",
+            "cd <tmp>/fanout-bench-fanout-O4UrPK/repo && sed -i 's|    nextId: seed.nextId ?? 1000,|    payments: (seed.payments ?? []).map((p) => ({ ...p })),\\n    holds: (seed.holds ?? []).map((h) => ({ ...h })),\\n    nextId: seed.nextId ?? 1000,|' src/store.mjs\ncat > src/fines.mjs <<'EOF'\n// Fines and balances. Money is in dollars, rounded to cents.\n\nexport function finesFor(store, memberId, asOf) {\n  throw new Error(\"not implemented\");\n}\n\nexport function memberBalance(store, memberId, asOf) {\n  throw new Error(\"not implemented\");\n}\n\nexport function payFine(store, memberId, amount, date) {\n  throw new Error(\"not implemented\");\n}\nEOF\nnpm run gen >/dev/null && cat src/index.mjs && node \"D:\\fanout\\skills\\fanout\\fanout.mjs\" check",
+            "cd <tmp>/fanout-bench-fanout-O4UrPK/repo && npm run gen >/dev/null; cat src/index.mjs; node \"D:\\fanout\\skills\\fanout\\fanout.mjs\" check"
+          ],
+          "Edit": [
+            "<tmp>\\fanout-bench-fanout-O4UrPK\\repo\\src\\store.mjs"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-O4UrPK\\repo\\src\\fines.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "search-api",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 113,
+        "costUsd": 0.1009275,
+        "inTokens": 67927,
+        "outTokens": 5386,
+        "error": null,
+        "sessionId": "97f49fc7-70ba-4aa6-b8bb-bb2055852ab6",
+        "turns": 8,
+        "modelSeconds": 74,
+        "tools": {
+          "Bash": [
+            "ls src test data; cat src/index.mjs; grep -n \"export\" src/*.mjs | grep -v fines; head -40 data/sample.mjs; cat package.json",
+            "cat > src/search.mjs <<'EOF'\nimport { availableCopies } from \"./store.mjs\";\n\nconst byTitle = (a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase());\n\nexport function search(store, query = {}) {\n  const { q, author, tag, yearFrom, yearTo, available, sort = \"title\", page = 1, pageSize = 10 } = query;\n  const words = (q ?? \"\").toLowerCase().split(/\\s+/).filter(Boolean);\n  let items = store.books.filter((b) => {\n    const hay = `${b.title} ${b.author}`.toLowerCase();\n    if (!words.every((w) => hay.includes(w))) return false;\n    if (author != null && b.author.toLowerCase() !== String(author).toLowerCase()) return false;\n    if (tag != null && !(b.tags ?? []).includes(tag)) return false;\n    if (yearFrom != null && b.year < yearFrom) return false;\n    if (yearTo != null && b.year > yearTo) return false;\n    if (available === true && availableCopies(store, b.id) <= 0) return false;\n    return true;\n  });\n  items = items.sort(sort === \"year\" ? (a, b) => b.year - a.year || byTitle(a, b) : byTitle);\n  const total = items.length;\n  const start = (page - 1) * pageSize;\n  return { items: items.slice(start, start + pageSize), total, page, pages: Math.ceil(total / pageSize) };\n}\nEOF\ncat > src/api.mjs <<'EOF'\nimport { createServer as httpServer } from \"node:http\";\nimport { search } from \"./search.mjs\";\nimport { getBook, checkout } from \"./store.mjs\";\nimport { memberBalance } from \"./fines.mjs\";\n\nfunction send(res, status, body) {\n  res.writeHead(status, { \"Content-Type\": \"application/json\" });\n  res.end(JSON.stringify(body));\n}\n\nconst readBody = (req) =>\n  new Promise((resolve, reject) => {\n    let data = \"\";\n    req.on(\"data\", (c) => (data += c));\n    req.on(\"end\", () => {\n      try {\n        resolve(data ? JSON.parse(data) : {});\n      } catch (e) {\n        reject(e);\n      }\n    });\n    req.on(\"error\", reject);\n  });\n\nexport function createServer(store) {\n  return httpServer(async (req, res) => {\n    try {\n      const url = new URL(req.url, \"http://localhost\");\n      const parts = url.pathname.split(\"/\").filter(Boolean).map(decodeURIComponent);\n      const p = url.searchParams;\n\n      if (req.method === \"GET\" && parts.length === 1 && parts[0] === \"books\") {\n        const query = {};\n        for (const k of [\"q\", \"author\", \"tag\"]) if (p.has(k)) query[k] = p.get(k);\n        for (const k of [\"page\", \"pageSize\"]) if (p.has(k)) query[k] = Number(p.get(k));\n        return send(res, 200, search(store, query));\n      }\n      if (req.method === \"GET\" && parts.length === 2 && parts[0] === \"books\") {\n        const book = getBook(store, parts[1]);\n        return book ? send(res, 200, book) : send(res, 404, { error: \"not found\" });\n      }\n      if (req.method === \"POST\" && parts.length === 1 && parts[0] === \"loans\") {\n        let body;\n        try {\n          body = await readBody(req);\n        } catch {\n          return send(res, 400, { error: \"invalid json\" });\n        }\n        for (const f of [\"bookId\", \"memberId\", \"date\"]) {\n          if (body?.[f] == null || body[f] === \"\") return send(res, 400, { error: `missing ${f}` });\n        }\n        try {\n          return send(res, 201, checkout(store, body.bookId, body.memberId, body.date));\n        } catch (e) {\n          return send(res, 409, { error: e.message });\n        }\n      }\n      if (req.method === \"GET\" && parts.length === 3 && parts[0] === \"members\" && parts[2] === \"balance\") {\n        return send(res, 200, { memberId: parts[1], balance: memberBalance(store, parts[1], p.get(\"asOf\")) });\n      }\n      send(res, 404, { error: \"not found\" });\n    } catch (e) {\n      send(res, 500, { error: e.message });\n    }\n  });\n}\nEOF\ncat > test/search.test.mjs <<'EOF'\nimport test from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { createStore } from \"../src/store.mjs\";\nimport { search } from \"../src/search.mjs\";\nimport { sample } from \"../data/sample.mjs\";\n\ntest(\"search filters, sorts and pages\", () => {\n  const store = createStore(structuredClone(sample));\n  assert.deepEqual(search(store, { q: \"martin\" }).items.map((b) => b.id), [\"b2\", \"b6\"]);\n  const r = search(store, { tag: \"programming\", sort: \"year\", pageSize: 2 });\n  assert.deepEqual(r.items.map((b) => b.id), [\"b2\", \"b6\"]);\n  assert.equal(r.total, 4);\n  assert.equal(r.pages, 2);\n  assert.equal(search(store, { available: true, author: \"robert martin\" }).total, 0);\n});\nEOF\ncat > test/api.test.mjs <<'EOF'\nimport test from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { createStore } from \"../src/store.mjs\";\nimport { createServer } from \"../src/api.mjs\";\nimport { sample } from \"../data/sample.mjs\";\n\ntest(\"api basics\", async () => {\n  const server = createServer(createStore(structuredClone(sample)));\n  await new Promise((r) => server.listen(0, r));\n  const base = `http://localhost:${server.address().port}`;\n  try {\n    const list = await (await fetch(`${base}/books?q=dune`)).json();\n    assert.equal(list.total, 1);\n    assert.equal((await fetch(`${base}/books/nope`)).status, 404);\n    const post = (body) => fetch(`${base}/loans`, { method: \"POST\", body: JSON.stringify(body) });\n    assert.equal((await post({ bookId: \"b1\", memberId: \"m1\" })).status, 400);\n    assert.equal((await post({ bookId: \"b1\", memberId: \"m1\", date: \"2026-03-01\" })).status, 201);\n  } finally {\n    server.close();\n  }\n});\nEOF\nnpm run gen >/dev/null; npm test 2>&1 | tail -30",
+            "npm run gen >/dev/null; npm test 2>&1 | tail -30"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-O4UrPK\\search-api\\src\\search.mjs",
+            "<tmp>\\fanout-bench-fanout-O4UrPK\\search-api\\src\\api.mjs",
+            "<tmp>\\fanout-bench-fanout-O4UrPK\\search-api\\test\\search.test.mjs",
+            "<tmp>\\fanout-bench-fanout-O4UrPK\\search-api\\test\\api.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "fines-reports",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 106,
+        "costUsd": 0.09874079999999999,
+        "inTokens": 96683,
+        "outTokens": 4817,
+        "error": null,
+        "sessionId": "66b87e78-e72f-4ac8-90a1-bb5c4e995bea",
+        "turns": 10,
+        "modelSeconds": 57,
+        "tools": {
+          "Bash": [
+            "ls src test data; cat src/dates.mjs src/store.mjs package.json; head -40 data/sample.mjs; ls test | head",
+            "cat src/fines.mjs; cat src/index.mjs",
+            "cat > src/fines.mjs <<'E'\n// Fines and balances. Money is in dollars, rounded to cents.\nimport { daysBetween } from \"./dates.mjs\";\n\nconst GRACE_DAYS = 2;\nconst RATE = 0.25;\nconst CAP = 10;\nconst cents = (n) => Math.round(n * 100) / 100;\n\nexport function finesFor(store, memberId, asOf) {\n  return store.loans\n    .filter((l) => l.memberId === memberId)\n    .map((l) => {\n      const daysLate = daysBetween(l.due, l.returned ?? asOf) - GRACE_DAYS;\n      return { loanId: l.id, bookId: l.bookId, daysLate, amount: cents(Math.min(daysLate * RATE, CAP)) };\n    })\n    .filter((f) => f.daysLate > 0)\n    .sort((a, b) => (a.loanId < b.loanId ? -1 : a.loanId > b.loanId ? 1 : 0));\n}\n\nexport function memberBalance(store, memberId, asOf) {\n  const fines = finesFor(store, memberId, asOf).reduce((s, f) => s + f.amount, 0);\n  const paid = (store.payments ?? []).filter((p) => p.memberId === memberId).reduce((s, p) => s + p.amount, 0);\n  return cents(fines - paid);\n}\n\nexport function payFine(store, memberId, amount, date) {\n  (store.payments ??= []).push({ memberId, amount, date });\n  return memberBalance(store, memberId, date);\n}\nE\ncat > src/reports.mjs <<'E'\n// Reports over loans and books.\nimport { daysBetween } from \"./dates.mjs\";\n\nconst byText = (a, b) => (a < b ? -1 : a > b ? 1 : 0);\n\nexport function overdueReport(store, asOf) {\n  return store.loans\n    .filter((l) => !l.returned && l.due < asOf)\n    .map((l) => ({\n      loanId: l.id,\n      bookId: l.bookId,\n      title: store.books.find((b) => b.id === l.bookId)?.title,\n      memberId: l.memberId,\n      memberName: store.members.find((m) => m.id === l.memberId)?.name,\n      daysOverdue: daysBetween(l.due, asOf),\n    }))\n    .sort((a, b) => b.daysOverdue - a.daysOverdue || byText(a.loanId, b.loanId));\n}\n\nexport function popularBooks(store, { from, to, limit = 5 }) {\n  const counts = new Map();\n  for (const l of store.loans) {\n    if (l.out >= from && l.out <= to) counts.set(l.bookId, (counts.get(l.bookId) ?? 0) + 1);\n  }\n  return [...counts]\n    .map(([bookId, loans]) => ({ bookId, title: store.books.find((b) => b.id === bookId)?.title, loans }))\n    .sort((a, b) => b.loans - a.loans || byText(a.title, b.title))\n    .slice(0, limit);\n}\n\nexport function memberActivity(store, memberId) {\n  const mine = store.loans.filter((l) => l.memberId === memberId);\n  return {\n    memberId,\n    totalLoans: mine.length,\n    openLoans: mine.filter((l) => !l.returned).length,\n    lastOut: mine.reduce((m, l) => (m === null || l.out > m ? l.out : m), null),\n  };\n}\nE\ncat > test/fines.test.mjs <<'E'\nimport test from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { createStore, finesFor, memberBalance, payFine } from \"../src/index.mjs\";\nimport { sample } from \"../data/sample.mjs\";\n\ntest(\"fines, balance and payment\", () => {\n  const s = createStore(sample);\n  assert.deepEqual(finesFor(s, \"m3\", \"2026-03-01\"), [{ loanId: \"l4\", bookId: \"b4\", daysLate: 6, amount: 1.5 }]);\n  assert.equal(finesFor(s, \"m2\", \"2026-12-31\")[0].amount, 10);\n  assert.equal(memberBalance(s, \"m3\", \"2026-03-01\"), 1.5);\n  assert.equal(payFine(s, \"m3\", 1, \"2026-03-01\"), 0.5);\n});\nE\ncat > test/reports.test.mjs <<'E'\nimport test from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { createStore, overdueReport, popularBooks, memberActivity } from \"../src/index.mjs\";\nimport { sample } from \"../data/sample.mjs\";\n\ntest(\"reports\", () => {\n  const s = createStore(sample);\n  assert.deepEqual(overdueReport(s, \"2026-02-10\").map((r) => [r.loanId, r.daysOverdue]), [[\"l2\", 22], [\"l3\", 7]]);\n  assert.deepEqual(popularBooks(s, { from: \"2026-01-01\", to: \"2026-01-04\" }).map((b) => [b.bookId, b.loans]), [[\"b3\", 1], [\"b4\", 1]]);\n  assert.deepEqual(memberActivity(s, \"m1\"), { memberId: \"m1\", totalLoans: 2, openLoans: 1, lastOut: \"2026-01-20\" });\n});\nE\nnpm run gen >/dev/null; npm test 2>&1 | tail -15",
+            "npm run gen >/dev/null; npm test 2>&1 | tail -15",
+            "node --test test/fines.test.mjs test/reports.test.mjs 2>&1 | grep -E \"^# (tests|pass|fail)\""
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-O4UrPK\\fines-reports\\src\\fines.mjs",
+            "<tmp>\\fanout-bench-fanout-O4UrPK\\fines-reports\\src\\reports.mjs",
+            "<tmp>\\fanout-bench-fanout-O4UrPK\\fines-reports\\test\\fines.test.mjs",
+            "<tmp>\\fanout-bench-fanout-O4UrPK\\fines-reports\\test\\reports.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "csv",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 119,
+        "costUsd": 0.08364329999999999,
+        "inTokens": 84954,
+        "outTokens": 4327,
+        "error": null,
+        "sessionId": "96e32489-0406-41c1-9ab6-8ee472dde771",
+        "turns": 8,
+        "modelSeconds": 75,
+        "tools": {
+          "Bash": [
+            "ls src test; cat src/index.mjs; grep -rn \"addBook\" src | head; cat package.json",
+            "cat > src/csv.mjs <<'EOF'\n// CSV export/import for books.\nimport { addBook } from \"./store.mjs\";\n\nconst HEADER = [\"id\", \"title\", \"author\", \"year\", \"tags\", \"copies\"];\n\nconst quote = (v) => {\n  const s = String(v ?? \"\");\n  return /[\",\\n\\r]/.test(s) ? `\"${s.replace(/\"/g, '\"\"')}\"` : s;\n};\n\nexport function exportBooks(store) {\n  const lines = [HEADER.join(\",\")];\n  for (const b of store.books) {\n    lines.push([b.id, b.title, b.author, b.year, (b.tags ?? []).join(\";\"), b.copies].map(quote).join(\",\"));\n  }\n  return lines.join(\"\\n\") + \"\\n\";\n}\n\n// Returns [{ line, fields }] where line is the 1-based line a record starts on.\nfunction parse(text) {\n  const records = [];\n  let fields = [];\n  let field = \"\";\n  let inQuotes = false;\n  let line = 1;\n  let start = 1;\n  let any = false;\n  const endRecord = () => {\n    fields.push(field);\n    if (any || fields.length > 1) records.push({ line: start, fields });\n    fields = [];\n    field = \"\";\n    any = false;\n  };\n  for (let i = 0; i < text.length; i++) {\n    const c = text[i];\n    if (inQuotes) {\n      if (c === '\"') {\n        if (text[i + 1] === '\"') { field += '\"'; i++; } else inQuotes = false;\n      } else {\n        if (c === \"\\n\") line++;\n        field += c;\n      }\n    } else if (c === '\"') {\n      inQuotes = true;\n      any = true;\n    } else if (c === \",\") {\n      fields.push(field);\n      field = \"\";\n      any = true;\n    } else if (c === \"\\n\" || c === \"\\r\") {\n      if (c === \"\\r\" && text[i + 1] === \"\\n\") i++;\n      endRecord();\n      line++;\n      start = line;\n    } else {\n      field += c;\n      any = true;\n    }\n  }\n  if (any || field || fields.length) endRecord();\n  return records;\n}\n\nconst WHOLE = /^-?\\d+$/;\n\nexport function importBooks(store, text) {\n  const records = parse(text);\n  const result = { added: 0, errors: [] };\n  if (!records.length) return result;\n  const cols = records[0].fields.map((h) => h.trim());\n  for (const { line, fields } of records.slice(1)) {\n    const get = (name) => {\n      const i = cols.indexOf(name);\n      return i < 0 ? \"\" : (fields[i] ?? \"\").trim();\n    };\n    const title = get(\"title\");\n    const author = get(\"author\");\n    const year = get(\"year\");\n    const copies = get(\"copies\");\n    let message = null;\n    if (!title) message = \"title is required\";\n    else if (!author) message = \"author is required\";\n    else if (!WHOLE.test(year)) message = \"year must be a whole number\";\n    else if (copies !== \"\" && !(WHOLE.test(copies) && Number(copies) > 0)) message = \"copies must be a positive whole number\";\n    if (message) {\n      result.errors.push({ line, message });\n      continue;\n    }\n    const tags = get(\"tags\");\n    addBook(store, {\n      title,\n      author,\n      year: Number(year),\n      tags: tags ? tags.split(\";\") : [],\n      copies: copies === \"\" ? 1 : Number(copies),\n    });\n    result.added++;\n  }\n  return result;\n}\nEOF\ncat > test/csv.test.mjs <<'EOF'\nimport test from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { createStore, addBook } from \"../src/store.mjs\";\nimport { exportBooks, importBooks } from \"../src/csv.mjs\";\n\ntest(\"export quotes special fields\", () => {\n  const s = createStore();\n  addBook(s, { title: 'A, \"B\"', author: \"X\", year: 2000, tags: [\"a\", \"b\"], copies: 2 });\n  assert.equal(exportBooks(s), 'id,title,author,year,tags,copies\\nb1000,\"A, \"\"B\"\"\",X,2000,a;b,2\\n');\n});\n\ntest(\"import round trip with reordered columns and multiline\", () => {\n  const s = createStore();\n  const r = importBooks(s, 'author,title,year,copies,tags\\nX,\"T\\n1\",1999,,a;b\\nY,,2000,1,\\nZ,T,x,1,\\nZ,T,2000,0,\\n');\n  assert.equal(r.added, 1);\n  assert.deepEqual(r.errors.map((e) => e.line), [4, 5, 6]);\n  assert.deepEqual(s.books[0].tags, [\"a\", \"b\"]);\n  assert.equal(s.books[0].title, \"T\\n1\");\n  assert.equal(s.books[0].copies, 1);\n});\nEOF\nnpm test 2>&1 | tail -15; npm run gen >/dev/null; git status --short",
+            "npm run gen >/dev/null; npm test 2>&1 | tail -15",
+            "node --test test/csv.test.mjs 2>&1 | grep -E \"^# (pass|fail)|not ok\""
+          ],
+          "Read": [
+            "<tmp>\\fanout-bench-fanout-O4UrPK\\csv\\src\\store.mjs"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-O4UrPK\\csv\\src\\csv.mjs",
+            "<tmp>\\fanout-bench-fanout-O4UrPK\\csv\\test\\csv.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "holds",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 59,
+        "costUsd": 0.0526287,
+        "inTokens": 32881,
+        "outTokens": 2387,
+        "error": null,
+        "sessionId": "dd435807-198e-41fe-9f8e-1287bb6bb151",
+        "turns": 8,
+        "modelSeconds": 22,
+        "tools": {
+          "Read": [
+            "<tmp>\\fanout-bench-fanout-O4UrPK\\holds\\src\\store.mjs"
+          ],
+          "Bash": [
+            "cd <tmp>/fanout-bench-fanout-O4UrPK/holds; ls src test; cat package.json; head -30 test/*.mjs | head -60",
+            "cd <tmp>/fanout-bench-fanout-O4UrPK/holds; npm run gen >/dev/null; npm test 2>&1 | tail -25"
+          ],
+          "Edit": [
+            "<tmp>\\fanout-bench-fanout-O4UrPK\\holds\\src\\store.mjs",
+            "<tmp>\\fanout-bench-fanout-O4UrPK\\holds\\src\\store.mjs"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-O4UrPK\\holds\\src\\holds.mjs",
+            "<tmp>\\fanout-bench-fanout-O4UrPK\\holds\\test\\holds.test.mjs"
+          ]
+        }
+      }
+    ],
+    "conflicts": [],
+    "brokeAfter": [],
+    "repairCommits": 0,
+    "rehearsals": [
+      "CHECK OK csv\nCHECK OK holds\nAll branches merge and pass together."
+    ],
+    "blockedFiles": [
+      "search-api: src/index.mjs",
+      "fines-reports: src/index.mjs",
+      "csv: src/index.mjs",
+      "holds: src/index.mjs"
+    ],
+    "plan": "test: npm test\nregen: src/index.mjs via npm run gen\n\n## search-api\nowns: src/search.mjs, test/search.test.mjs, src/api.mjs, test/api.test.mjs\ntask: Add `search(store, query)` in `src/search.mjs`; Add `src/api.mjs` with `createServer(store)`, returning a `node:http` server that is not yet listening\ncheck: node --test test/search.test.mjs test/api.test.mjs\nuses: src/fines.mjs\n\n## fines-reports\nowns: src/fines.mjs, test/fines.test.mjs, src/reports.mjs, test/reports.test.mjs\ntask: Add `src/fines.mjs`; Add `src/reports.mjs`\ncheck: node --test test/fines.test.mjs test/reports.test.mjs\nexposes: src/fines.mjs\n\n## csv\nowns: src/csv.mjs, test/csv.test.mjs\ntask: Add `src/csv.mjs`\ncheck: node --test test/csv.test.mjs\n\n## holds\nowns: src/holds.mjs, src/store.mjs, test/holds.test.mjs\ntask: Add `src/holds.mjs` and change `src/store.mjs`\ncheck: node --test test/holds.test.mjs\n",
+    "finalTestsPass": true,
+    "seconds": 199,
+    "acceptance": {
+      "pass": 21,
+      "total": 21,
+      "failed": []
+    }
+  }
+]

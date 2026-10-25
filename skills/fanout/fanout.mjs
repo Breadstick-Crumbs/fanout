@@ -5,7 +5,7 @@
 //   fanout rehearse [plan.md] [--base <branch>] [--test cmd]   merge every branch in order on a scratch worktree, test once (bisect on failure)
 //   fanout guard                                    PreToolUse hook (installed by the plugin)
 //   fanout install-git-hook [--force]               same rules as a git pre-commit hook, for agents outside Claude Code
-//   fanout run ["goal"] [--yes] [--agent claude|codex|"<cmd>"]   do the whole fan-out: plan, agents, rehearse, fix, merge (see run.mjs)
+//   fanout run ["goal" | --goal-file f] [--yes] [--agent claude|codex|"<cmd>"]   do the whole fan-out: plan, agents, rehearse, fix, merge (see run.mjs)
 //   fanout status [--base <branch>]                     one table: each session's branch, commits, files, worktree, verify flags, agent state and cost (fanout run), last run and rehearse
 //   fanout overlap [--base <branch>] [--all]            every active checkout (any worktree, any session) and its changes, files changed in more than one, dry-run merge
 //   fanout log [--last 20]                          past runs and rehearsals from .fanout/log.jsonl: time, cost, fixes, test runs
