@@ -9,7 +9,7 @@ Split work so parallel sessions can't collide. The script `fanout.mjs` sits next
 
 ## Steps
 
-1. **Plan.** Write `.fanout/plan.md` in the repo root (add `.fanout/` to `.git/info/exclude` so it isn't committed). Use exactly this shape:
+1. **Plan.** Use at most about 4 sessions, grouping related tasks into one: more agents writing at once on one account slow each other down (in our benchmark, three sessions ran at full speed and six at a third of it). Write `.fanout/plan.md` in the repo root (add `.fanout/` to `.git/info/exclude` so it isn't committed). Use exactly this shape:
    ```
    test: npm test
    regen: src/index.ts via npm run gen
@@ -37,7 +37,7 @@ Split work so parallel sessions can't collide. The script `fanout.mjs` sits next
 
 **Who runs the sessions.** Don't build a second orchestrator on top of the one you're in. If the host can run parallel sessions itself (Claude Code's background sessions or subagents, the desktop app's sessions), use them for steps 4 to 6: no extra planning agent, no extra startup cost, and you keep the conversation. Use `node fanout.mjs run --yes` only when the host can't: from a plain terminal, in CI, or for Codex or mixed agents. It does steps 4 to 6 by itself (headless sessions in `.fanout/lanes/<name>`, commit, rehearse, send each break back to the session that caused it, merge, test) and stops only if a session still breaks after two fixes.
 
-4. **Start.** For each session: `git worktree add -b fanout/<name> .fanout/lanes/<name> main` (the branch must be exactly `fanout/<name>`; inside `.fanout/` so dependencies like `node_modules` still resolve). Then start a parallel session or subagent for it with a brief: work only in that folder, owned paths, task and done-when, what not to touch, run the plan's test command, commit on its branch when done, no deploy. Tell it to read only its `uses` files from other sessions' code, not to explore the rest. The edit guard finds the session from the folder of the file being edited, so a subagent whose working directory is the main checkout is still held to its lane. Sessions can be any mix of agents (`claude -p` or `codex exec` from the folder, for example).
+4. **Start.** For each session: `git worktree add -b fanout/<name> .fanout/lanes/<name> main` (the branch must be exactly `fanout/<name>`; inside `.fanout/` so dependencies like `node_modules` still resolve). Then start a parallel session or subagent for it with a brief: work only in that folder, owned paths, task and done-when, what not to touch, run the plan's test command, keep its own tests short (at most 3: rehearse tests the merged result), commit on its branch when done, no deploy. Tell it to read only its `uses` files from other sessions' code, not to explore the rest. The edit guard finds the session from the folder of the file being edited, so a subagent whose working directory is the main checkout is still held to its lane. Sessions can be any mix of agents (`claude -p` or `codex exec` from the folder, for example).
 
    Run `node fanout.mjs install-git-hook` once per repo (tell the user): a pre-commit hook that applies the plan to every commit on a `fanout/*` branch, whatever agent made it. In Claude Code the edit hook also blocks bad edits as they happen. Codex doesn't run plugin hooks (or untrusted ones) and often writes files through the shell, so for Codex sessions the git hook (and `fanout run`'s revert of out-of-lane files) is the enforcement: check `verify` before merging.
 

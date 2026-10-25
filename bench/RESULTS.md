@@ -239,6 +239,15 @@ Output tokens are most of the bill: on Sonnet, output costs about 5× input, and
 - **Haiku lanes with lean tests are the cheapest full score yet:** $0.21, about a third of one Sonnet agent, all 34 hidden tests, and faster than full Haiku lanes (fewer edit-and-retest rounds).
 - **So for cost:** cheap session models are the big lever; lean tests are a smaller one on top. Haiku plus lean is the setup to try as a default, checked on more runs and a vaguer task first.
 
+### `fanout run`'s new defaults on a vague goal
+
+`fanout run` now tells the planner to use at most 4 sessions (`--max-sessions`) and asks sessions to keep their own tests short (`--full-tests` turns it off). Checked with the planner given only "add the features in TASKS.md, split it however you think best", Sonnet throughout, one run ([11:09](results/2026-10-25-11-09.md)):
+
+- **The planner kept to the cap on its own:** 4 sessions (formula; recalc+table; numfmt+csv; structure), the same grouping by dependency as the hand-picked three lanes.
+- **34/34 hidden tests, 5m 55s, $1.01.** The four sessions ran at full speed (61–122s each), but rehearse found that recalc+table broke the build once merged. It had also tried to edit formula's file, which was reverted. Its fix took another 117s and $0.11, so the run was slower and dearer than the three hand-picked lanes (4m 41s, $0.97).
+- **Tests stayed short:** 240 lines, between full (313) and the benchmark's own lean note (135).
+- One run: it shows the defaults work, not that they beat the hand-picked split.
+
 ## What this does and doesn't show
 
 - **It shows** that on overlapping work, fanout kept `main` free of conflicts and breakage, with no integration step afterwards, at about the same Claude cost: $0.50–$0.92 against $0.59–$0.63.

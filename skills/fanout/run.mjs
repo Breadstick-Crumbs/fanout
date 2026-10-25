@@ -1,5 +1,5 @@
 // fanout run: the whole fan-out as one command.
-//   fanout run ["goal"] [--yes] [--agent claude|codex|"<cmd>"] [--model m] [--session-model m] [--budget usd] [--fixes 2] [--no-merge]
+//   fanout run ["goal"] [--yes] [--agent claude|codex|"<cmd>"] [--model m] [--session-model m] [--budget usd] [--fixes 2] [--max-sessions 4] [--full-tests] [--no-merge]
 //
 // 1. Plan: uses .fanout/plan.md if it exists; otherwise a coordinator agent writes it from the goal,
 //    from the plan rules (plannerPrompt), and commits the contract files.
@@ -185,7 +185,9 @@ function inlineContracts(s, root) {
   return "Their current contents (no need to read them again):\n" + texts.map(([f, t]) => `--- ${f}\n${t.trimEnd()}`).join("\n");
 }
 
-export function brief(s, sessions, regen, test, note = "", root = null) {
+// shortTests: sessions keep their own tests short, since rehearse runs the full test command on the merged
+// branches. On the sheet benchmark it cut the sessions' cost by a fifth (Sonnet) to a third (Haiku).
+export function brief(s, sessions, regen, test, note = "", root = null, { shortTests = false } = {}) {
   const others = sessions.filter((x) => x !== s).map((x) => x.name);
   return [
     `You are session "${s.name}" of a parallel fan-out. ${others.length ? `Other agents are working on ${others.join(", ")} at the same time.` : ""}`,
@@ -197,6 +199,7 @@ export function brief(s, sessions, regen, test, note = "", root = null) {
     inlineContracts(s, root),
     regen.length ? `Generated files (${regen.flatMap((r) => r.paths).join(", ")}) are rebuilt after merging; you may run the generator to test, but your changes to them are discarded.` : "",
     test ? `Run \`${test}\` before you finish.` : "",
+    shortTests ? "Keep your own tests short: at most 3, for your main behaviour, unless the task itself is about tests. All branches are merged and tested together after you finish." : "",
     "Don't commit: your work is committed for you. Read only the files you need.",
     note,
   ].filter(Boolean).join("\n");
@@ -207,7 +210,9 @@ const log = (...a) => console.log("fanout:", ...a);
 // The planner gets the plan rules and the repo's file list up front instead of reading the whole skill
 // and exploring (it took 17 turns that way on the library benchmark). It reads only the code it needs
 // to write the contracts.
-export function plannerPrompt({ goal, base, root, extra = "" }) {
+// maxSessions: above about four agents writing at once, one account's agents slow each other down
+// (sheet benchmark: three lanes ran at full speed, six at about a third of it).
+export function plannerPrompt({ goal, base, root, extra = "", maxSessions = 4 }) {
   const files = git(root, "ls-files").out.split("\n").filter(Boolean);
   let list = files.join("\n");
   if (files.length > 300) {
@@ -236,7 +241,7 @@ check: <a command that exits 0 only when done: holds on the merged code: a grep,
 exposes: <files of its own that other sessions build against>   (optional)
 uses: <exposed files from other sessions it builds against>      (optional)
 
-Rules: every file has at most one owner. Keep sessions few, substantial and independent; if the goal is small, use one session. Anything several sessions need (shared types, function signatures, changes to a shared module) belongs to one owner and is listed under its exposes and the others' uses.
+Rules: every file has at most one owner. Keep sessions few, substantial and independent; if the goal is small, use one session. Use at most ${maxSessions} sessions: group related tasks into one session rather than giving each its own, because more agents running at once slow each other down. Anything several sessions need (shared types, function signatures, changes to a shared module) belongs to one owner and is listed under its exposes and the others' uses.
 
 2. Run \`node "${SCRIPT}" check\` and fix the plan until it reports no problems and no NOTE.
 3. If anything is exposed, write those files on ${base} now as working interfaces or stubs the other sessions can build against, run the tests, and commit ("fanout: contracts"). Don't implement the rest of the tasks, create worktrees or start sessions: that happens next. Treat the plan as approved.
@@ -254,7 +259,7 @@ export async function cli(argv) {
   const defaultAgent = opt("--agent", "claude"), model = opt("--model"), budget = opt("--budget");
   // Sessions can run on a cheaper model than the planner: a session's own "model:" wins, then --session-model, then --model.
   const sessionModel = opt("--session-model"), modelFor = (s) => s.model || sessionModel || model;
-  const maxFixes = Number(opt("--fixes", "2"));
+  const maxFixes = Number(opt("--fixes", "2")), maxSessions = Number(opt("--max-sessions", "4")), shortTests = !flag("--full-tests");
   const root = mainRoot(process.cwd());
   const base = git(root, "branch", "--show-current").out.trim();
   if (!base) { console.error("fanout run: check out the branch to build on first (e.g. main)."); return 2; }
@@ -299,7 +304,7 @@ export async function cli(argv) {
   if (!existsSync(planPath)) {
     if (!goal) { console.error('fanout run: no .fanout/plan.md. Pass a goal: fanout run "add coupons and tax"'); return 2; }
     log("planning…");
-    const prompt = plannerPrompt({ goal, base, root });
+    const prompt = plannerPrompt({ goal, base, root, maxSessions });
     for (let i = 0; i < 2; i++) {
       track("plan", null, await runAgent({ agent: "claude", cwd: root, prompt: i ? `${prompt}\n\nThe plan you wrote fails the check:\n${tail(sh(`node "${SCRIPT}" check`, root).out)}\nFix it.` : prompt, model, budget, plugin: true, allowGit: true }));
       if (existsSync(planPath) && sh(`node "${SCRIPT}" check`, root).ok) break;
@@ -355,7 +360,7 @@ export async function cli(argv) {
     let r;
     for (let attempt = 0; attempt < 2; attempt++) {
       setLive(s.name, { state: attempt ? "retrying" : "working", since: Date.now() });
-      r = track("lane", s.name, await runAgent({ agent: agentFor(s), cwd: wt[s.name], prompt: brief(s, sessions, regen, test, "", root), model: modelFor(s), budget, allow: [test, s.check] }));
+      r = track("lane", s.name, await runAgent({ agent: agentFor(s), cwd: wt[s.name], prompt: brief(s, sessions, regen, test, "", root, { shortTests }), model: modelFor(s), budget, allow: [test, s.check] }));
       if (!r.error) {
         const { reverted } = commitLane(wt[s.name], sessions, s, regen, `fanout: ${s.name}`);
         r.noChanges = ahead(s) === 0;
@@ -408,7 +413,7 @@ export async function cli(argv) {
     setLive(name, { state: `fixing (${fixes[name]})`, since: Date.now() });
     // Resume the lane's own session with just the break report; if that fails, send the full brief again.
     const fix = await runAgent({ agent: agentFor(s), cwd: wt[name], model: modelFor(s), budget, allow: [test, s.check], resume: session[name], prompt: report,
-      fallbackPrompt: brief(s, sessions, regen, test, `\n${report}`, root) });
+      fallbackPrompt: brief(s, sessions, regen, test, `\n${report}`, root, { shortTests }) });
     session[name] = fix.sessionId ?? session[name];
     track("fix", name, fix);
     commitLane(wt[name], sessions, s, regen, `fanout: fix ${name}`);

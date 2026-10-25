@@ -27,9 +27,8 @@ const MODE = argv[0] && !argv[0].startsWith("--") ? argv[0] : "both";
 const DRY = argv.includes("--dry");
 // --vague: the planner gets a one-line goal and picks the split itself; sessions read TASKS.md from the repo.
 const VAGUE = argv.includes("--vague");
-// --lean: fanout lanes write only a few tests of their own; rehearse tests the combined branches.
+// --lean: fanout lanes get fanout run's short-tests brief (fanout run's default; the benchmark's default stays full).
 const LEAN = argv.includes("--lean");
-const LEAN_NOTE = "\nTests: all branches are merged and tested together after you finish, so don't write a full test suite. Add at most 3 short tests for your main behaviour, whatever the spec says about tests.";
 const VAGUE_GOAL = "Add the features described in TASKS.md to this library. Split the work however you think best.";
 const MODEL = opt("--model", "sonnet"), BUDGET = opt("--budget", "1"), SINGLE_BUDGET = opt("--single-budget", "5");
 // The planner (fanout's coordinator) and the parallel session agents can run on other models than --model,
@@ -177,7 +176,7 @@ async function fanout() {
   const wts = Object.fromEntries(names.map((l) => [l, join(dir, l)]));
   for (const l of names) git(repo, "worktree", "add", "-q", "-b", `fanout/${l}`, wts[l], "main");
   // The same brief `fanout run` gives, with the full task spec appended (the plan's task: line is one line).
-  const brief = (s) => laneBrief(s, sessions, regen, planSetting(text, "test"), (VAGUE ? "\nThe full spec is in TASKS.md: read the parts your task covers." : `\nFull task spec:\n${PREAMBLE}\n\n${TASKS[s.name]}`) + (LEAN ? LEAN_NOTE : ""), repo);
+  const brief = (s) => laneBrief(s, sessions, regen, planSetting(text, "test"), (VAGUE ? "\nThe full spec is in TASKS.md: read the parts your task covers." : `\nFull task spec:\n${PREAMBLE}\n\n${TASKS[s.name]}`), repo, { shortTests: LEAN });
   // Commit a lane, as the git hook allows; files the plan forbids are reverted and counted.
   const commitLane = (l) => {
     const s = sessions.find((x) => x.name === l);

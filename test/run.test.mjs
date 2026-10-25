@@ -168,6 +168,12 @@ test("brief pastes small contracts, names large ones, skips globs", () => {
   assert.doesNotMatch(brief(b, [a, b], [], "npm test"), /---/); // no root: nothing pasted
 });
 
+test("brief asks for short tests only when told to", () => {
+  const [a, b] = parsePlan("## a\nowns: a.mjs\n## b\nowns: b.mjs\n");
+  assert.match(brief(b, [a, b], [], "npm test", "", null, { shortTests: true }), /at most 3/);
+  assert.doesNotMatch(brief(b, [a, b], [], "npm test"), /at most 3/);
+});
+
 test("planner prompt carries the plan rules, the file list and the goal", () => {
   const root = mkdtempSync(join(tmpdir(), "fanout-plan-"));
   execFileSync("git", ["init", "-q"], { cwd: root });
@@ -176,6 +182,8 @@ test("planner prompt carries the plan rules, the file list and the goal", () => 
   const p = plannerPrompt({ goal: "add coupons", base: "main", root, extra: "Use two sessions." });
   for (const want of ["owns:", "exposes:", "fanout.mjs", "app.js", "Goal: add coupons", "Use two sessions.", "commit (\"fanout: contracts\")"])
     assert.ok(p.includes(want), want);
+  assert.match(p, /at most 4 sessions/);
+  assert.match(plannerPrompt({ goal: "g", base: "main", root, maxSessions: 2 }), /at most 2 sessions/);
 });
 
 test("staggered starts agents a gap apart, in order, and keeps results in order", async () => {
