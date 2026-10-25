@@ -83,7 +83,7 @@ Ask your agent:
 1. It shows you a plan: who owns which files, and the merge order. You approve it. That's the only question you get.
 2. Shared interfaces (types, function signatures) are committed first, so every agent builds against the real thing.
 3. Each agent works on its own branch in its own folder. If it touches a file it doesn't own, it's stopped.
-4. fanout rehearses: it merges every branch on a scratch copy and runs your tests once. If something breaks, it finds the branch that did it, and that agent gets a short report and fixes it.
+4. fanout rehearses: it merges every branch on a scratch copy and runs your tests once. If something breaks, it finds the branch that did it, and that agent gets the failing tests and fixes it, with the branches merged ahead of it brought into its own folder so it works against their real code.
 5. Everything merges into `main` in order.
 
 You only hear about problems if the same agent fails twice.
@@ -193,6 +193,8 @@ On a real WordPress theme (four pages moved to a new design, one session each, S
 Parallel agents aren't free. Each one loads and reads the code on its own, so splitting work only pays when the work is big enough.
 
 **Use one agent** unless each part is substantial. On our six-feature benchmark (21 hidden tests, passed by every setup), one Sonnet agent finished in about 1m 40s for $0.25; six agents with fanout took about 2m 45s. Each parallel agent pays its own start-up and reading time, roughly a minute, so parts need to take several minutes each before splitting saves time. Running the sessions on a cheaper model brings the cost down to about $0.15 ([full results](bench/RESULTS.md)).
+
+On a bigger job, splitting does pay. On our six-module spreadsheet benchmark (34 hidden tests, minutes per module), `fanout run` with four Sonnet sessions took a median of 3m 59s against 5m 44s for one Sonnet agent, at about 15% more cost ($0.72 against $0.62; three runs each, and the ranges overlap) ([details](bench/RESULTS.md#repeats-with-the-new-defaults-v021)).
 
 **Use fanout** when:
 - you already run several sessions on one repo (the desktop app's sessions, worktrees, a teammate). Run `fanout overlap` before anyone merges or deploys. This is where real use found the most value: two sessions about to edit the same footer file, one of them with uncommitted changes in the main checkout;
