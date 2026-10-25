@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="fanout: run several coding agents at once">
+  <defs>
+    <radialGradient id="glow" cx="78%" cy="50%" r="55%">
+      <stop offset="0" stop-color="#2f81f7" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#2f81f7" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1280" height="640" fill="#0d1117"/>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+
+  <g font-family="'Segoe UI', -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif">
+    <!-- logo -->
+    <g transform="translate(80 92) scale(0.75)">
+      <g fill="none" stroke="#2f81f7" stroke-width="6" stroke-linecap="round">
+        <path d="M6 48 H190"/>
+        <path d="M34 48 C54 48 52 18 74 18 H122 C144 18 142 48 162 48"/>
+        <path d="M34 48 C54 48 52 78 74 78 H122 C144 78 142 48 162 48"/>
+      </g>
+      <g fill="#2f81f7">
+        <circle cx="34" cy="48" r="9"/>
+        <circle cx="162" cy="48" r="9"/>
+      </g>
+      <text x="214" y="66" fill="#e6edf3" font-size="54" font-weight="700" letter-spacing="-1">fanout</text>
+    </g>
+
+    <!-- headline -->
+    <text x="80" y="290" fill="#e6edf3" font-size="62" font-weight="700" letter-spacing="-1.5">Run several coding</text>
+    <text x="80" y="364" fill="#e6edf3" font-size="62" font-weight="700" letter-spacing="-1.5">agents at once.</text>
+    <text x="80" y="438" fill="#2f81f7" font-size="62" font-weight="700" letter-spacing="-1.5">Merge once.</text>
+
+    <text x="80" y="492" fill="#8b949e" font-size="26">Own files per agent · frozen interfaces · tested together</text>
+
+    <!-- agent chips -->
+    <g font-size="22" font-weight="600" fill="#c9d1d9">
+      <rect x="80" y="530" width="164" height="44" rx="22" fill="#161b22" stroke="#30363d"/>
+      <text x="162" y="559" text-anchor="middle">Claude Code</text>
+      <rect x="258" y="530" width="104" height="44" rx="22" fill="#161b22" stroke="#30363d"/>
+      <text x="310" y="559" text-anchor="middle">Codex</text>
+      <rect x="376" y="530" width="196" height="44" rx="22" fill="#161b22" stroke="#30363d"/>
+      <text x="474" y="559" text-anchor="middle">any CLI agent</text>
+    </g>
+
+    <!-- fan-out diagram -->
+    <g fill="none" stroke-linecap="round" stroke-width="5">
+      <path d="M770 320 H830" stroke="#2f81f7"/>
+      <path d="M830 320 C880 320 870 170 930 170 H1050 C1110 170 1100 320 1150 320" stroke="#2f81f7"/>
+      <path d="M830 320 H1150" stroke="#2f81f7"/>
+      <path d="M830 320 C880 320 870 470 930 470 H1050 C1110 470 1100 320 1150 320" stroke="#2f81f7"/>
+      <path d="M1150 320 H1200" stroke="#3fb950"/>
+    </g>
+    <g font-size="19" font-family="'Cascadia Code', Consolas, 'SFMono-Regular', monospace" fill="#c9d1d9" text-anchor="middle">
+      <rect x="920" y="148" width="140" height="44" rx="10" fill="#161b22" stroke="#30363d" stroke-width="2"/>
+      <text x="990" y="177">agent 1</text>
+      <rect x="920" y="298" width="140" height="44" rx="10" fill="#161b22" stroke="#30363d" stroke-width="2"/>
+      <text x="990" y="327">agent 2</text>
+      <rect x="920" y="448" width="140" height="44" rx="10" fill="#161b22" stroke="#30363d" stroke-width="2"/>
+      <text x="990" y="477">agent 3</text>
+    </g>
+    <circle cx="830" cy="320" r="13" fill="#2f81f7"/>
+    <circle cx="1150" cy="320" r="22" fill="#3fb950"/>
+    <path d="M1139 320 L1147 329 L1162 311" fill="none" stroke="#0d1117" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="1150" y="378" fill="#3fb950" font-size="22" font-weight="600" text-anchor="middle" font-family="'Cascadia Code', Consolas, monospace">main</text>
+  </g>
+</svg>
