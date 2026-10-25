@@ -8,7 +8,7 @@
 //
 // Fixtures: shop (4 small tasks), library (6 bigger ones) and sheet (6 large ones, minutes each). If bench/<fixture>-acceptance/ exists, its hidden
 // tests are copied in at the end and scored, so every setup is judged the same way.
-//   node bench/run.mjs [single|baseline|fanout|both|all] [--fixture shop|library|sheet] [--single-budget 5] [--dry]   (both = baseline + fanout; all adds single) [--model sonnet] [--budget 1] [--codex-lane receipt|none]
+//   node bench/run.mjs [single|baseline|fanout|both|all] [--fixture shop|library|sheet] [--groups a+b,c+d] [--single-budget 5] [--dry]   (both = baseline + fanout; all adds single) [--model sonnet] [--budget 1] [--codex-lane receipt|none]
 // --dry swaps every agent for a no-op (the coordinator writes a canned plan) to test the plumbing.
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from "node:fs";
@@ -39,6 +39,13 @@ const CODEX_LANE = opt("--codex-lane", "none"); // a task name to run that lane 
 const TASKS = Object.fromEntries(TASKS_MD.split(/^## /m).slice(1)
   .map((b) => { const [name, ...rest] = b.split("\n"); return [name.trim(), rest.join("\n").trim()]; }));
 const LANES = Object.keys(TASKS);
+// --groups "formula+csv,recalc+table": parallel setups run one lane per group (named formula-csv, ...) instead of one per task.
+const GROUPS = opt("--groups", null)?.split(",").map((g) => g.split("+"));
+if (GROUPS) {
+  for (const g of GROUPS) TASKS[g.join("-")] = g.map((t) => `### ${t}\n${TASKS[t]}`).join("\n\n");
+  LANES.splice(0, LANES.length, ...GROUPS.map((g) => g.join("-")));
+}
+const membersOf = (l) => GROUPS?.find((g) => g.join("-") === l) ?? [l];
 // The fixture-wide notes above the first task go into every brief.
 const PREAMBLE = TASKS_MD.split(/^## /m)[0].replace(/^#.*$/m, "").trim();
 
@@ -152,9 +159,9 @@ async function fanout() {
   run(process.execPath, [FANOUT, "install-git-hook"], repo);
   // The same planner prompt `fanout run` uses; the benchmark only pins the session names to its tasks.
   const coord = VAGUE ? plannerPrompt({ goal: VAGUE_GOAL, base: "main", root: repo })
-    : plannerPrompt({ goal: TASKS_MD, base: "main", root: repo, extra: `\nUse exactly one session per task, named ${LANES.join(", ")}.\n` });
+    : plannerPrompt({ goal: TASKS_MD, base: "main", root: repo, extra: GROUPS ? `\nUse exactly ${LANES.length} sessions, each doing the tasks it is named after: ${LANES.join(", ")}.\n` : `\nUse exactly one session per task, named ${LANES.join(", ")}.\n` });
   R.agents.push(await agent({ lane: "-", role: "coordinator", cwd: repo, prompt: coord, plugin: true, allowGit: true,
-    dryAction: () => { mkdirSync(join(repo, ".fanout"), { recursive: true }); writeFileSync(join(repo, ".fanout/plan.md"), FIXTURE === "shop" ? CANNED_PLAN : `test: npm test\n\n${LANES.map((l) => `## ${l}\nowns: src/${l}.mjs, test/${l}.test.mjs\ntask: ${l}\n`).join("\n")}`); } }));
+    dryAction: () => { mkdirSync(join(repo, ".fanout"), { recursive: true }); writeFileSync(join(repo, ".fanout/plan.md"), FIXTURE === "shop" ? CANNED_PLAN : `test: npm test\n\n${LANES.map((l) => `## ${l}\nowns: ${membersOf(l).map((m) => `src/${m}.mjs, test/${m}.test.mjs`).join(", ")}\ntask: ${l}\n`).join("\n")}`); } }));
   commitAll(repo, "coordinator leftovers");
   const planPath = join(repo, ".fanout/plan.md");
   if (!existsSync(planPath)) { R.error = "coordinator wrote no plan"; return R; }

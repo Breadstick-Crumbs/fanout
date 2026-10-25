@@ -188,6 +188,37 @@ The formula lane was run again alone, from the same base commit, once with fanou
 - **A lane writes much more per task than one agent does:** 10–17k tokens for the formula module alone, against 37k for all six modules in one session. Likely because an agent with one module writes fuller code and tests (not checked).
 - **What to try:** fewer, bigger lanes (three lanes would likely run near full speed each), Haiku sessions (cheaper and less contended), and asking lanes to write fewer of their own tests, since rehearse and the hidden tests check the result anyway.
 
+### Where the time goes, call by call
+
+Each agent's transcript records when every API call starts and ends, and how many tokens it wrote. Speeds below are for the big calls that write code (over 1,500 output tokens), measured the same way for every agent (the transcripts count more output tokens than the results above, so the absolute numbers differ):
+
+| Agent | Writing speed (big calls) | Time running commands |
+|---|---|---|
+| One agent, whole job | ~305 tokens/s | 18s |
+| Formula lane alone | ~290 tokens/s | 28s |
+| Six lanes at once | ~70–110 tokens/s (table 170) | 27–54s each |
+| Three Sonnet lanes at once | ~250–490 tokens/s | 43–54s each |
+
+- **No errors or retries, just slower streaming.** With six agents on one account, each call took 50–60 seconds to write 2–6k tokens. With three, calls ran at full speed. The limit sits somewhere between three and six agents writing at once.
+- **The six lanes all wrote their code in the same two minutes** (09:24:15 to 09:26:10): they start 1.5 seconds apart and spend the first 15 seconds reading, so their heavy calls line up.
+- **Running commands is slower in parallel too:** `npm test` and shell calls in several worktrees at once on Windows took 1.5–2× longer than alone.
+
+### Three bigger lanes, Sonnet or Haiku (v0.18)
+
+`--groups formula+csv,recalc+table,numfmt+structure` runs three lanes of two modules each. recalc and table share a lane; recalc still builds on formula's contract from another lane. One run each, 25 October 2026 ([09:56](results/2026-10-25-09-56.md), [10:04](results/2026-10-25-10-04.md)), against the one-agent run above:
+
+| Setup | Wall time | Agent cost | Hidden tests | Lane fixes | Conflicts / repairs on `main` |
+|---|---|---|---|---|---|
+| One agent, Sonnet | 4m 05s | $0.58 | 33/34 | - | 0 / 0 |
+| fanout, 6 Sonnet lanes | 7m 32s | $0.99 | 34/34 | 1 | 0 / 0 |
+| fanout, 3 Sonnet lanes | 4m 41s | $0.97 | 34/34 | 0 | 0 / 0 |
+| fanout, 3 Haiku lanes (Sonnet plans) | 7m 40s | $0.25 | 34/34 | 0 | 0 / 0 |
+
+- **Three lanes nearly caught up:** 4m 41s against 4m 05s, from 7m 32s with six. Lanes ran at full speed; the gap is planning (56s), merging, and lanes spending about twice as long on commands.
+- **Haiku sessions were the cheapest way to a full score:** $0.25, under half of one Sonnet agent, with all 34 hidden tests passing. They were slow, though: Haiku wrote about three times as many tokens as the Sonnet lanes, with more edit-and-retest rounds.
+- **One agent is still fastest on this task.** To beat it, fanout needs to save the planning step or the extra command time; the lanes themselves are now about as fast as they can be.
+- **Default to three or four lanes, not one per task:** above that, agents on one account slow each other down.
+
 ## What this does and doesn't show
 
 - **It shows** that on overlapping work, fanout kept `main` free of conflicts and breakage, with no integration step afterwards, at about the same Claude cost: $0.50–$0.92 against $0.59–$0.63.
