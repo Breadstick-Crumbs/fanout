@@ -172,6 +172,22 @@ The [sheet](sheet/) fixture was built to be big enough for parallel work to win:
 - **fanout did its job on quality:** rehearse caught a break after the formula lane, that lane fixed it before anything reached `main`, and the result passed all 34 hidden tests. The single agent missed one (column delete with reversed range corners).
 - **What this means:** making the task bigger doesn't move the break-even much on its own, because one agent gets faster per task as it goes and parallel agents slow each other down. Parallel pays off when parts are long *and* the run isn't throughput-bound. The per-lane overhead (planning, re-reading, per-lane tests, rehearse) is the cost to cut.
 
+### Why the lanes were slow: running at the same time, not the brief
+
+The formula lane was run again alone, from the same base commit, once with fanout's lane brief and once with a plain prompt (the task spec plus "run npm test"). One run each:
+
+| Formula lane | Wall time | Model time | Output tokens | Tokens per second | Cost |
+|---|---|---|---|---|---|
+| In the parallel run (six at once) | 176s | 122s | 10k | ~83 | $0.18 |
+| Alone, fanout brief | 129s | 88s | 15k | ~172 | $0.27 |
+| Alone, plain prompt | 157s | 120s | 17k | ~140 | $0.27 |
+
+- **Alone, the lane writes at the single agent's speed** (~170 tokens/s). Running six at once halved it. So the slowdown comes from running agents together, on one account; the brief doesn't cause it.
+- **fanout's brief is not the problem:** it was a little faster and leaner than the plain prompt.
+- **Six lanes gave about 3× the throughput of one agent, not 6×** (six at ~83 tokens/s against one at ~170). With the planning step and rehearse on top, that wasn't enough here.
+- **A lane writes much more per task than one agent does:** 10–17k tokens for the formula module alone, against 37k for all six modules in one session. Likely because an agent with one module writes fuller code and tests (not checked).
+- **What to try:** fewer, bigger lanes (three lanes would likely run near full speed each), Haiku sessions (cheaper and less contended), and asking lanes to write fewer of their own tests, since rehearse and the hidden tests check the result anyway.
+
 ## What this does and doesn't show
 
 - **It shows** that on overlapping work, fanout kept `main` free of conflicts and breakage, with no integration step afterwards, at about the same Claude cost: $0.50–$0.92 against $0.59–$0.63.
