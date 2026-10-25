@@ -1,0 +1,162 @@
+[
+  {
+    "condition": "fanout",
+    "agents": [
+      {
+        "role": "coordinator",
+        "lane": "-",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 22,
+        "costUsd": 0.0459253,
+        "inTokens": 39672,
+        "outTokens": 742,
+        "error": null,
+        "sessionId": "e60125ee-f21e-4179-9326-977fa6ae0042",
+        "turns": 4,
+        "modelSeconds": 9,
+        "tools": {
+          "Bash": [
+            "cd <tmp>/fanout-bench-fanout-mwrqvp/repo && ls . src test; cat package.json; head -30 src/index.mjs; cat .fanout/plan.md | head -5",
+            "cd <tmp>/fanout-bench-fanout-mwrqvp/repo && npm run gen 2>&1 | tail -3; cat src/index.mjs"
+          ],
+          "Write": [
+            ""
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "formula",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 136,
+        "costUsd": 0.2086309,
+        "inTokens": 98657,
+        "outTokens": 13004,
+        "error": null,
+        "sessionId": "2029c745-760b-46f8-83ac-dca6ad358172",
+        "turns": 7,
+        "modelSeconds": 107,
+        "tools": {
+          "Bash": [
+            "cat src/addr.mjs; ls src test; cat package.json",
+            "cat src/formula.mjs; cat src/index.mjs",
+            "cat > src/formula.mjs <<'EOF'\n// Formula parsing and evaluation.\nimport { parseAddr, toAddr } from \"./addr.mjs\";\n\nconst REF = /^\\$?[A-Za-z]{1,3}\\$?[1-9]\\d*$/;\nconst NUM = /^[+-]?(\\d+\\.?\\d*|\\.\\d+)(e[+-]?\\d+)?$/i;\nconst TOKEN = /\\s*(?:(\\d+\\.?\\d*(?:[eE][+-]?\\d+)?|\\.\\d+(?:[eE][+-]?\\d+)?)|\"((?:[^\"]|\"\")*)\"|([A-Za-z_$][A-Za-z0-9_.$]*)|(<>|<=|>=|[=<>&+\\-*\\/^(),:]))/y;\n\nfunction tokenize(text) {\n  const out = [];\n  let pos = 0;\n  while (true) {\n    const rest = /\\s*/y;\n    rest.lastIndex = pos;\n    rest.exec(text);\n    pos = rest.lastIndex;\n    if (pos >= text.length) break;\n    TOKEN.lastIndex = pos;\n    const m = TOKEN.exec(text);\n    if (!m) throw new SyntaxError(`unexpected character at ${pos}: ${text[pos]}`);\n    pos = TOKEN.lastIndex;\n    if (m[1] !== undefined) out.push({ t: \"num\", v: Number(m[1]) });\n    else if (m[2] !== undefined) out.push({ t: \"str\", v: m[2].replace(/\"\"/g, '\"') });\n    else if (m[3] !== undefined) out.push({ t: \"id\", v: m[3] });\n    else out.push({ t: \"op\", v: m[4] });\n  }\n  return out;\n}\n\nconst normAddr = (s) => s.replace(/\\$/g, \"\").toUpperCase();\n\n/** Parse formula text (without the leading `=`) into an AST. Throws SyntaxError on bad syntax. */\nexport function parseFormula(text) {\n  const toks = tokenize(String(text));\n  let i = 0;\n  const isOp = (v) => toks[i] && toks[i].t === \"op\" && toks[i].v === v;\n  const expect = (v) => {\n    if (!isOp(v)) throw new SyntaxError(`expected ${v}`);\n    i++;\n  };\n  const levels = [[\"=\", \"<>\", \"<\", \">\", \"<=\", \">=\"], [\"&\"], [\"+\", \"-\"], [\"*\", \"/\"], [\"^\"]];\n\n  function binary(level) {\n    if (level === levels.length) return unary();\n    let left = binary(level + 1);\n    while (toks[i] && toks[i].t === \"op\" && levels[level].includes(toks[i].v)) {\n      const op = toks[i++].v;\n      left = { type: \"bin\", op, left, right: binary(level + 1) };\n    }\n    return left;\n  }\n  function unary() {\n    if (isOp(\"-\") || isOp(\"+\")) {\n      const op = toks[i++].v;\n      return { type: \"un\", op, arg: unary() };\n    }\n    return primary();\n  }\n  function primary() {\n    const tok = toks[i++];\n    if (!tok) throw new SyntaxError(\"unexpected end of formula\");\n    if (tok.t === \"num\") return { type: \"num\", value: tok.v };\n    if (tok.t === \"str\") return { type: \"str\", value: tok.v };\n    if (tok.t === \"op\") {\n      if (tok.v !== \"(\") throw new SyntaxError(`unexpected ${tok.v}`);\n      const e = binary(0);\n      expect(\")\");\n      return e;\n    }\n    if (isOp(\"(\")) {\n      i++;\n      const args = [];\n      if (!isOp(\")\")) {\n        do args.push(binary(0)); while (isOp(\",\") && i++);\n      }\n      expect(\")\");\n      return { type: \"call\", name: tok.v.toUpperCase(), args };\n    }\n    const up = tok.v.toUpperCase();\n    if (up === \"TRUE\" || up === \"FALSE\") return { type: \"bool\", value: up === \"TRUE\" };\n    if (!REF.test(tok.v)) throw new SyntaxError(`bad name: ${tok.v}`);\n    const a = normAddr(tok.v);\n    if (isOp(\":\")) {\n      i++;\n      const t2 = toks[i++];\n      if (!t2 || t2.t !== \"id\" || !REF.test(t2.v)) throw new SyntaxError(\"bad range\");\n      return { type: \"range\", from: a, to: normAddr(t2.v) };\n    }\n    return { type: \"ref\", addr: a };\n  }\n\n  const ast = binary(0);\n  if (i < toks.length) throw new SyntaxError(`unexpected ${toks[i].v}`);\n  return ast;\n}\n\nfunction rangeAddrs(from, to) {\n  const a = parseAddr(from), b = parseAddr(to);\n  const out = [];\n  for (let r = Math.min(a.row, b.row); r <= Math.max(a.row, b.row); r++)\n    for (let c = Math.min(a.col, b.col); c <= Math.max(a.col, b.col); c++) out.push(toAddr(c, r));\n  return out;\n}\n\n/** Normalized cell addresses the formula reads, ranges expanded row by row, each once, in order of first appearance. */\nexport function refsOf(ast) {\n  const seen = new Set();\n  const walk = (n) => {\n    if (n.type === \"ref\") seen.add(n.addr);\n    else if (n.type === \"range\") rangeAddrs(n.from, n.to).forEach((a) => seen.add(a));\n    else if (n.type === \"bin\") (walk(n.left), walk(n.right));\n    else if (n.type === \"un\") walk(n.arg);\n    else if (n.type === \"call\") n.args.forEach(walk);\n  };\n  walk(ast);\n  return [...seen];\n}\n\nconst isErr = (v) => typeof v === \"string\" && v.startsWith(\"#\");\n\nfunction toNum(v) {\n  if (isErr(v)) return v;\n  if (v === null || v === undefined) return 0;\n  if (typeof v === \"number\") return v;\n  if (typeof v === \"boolean\") return v ? 1 : 0;\n  const t = v.trim();\n  return NUM.test(t) ? Number(t) : \"#VALUE!\";\n}\n\nfunction toText(v) {\n  if (v === null || v === undefined) return \"\";\n  if (typeof v === \"boolean\") return v ? \"TRUE\" : \"FALSE\";\n  return String(v);\n}\n\nfunction toBool(v) {\n  if (isErr(v)) return v;\n  if (v === null || v === undefined) return false;\n  if (typeof v === \"boolean\") return v;\n  if (typeof v === \"number\") return v !== 0;\n  const u = v.toUpperCase();\n  return u === \"TRUE\" ? true : u === \"FALSE\" ? false : \"#VALUE!\";\n}\n\nconst typeRank = (v) => (typeof v === \"number\" ? 0 : typeof v === \"string\" ? 1 : 2);\n\nfunction compare(a, b) {\n  if (a === null || a === undefined) a = b === null || b === undefined ? 0 : typeof b === \"string\" ? \"\" : typeof b === \"boolean\" ? false : 0;\n  if (b === null || b === undefined) b = typeof a === \"string\" ? \"\" : typeof a === \"boolean\" ? false : 0;\n  const ra = typeRank(a), rb = typeRank(b);\n  if (ra !== rb) return ra - rb;\n  if (ra === 1) (a = a.toLowerCase(), b = b.toLowerCase());\n  return a < b ? -1 : a > b ? 1 : 0;\n}\n\nfunction round(x, d) {\n  d = Math.trunc(d);\n  const abs = Math.abs(x);\n  let r;\n  const s = String(abs);\n  if (!s.includes(\"e\") && Math.abs(d) < 300) r = Number(Math.round(Number(`${s}e${d}`)) + `e${-d}`);\n  else r = Math.round(abs * 10 ** d) / 10 ** d;\n  return x < 0 ? -r : r;\n}\n\nconst fin = (n) => (Number.isFinite(n) ? n : \"#NUM!\");\n\n/** Value of the formula; `lookup(addr)` returns a cell's value (null if empty). */\nexport function evaluate(ast, lookup) {\n  const get = (a) => lookup(a) ?? null;\n\n  function ev(n) {\n    switch (n.type) {\n      case \"num\": case \"str\": case \"bool\": return n.value;\n      case \"ref\": return get(n.addr);\n      case \"range\": return \"#VALUE!\";\n      case \"un\": {\n        const x = toNum(ev(n.arg));\n        if (typeof x === \"string\") return x;\n        return n.op === \"-\" ? fin(-x) : x;\n      }\n      case \"bin\": return bin(n);\n      case \"call\": return call(n);\n    }\n  }\n\n  function bin(n) {\n    const l = ev(n.left);\n    if (isErr(l)) return l;\n    const r = ev(n.right);\n    if (isErr(r)) return r;\n    const op = n.op;\n    if (op === \"&\") return toText(l) + toText(r);\n    if ([\"=\", \"<>\", \"<\", \">\", \"<=\", \">=\"].includes(op)) {\n      const c = compare(l, r);\n      return { \"=\": c === 0, \"<>\": c !== 0, \"<\": c < 0, \">\": c > 0, \"<=\": c <= 0, \">=\": c >= 0 }[op];\n    }\n    const x = toNum(l);\n    if (typeof x === \"string\") return x;\n    const y = toNum(r);\n    if (typeof y === \"string\") return y;\n    switch (op) {\n      case \"+\": return fin(x + y);\n      case \"-\": return fin(x - y);\n      case \"*\": return fin(x * y);\n      case \"/\": return y === 0 ? \"#DIV/0!\" : fin(x / y);\n      case \"^\": return fin(x ** y);\n    }\n  }\n\n  // Values of an argument: a range yields its cells, anything else a single direct value.\n  const cells = (a) => rangeAddrs(a.from, a.to).map(get);\n\n  function numbers(args, isCount) {\n    const nums = [];\n    for (const a of args) {\n      if (a.type === \"range\") {\n        for (const v of cells(a)) {\n          if (isErr(v)) { if (!isCount) return v; }\n          else if (typeof v === \"number\") nums.push(v);\n        }\n      } else if (isCount) {\n        const v = ev(a);\n        if (typeof v === \"number\") nums.push(v);\n      } else {\n        const x = toNum(ev(a));\n        if (typeof x === \"string\") return x;\n        nums.push(x);\n      }\n    }\n    return nums;\n  }\n\n  function logic(args, isAnd) {\n    let acc = isAnd;\n    for (const a of args) {\n      let vals;\n      if (a.type === \"range\") {\n        vals = [];\n        for (const v of cells(a)) {\n          if (isErr(v)) return v;\n          if (typeof v === \"number\" || typeof v === \"boolean\") vals.push(toBool(v));\n        }\n      } else {\n        const b = toBool(ev(a));\n        if (typeof b === \"string\") return b;\n        vals = [b];\n      }\n      for (const b of vals) acc = isAnd ? acc && b : acc || b;\n    }\n    return acc;\n  }\n\n  function call(n) {\n    const { name, args } = n;\n    const count = args.length;\n    const arity = (min, max) => count >= min && count <= max;\n    const bad = \"#VALUE!\";\n    switch (name) {\n      case \"SUM\": case \"AVERAGE\": case \"MIN\": case \"MAX\": case \"COUNT\": {\n        const nums = numbers(args, name === \"COUNT\");\n        if (typeof nums === \"string\") return nums;\n        if (name === \"COUNT\") return nums.length;\n        if (name === \"SUM\") return fin(nums.reduce((s, x) => s + x, 0));\n        if (name === \"AVERAGE\") return nums.length ? fin(nums.reduce((s, x) => s + x, 0) / nums.length) : \"#DIV/0!\";\n        if (!nums.length) return 0;\n        return name === \"MIN\" ? Math.min(...nums) : Math.max(...nums);\n      }\n      case \"IF\": {\n        if (!arity(2, 3)) return bad;\n        const c = toBool(ev(args[0]));\n        if (typeof c === \"string\") return c;\n        if (c) return ev(args[1]);\n        return count === 3 ? ev(args[2]) : false;\n      }\n      case \"AND\": case \"OR\":\n        return count >= 1 ? logic(args, name === \"AND\") : bad;\n      case \"NOT\": {\n        if (count !== 1) return bad;\n        const b = toBool(ev(args[0]));\n        return typeof b === \"string\" ? b : !b;\n      }\n      case \"ROUND\": {\n        if (count !== 2) return bad;\n        const x = toNum(ev(args[0]));\n        if (typeof x === \"string\") return x;\n        const d = toNum(ev(args[1]));\n        if (typeof d === \"string\") return d;\n        return fin(round(x, d));\n      }\n      case \"ABS\": {\n        if (count !== 1) return bad;\n        const x = toNum(ev(args[0]));\n        return typeof x === \"string\" ? x : Math.abs(x);\n      }\n      case \"LEN\": case \"UPPER\": case \"LOWER\": {\n        if (count !== 1) return bad;\n        const v = ev(args[0]);\n        if (isErr(v)) return v;\n        const s = toText(v);\n        return name === \"LEN\" ? s.length : name === \"UPPER\" ? s.toUpperCase() : s.toLowerCase();\n      }\n      case \"CONCAT\": {\n        let out = \"\";\n        for (const a of args) {\n          for (const v of a.type === \"range\" ? cells(a) : [ev(a)]) {\n            if (isErr(v)) return v;\n            out += toText(v);\n          }\n        }\n        return out;\n      }\n      default: return \"#NAME?\";\n    }\n  }\n\n  return ev(ast);\n}\nEOF\ncat > test/formula.test.mjs <<'EOF'\nimport test from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { parseFormula, refsOf, evaluate } from \"../src/formula.mjs\";\n\nconst run = (t, cells = {}) => evaluate(parseFormula(t), (a) => cells[a] ?? null);\n\ntest(\"precedence and arithmetic\", () => {\n  assert.equal(run(\"-2^2\"), 4);\n  assert.equal(run(\"2^3^2\"), 64);\n  assert.equal(run('1+\"2\"&\"x\"'), \"3x\");\n  assert.equal(run(\"1/0\"), \"#DIV/0!\");\n  assert.equal(run(\"A1:B2+1\"), \"#VALUE!\");\n  assert.equal(run('\"a\"<TRUE'), true);\n});\n\ntest(\"refs and functions\", () => {\n  assert.deepEqual(refsOf(parseFormula(\"SUM(b2:A1)+$A$1\")), [\"A1\", \"B1\", \"A2\", \"B2\"]);\n  assert.equal(run(\"SUM(A1:A3, 1)\", { A1: 2, A2: \"x\", A3: 4 }), 7);\n  assert.equal(run(\"ROUND(-2.5,0)\"), -3);\n  assert.equal(run(\"IF(FALSE,1/0)\"), false);\n  assert.equal(run(\"FOO(1)\"), \"#NAME?\");\n});\n\ntest(\"syntax errors\", () => {\n  assert.throws(() => parseFormula(\"1+\"), SyntaxError);\n  assert.throws(() => parseFormula(\"(1\"), SyntaxError);\n});\nEOF\nnpm run gen >/dev/null; npm test 2>&1 | tail -15",
+            "npm run gen >/dev/null; npm test 2>&1 | tail -15"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-mwrqvp\\formula\\src\\formula.mjs",
+            "<tmp>\\fanout-bench-fanout-mwrqvp\\formula\\test\\formula.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "recalc-table",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 134,
+        "costUsd": 0.15216110000000002,
+        "inTokens": 79599,
+        "outTokens": 8764,
+        "error": null,
+        "sessionId": "eb1f7655-e5d4-41ed-a24f-c21801f8f096",
+        "turns": 11,
+        "modelSeconds": 96,
+        "tools": {
+          "Read": [
+            "<tmp>\\fanout-bench-fanout-mwrqvp\\recalc-table\\src\\sheet.mjs",
+            "<tmp>\\fanout-bench-fanout-mwrqvp\\recalc-table\\src\\addr.mjs"
+          ],
+          "Bash": [
+            "ls src test; cat package.json",
+            "npm run gen 2>&1 | tail -3; npm test 2>&1 | tail -40",
+            "npm test 2>&1 | grep -B2 -A8 \"^not ok\" | head -50"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-mwrqvp\\recalc-table\\src\\recalc.mjs",
+            "<tmp>\\fanout-bench-fanout-mwrqvp\\recalc-table\\src\\table.mjs",
+            "<tmp>\\fanout-bench-fanout-mwrqvp\\recalc-table\\test\\recalc.test.mjs",
+            "<tmp>\\fanout-bench-fanout-mwrqvp\\recalc-table\\test\\table.test.mjs"
+          ],
+          "Edit": [
+            "<tmp>\\fanout-bench-fanout-mwrqvp\\recalc-table\\src\\recalc.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "numfmt",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 119,
+        "costUsd": 0.1313135,
+        "inTokens": 68820,
+        "outTokens": 8044,
+        "error": null,
+        "sessionId": "55ef3bf6-66ab-437c-9367-90d2f5305cfe",
+        "turns": 6,
+        "modelSeconds": 89,
+        "tools": {
+          "Bash": [
+            "ls src test; cat package.json; head -20 src/index.mjs",
+            "cat > src/numfmt.mjs <<'EOF'\n// Subset of spreadsheet number formats.\n\nfunction splitSections(pattern) {\n  const out = [];\n  let cur = \"\";\n  let quoted = false;\n  for (let i = 0; i < pattern.length; i++) {\n    const c = pattern[i];\n    if (quoted) {\n      cur += c;\n      if (c === '\"') quoted = false;\n    } else if (c === '\"') {\n      quoted = true;\n      cur += c;\n    } else if (c === \"\\\\\") {\n      cur += c + (pattern[i + 1] ?? \"\");\n      i++;\n    } else if (c === \";\") {\n      out.push(cur);\n      cur = \"\";\n    } else cur += c;\n  }\n  out.push(cur);\n  return out;\n}\n\nfunction tokenize(section) {\n  const toks = [];\n  for (let i = 0; i < section.length; i++) {\n    const c = section[i];\n    if (c === '\"') {\n      const end = section.indexOf('\"', i + 1);\n      const stop = end < 0 ? section.length : end;\n      toks.push({ lit: section.slice(i + 1, stop) });\n      i = stop;\n    } else if (c === \"\\\\\") {\n      if (i + 1 < section.length) toks.push({ lit: section[i + 1] });\n      i++;\n    } else if ((c === \"E\" || c === \"e\") && (section[i + 1] === \"+\" || section[i + 1] === \"-\")) {\n      toks.push({ exp: section[i + 1] });\n      i++;\n    } else if (c === \"0\" || c === \"#\" || c === \",\" || c === \".\") {\n      toks.push({ num: c });\n    } else if (c === \"%\") {\n      toks.push({ pct: true });\n    } else toks.push({ lit: c });\n  }\n  return toks;\n}\n\n// Decimal digits of a non-negative number as JS prints it, shifted by `shift` places.\nfunction digitParts(abs, shift) {\n  const s = String(abs);\n  const [mant, e = \"0\"] = s.toLowerCase().split(\"e\");\n  const dot = mant.indexOf(\".\");\n  const digits = mant.replace(\".\", \"\");\n  const p = (dot < 0 ? mant.length : dot) + Number(e) + shift;\n  if (p <= 0) return { int: \"0\", frac: \"0\".repeat(-p) + digits };\n  if (p >= digits.length) return { int: digits + \"0\".repeat(p - digits.length), frac: \"\" };\n  return { int: digits.slice(0, p), frac: digits.slice(p) };\n}\n\nfunction increment(str) {\n  const a = str.split(\"\");\n  let i = a.length - 1;\n  while (i >= 0 && a[i] === \"9\") a[i--] = \"0\";\n  if (i < 0) return \"1\" + a.join(\"\");\n  a[i] = String(Number(a[i]) + 1);\n  return a.join(\"\");\n}\n\n// Round half away from zero to d decimals.\nfunction roundParts({ int, frac }, d) {\n  if (frac.length <= d) return { int, frac: frac.padEnd(d, \"0\") };\n  const up = frac[d] >= \"5\";\n  let all = int + frac.slice(0, d);\n  if (up) all = increment(all);\n  return { int: all.slice(0, all.length - d), frac: all.slice(all.length - d) };\n}\n\nfunction group(s) {\n  return s.replace(/\\B(?=(\\d{3})+$)/g, \",\");\n}\n\nfunction render(toks, abs, negSign) {\n  const hasPct = toks.some((t) => t.pct);\n  const shift = hasPct ? 2 : 0;\n  const expTok = toks.find((t) => t.exp);\n  const nums = toks.filter((t) => t.num).map((t) => t.num);\n  const dotAt = nums.indexOf(\".\");\n  const intPat = dotAt < 0 ? nums : nums.slice(0, dotAt);\n  const fracPat = dotAt < 0 ? [] : nums.slice(dotAt + 1).filter((c) => c !== \",\");\n  const zeros = intPat.filter((c) => c === \"0\").length;\n  const first = intPat.findIndex((c) => c !== \",\");\n  const last = intPat.length - 1 - [...intPat].reverse().findIndex((c) => c !== \",\");\n  const grouped = intPat.slice(first, last + 1).includes(\",\");\n  const d = fracPat.length;\n  const minFrac = fracPat.lastIndexOf(\"0\") + 1;\n\n  let parts = digitParts(abs, shift);\n  let expStr = \"\";\n  let intStr, fracStr;\n  if (expTok) {\n    const digits = (parts.int + parts.frac).replace(/^0+/, \"\");\n    let e = 0;\n    let m;\n    if (digits === \"\") m = { int: \"0\", frac: \"\" };\n    else {\n      e = parts.int.replace(/^0+/, \"\").length - 1;\n      if (parts.int.replace(/^0+/, \"\") === \"\") e = -(parts.frac.length - parts.frac.replace(/^0+/, \"\").length) - 1;\n      m = { int: digits[0], frac: digits.slice(1) };\n    }\n    m = roundParts(m, d);\n    if (m.int.length > 1) {\n      m = { int: \"1\", frac: \"0\".repeat(d) };\n      e++;\n    }\n    intStr = m.int;\n    fracStr = m.frac;\n    const ez = toks.filter((t) => t.num === \"0\" && toks.indexOf(t) > toks.indexOf(expTok)).length;\n    const sign = e < 0 ? \"-\" : expTok.exp === \"+\" ? \"+\" : \"\";\n    expStr = \"E\" + sign + String(Math.abs(e)).padStart(ez, \"0\");\n  } else {\n    const r = roundParts(parts, d);\n    intStr = r.int.replace(/^0+/, \"\");\n    fracStr = r.frac;\n    while (fracStr.length > minFrac && fracStr.endsWith(\"0\")) fracStr = fracStr.slice(0, -1);\n    intStr = intStr.padStart(zeros, \"0\");\n    if (grouped) intStr = group(intStr);\n  }\n  const isZero = !/[1-9]/.test(intStr + fracStr);\n  const numText = intStr + (dotAt >= 0 ? \".\" : \"\") + fracStr + expStr;\n\n  let out = negSign && !isZero ? \"-\" : \"\";\n  let placed = false;\n  let afterExp = false;\n  for (const t of toks) {\n    if (t.exp) {\n      afterExp = true;\n      continue;\n    }\n    if (t.num) {\n      if (afterExp) continue;\n      if (!placed) {\n        out += numText;\n        placed = true;\n      }\n    } else if (t.pct) out += \"%\";\n    else out += t.lit;\n  }\n  return out;\n}\n\nexport function formatNumber(value, pattern) {\n  if (typeof value !== \"number\") {\n    if (value === null || value === undefined) return \"\";\n    if (typeof value === \"boolean\") return value ? \"TRUE\" : \"FALSE\";\n    return String(value);\n  }\n  if (pattern.trim().toLowerCase() === \"general\" || !Number.isFinite(value)) return String(value);\n  const secs = splitSections(pattern);\n  const neg = value < 0;\n  let idx = 0;\n  let sign = neg;\n  if (secs.length >= 2 && neg) {\n    idx = 1;\n    sign = false;\n  } else if (secs.length >= 3 && value === 0) idx = 2;\n  return render(tokenize(secs[idx]), Math.abs(value), sign);\n}\nEOF\ncat > test/numfmt.test.mjs <<'EOF'\nimport test from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { formatNumber as f } from \"../src/numfmt.mjs\";\n\ntest(\"decimals, grouping, percent\", () => {\n  assert.equal(f(1.005, \"0.00\"), \"1.01\");\n  assert.equal(f(0.5, \"#.00\"), \".50\");\n  assert.equal(f(2, \"0.##\"), \"2.\");\n  assert.equal(f(1234567.891, \"#,##0.0\"), \"1,234,567.9\");\n  assert.equal(f(0.256, \"0%\"), \"26%\");\n  assert.equal(f(-0.001, \"0.0\"), \"0.0\");\n});\n\ntest(\"sections and text\", () => {\n  assert.equal(f(-5, \"0;(0)\"), \"(5)\");\n  assert.equal(f(0, \"0;-0;\\\"zero\\\"\"), \"zero\");\n  assert.equal(f(null, \"0\"), \"\");\n  assert.equal(f(true, \"0\"), \"TRUE\");\n});\n\ntest(\"scientific\", () => {\n  assert.equal(f(12345, \"0.00E+00\"), \"1.23E+04\");\n  assert.equal(f(0.00012, \"0.0E-0\"), \"1.2E-4\");\n});\nEOF\nnpm test 2>&1 | tail -20",
+            "npm run gen >/dev/null 2>&1; npm test 2>&1 | tail -25"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-mwrqvp\\numfmt\\src\\numfmt.mjs",
+            "<tmp>\\fanout-bench-fanout-mwrqvp\\numfmt\\test\\numfmt.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "csv-structure",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 126,
+        "costUsd": 0.1387243,
+        "inTokens": 54897,
+        "outTokens": 8273,
+        "error": null,
+        "sessionId": "eb2112f3-2867-4a3a-b4d6-e706b788c252",
+        "turns": 8,
+        "modelSeconds": 96,
+        "tools": {
+          "Bash": [
+            "cat src/sheet.mjs src/addr.mjs; ls src test; cat package.json",
+            "cat > src/structure.mjs <<'EOF'\n// Inserting and deleting rows and columns, rewriting formula references to follow the moved cells.\nimport { parseAddr, toAddr, colName, colIndex } from \"./addr.mjs\";\n\nconst REF = String.raw`\\$?[A-Za-z]+\\$?\\d+`;\nconst RE = new RegExp(String.raw`(?<![A-Za-z0-9_.])(${REF})(?::(${REF}))?(?![A-Za-z0-9_.(])`, \"g\");\n\nconst parts = (s) => {\n  const m = /^(\\$?)([A-Za-z]+)(\\$?)(\\d+)$/.exec(s);\n  if (m[2].length > 3 || m[4] === \"0\" || m[4][0] === \"0\") return null;\n  return { cd: m[1], col: colIndex(m[2]), rd: m[3], row: Number(m[4]) - 1 };\n};\nconst fmt = (p) => `${p.cd}${colName(p.col)}${p.rd}${p.row + 1}`;\n\n// op: { axis: \"row\" | \"col\", at: 0-based index, n, del }\nconst point = (v, { at, n, del }) => {\n  if (!del) return v >= at ? v + n : v;\n  if (v < at) return v;\n  return v < at + n ? null : v - n;\n};\nconst span = (lo, hi, { at, n, del }) => {\n  if (!del) return [lo >= at ? lo + n : lo, hi >= at ? hi + n : hi];\n  if (lo >= at && hi < at + n) return null;\n  const f = (v, end) => (v < at ? v : v >= at + n ? v - n : end ? at - 1 : at);\n  return [f(lo, false), f(hi, true)];\n};\n\nfunction rewrite(text, op) {\n  const k = op.axis;\n  const fix = (s) => {\n    let out = \"\";\n    for (const seg of s.split(/(\"(?:[^\"]|\"\")*\"?)/)) {\n      if (seg.startsWith('\"')) { out += seg; continue; }\n      out += seg.replace(RE, (all, a, b) => {\n        const p = parseParts(a), q = b && parseParts(b);\n        if (!p || (b && !q)) return all;\n        if (!b) {\n          const v = point(p[k], op);\n          return v == null ? \"#REF!\" : fmt({ ...p, [k]: v });\n        }\n        const flip = p[k] > q[k];\n        const r = span(flip ? q[k] : p[k], flip ? p[k] : q[k], op);\n        if (!r) return \"#REF!\";\n        return `${fmt({ ...p, [k]: flip ? r[1] : r[0] })}:${fmt({ ...q, [k]: flip ? r[0] : r[1] })}`;\n      });\n    }\n    return out;\n  };\n  return fix(text);\n}\nconst parseParts = (s) => parts(s);\n\nfunction apply(sheet, axis, at, n, del) {\n  const op = { axis, at, n, del };\n  const next = new Map();\n  for (const [addr, raw] of sheet.cells) {\n    const a = parseAddr(addr);\n    const v = point(a[axis], op);\n    if (v == null) continue;\n    const pos = { col: a.col, row: a.row, [axis]: v };\n    next.set(toAddr(pos.col, pos.row), raw.startsWith(\"=\") ? rewrite(raw, op) : raw);\n  }\n  sheet.cells = next;\n}\n\nconst rowAt = (at) => {\n  if (!Number.isInteger(at) || at < 1) throw new Error(`bad row: ${at}`);\n  return at - 1;\n};\nconst colAt = (at) => {\n  if (!/^[A-Za-z]{1,3}$/.test(at)) throw new Error(`bad column: ${at}`);\n  return colIndex(at);\n};\n\nexport const insertRows = (sheet, at, count = 1) => apply(sheet, \"row\", rowAt(at), count, false);\nexport const deleteRows = (sheet, at, count = 1) => apply(sheet, \"row\", rowAt(at), count, true);\nexport const insertCols = (sheet, at, count = 1) => apply(sheet, \"col\", colAt(at), count, false);\nexport const deleteCols = (sheet, at, count = 1) => apply(sheet, \"col\", colAt(at), count, true);\nEOF\ncat > src/csv.mjs <<'EOF'\n// CSV import and export.\nimport { createSheet, setCell, cellAddrs } from \"./sheet.mjs\";\nimport { parseAddr, toAddr } from \"./addr.mjs\";\n\nconst text = (v) => (v == null ? \"\" : typeof v === \"boolean\" ? (v ? \"TRUE\" : \"FALSE\") : String(v));\nconst quote = (s) => (/[,\"\\n\\r]/.test(s) || s.startsWith(\" \") || s.endsWith(\" \") ? `\"${s.replaceAll('\"', '\"\"')}\"` : s);\n\nexport function toCSV(sheet, values = null) {\n  const addrs = cellAddrs(sheet);\n  if (!addrs.length) return \"\";\n  let rows = 0, cols = 0;\n  for (const a of addrs) { const p = parseAddr(a); rows = Math.max(rows, p.row + 1); cols = Math.max(cols, p.col + 1); }\n  let out = \"\";\n  for (let r = 0; r < rows; r++) {\n    const fields = [];\n    for (let c = 0; c < cols; c++) {\n      const a = toAddr(c, r);\n      fields.push(quote(values ? text(values.get(a)) : sheet.cells.get(a) ?? \"\"));\n    }\n    out += fields.join(\",\") + \"\\n\";\n  }\n  return out;\n}\n\nfunction detect(src) {\n  const counts = { \",\": 0, \";\": 0, \"\\t\": 0 };\n  let inQ = false;\n  for (const ch of src) {\n    if (ch === '\"') inQ = !inQ;\n    else if (!inQ) { if (ch === \"\\n\" || ch === \"\\r\") break; if (ch in counts) counts[ch]++; }\n  }\n  let best = \",\";\n  for (const d of [\";\", \"\\t\"]) if (counts[d] > counts[best]) best = d;\n  return best;\n}\n\nexport function fromCSV(src, options = {}) {\n  const delim = options.delimiter ?? detect(src);\n  const sheet = createSheet();\n  let row = 0, col = 0, field = \"\", line = 1, has = false;\n  const endField = () => {\n    let v = field;\n    if (v.startsWith(\"=\") && !options.formulas) v = \"'\" + v;\n    if (v !== \"\") setCell(sheet, toAddr(col, row), v);\n    col++; field = \"\"; has = false;\n  };\n  const endRow = () => { endField(); row++; col = 0; };\n  for (let i = 0; i < src.length; i++) {\n    const ch = src[i];\n    if (ch === '\"' && field === \"\" && !has) {\n      const start = line;\n      has = true;\n      for (i++; ; i++) {\n        if (i >= src.length) throw new Error(`unclosed quote at line ${start}`);\n        const c = src[i];\n        if (c === '\"') { if (src[i + 1] === '\"') { field += '\"'; i++; } else break; }\n        else { if (c === \"\\n\") line++; field += c; }\n      }\n    } else if (ch === delim) { endField(); has = true; }\n    else if (ch === \"\\n\" || ch === \"\\r\") {\n      if (ch === \"\\r\" && src[i + 1] === \"\\n\") i++;\n      line++; endRow(); has = false;\n    } else { field += ch; has = true; }\n  }\n  if (has || field !== \"\" || col > 0) endRow();\n  return sheet;\n}\nEOF\n",
+            "npm run gen 2>&1 | tail -3; npm test 2>&1 | tail -30"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-mwrqvp\\csv-structure\\src\\structure.mjs",
+            "<tmp>\\fanout-bench-fanout-mwrqvp\\csv-structure\\src\\csv.mjs",
+            "<tmp>\\fanout-bench-fanout-mwrqvp\\csv-structure\\test\\csv.test.mjs",
+            "<tmp>\\fanout-bench-fanout-mwrqvp\\csv-structure\\test\\structure.test.mjs"
+          ]
+        }
+      }
+    ],
+    "conflicts": [],
+    "brokeAfter": [],
+    "repairCommits": 0,
+    "rehearsals": [
+      "CHECK OK numfmt\nCHECK OK csv-structure\nAll branches merge and pass together."
+    ],
+    "blockedFiles": [
+      "recalc-table: src/index.mjs",
+      "numfmt: src/index.mjs",
+      "csv-structure: src/index.mjs"
+    ],
+    "flags": [],
+    "plan": "test: npm test\nregen: src/index.mjs via npm run gen\n\n## formula\nowns: src/formula.mjs, test/formula.test.mjs\ntask: Add `src/formula.mjs`\ncheck: node --test test/formula.test.mjs\nexposes: src/formula.mjs\n\n## recalc-table\nowns: src/recalc.mjs, test/recalc.test.mjs, src/table.mjs, test/table.test.mjs\ntask: Add `src/recalc.mjs`, built on `parseFormula`, `refsOf` and `evaluate` from `src/formula.mjs`; Add `src/table.mjs`\ncheck: node --test test/recalc.test.mjs test/table.test.mjs\nuses: src/formula.mjs\n\n## numfmt\nowns: src/numfmt.mjs, test/numfmt.test.mjs\ntask: Add `src/numfmt.mjs` with `formatNumber(value, pattern)`, a subset of spreadsheet number formats\ncheck: node --test test/numfmt.test.mjs\n\n## csv-structure\nowns: src/csv.mjs, test/csv.test.mjs, src/structure.mjs, test/structure.test.mjs\ntask: Add `src/csv.mjs`; Add `src/structure.mjs` with `insertRows(sheet, at, count = 1)`, `deleteRows(sheet, at, count = 1)`, `insertCols(sheet, at, count = 1)` and `deleteCols(sheet, a\ncheck: node --test test/csv.test.mjs test/structure.test.mjs\n",
+    "finalTestsPass": true,
+    "seconds": 196,
+    "acceptance": {
+      "pass": 34,
+      "total": 34,
+      "failed": []
+    }
+  }
+]

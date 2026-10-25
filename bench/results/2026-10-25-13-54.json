@@ -1,0 +1,194 @@
+[
+  {
+    "condition": "fanout",
+    "agents": [
+      {
+        "role": "coordinator",
+        "lane": "-",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 31,
+        "costUsd": 0.0482905,
+        "inTokens": 53299,
+        "outTokens": 790,
+        "error": null,
+        "sessionId": "f9ce9df1-d73f-4fd0-b9c0-e3e14297f48c",
+        "turns": 5,
+        "modelSeconds": 10,
+        "tools": {
+          "Bash": [
+            "cd <tmp>/fanout-bench-fanout-da2d93/repo && ls . src test; cat package.json; head -30 src/index.mjs; cat src/addr.mjs | grep -n export",
+            "cd <tmp>/fanout-bench-fanout-da2d93/repo && cat > src/formula.mjs <<'EOF'\nexport function parseFormula(text) {\n  throw new Error(\"not implemented\");\n}\n\nexport function refsOf(ast) {\n  throw new Error(\"not implemented\");\n}\n\nexport function evaluate(ast, lookup) {\n  throw new Error(\"not implemented\");\n}\nEOF\nnpm run gen >/dev/null; cat src/index.mjs",
+            "cd <tmp>/fanout-bench-fanout-da2d93/repo && npm run gen >/dev/null; cat src/index.mjs"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-da2d93\\repo\\src\\formula.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "formula",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 211,
+        "costUsd": 0.026559810000000003,
+        "inTokens": 168633,
+        "outTokens": 32812,
+        "error": null,
+        "sessionId": "03a9369d-1e82-4241-a12d-629d776a1a6d",
+        "turns": 6,
+        "modelSeconds": 164,
+        "tools": {
+          "Bash": [
+            "cat package.json; ls src test; cat src/addr.mjs; head -50 src/index.mjs; ls test; cat test/*.mjs | head -40",
+            "cat src/formula.mjs; git status --short; git log --oneline -1 -- src/formula.mjs",
+            "node --test test/formula.test.mjs 2>&1 | tail -40; npm test 2>&1 | tail -15"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-da2d93\\formula\\src\\formula.mjs",
+            "<tmp>\\fanout-bench-fanout-da2d93\\formula\\test\\formula.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "recalc-table",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 250,
+        "costUsd": 0.03378449000000001,
+        "inTokens": 1006032,
+        "outTokens": 30814,
+        "error": null,
+        "sessionId": "27502661-23ba-49f6-8400-e205e762aa26",
+        "turns": 27,
+        "modelSeconds": 179,
+        "tools": {
+          "Bash": [
+            "cd <tmp>/fanout-bench-fanout-da2d93/recalc-table && ls -R src test && cat package.json && cat src/sheet.mjs src/addr.mjs && cat src/index.mjs && ls test && head -30 test/*.mjs | head -80",
+            "cd <tmp>/fanout-bench-fanout-da2d93/recalc-table && cat > test/recalc.test.mjs <<'EOF'\nimport { test } from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { createSheet, setCell } from \"../src/sheet.mjs\";\nimport { valueOf, computeAll, dependents } from \"../src/recalc.mjs\";\n\ntest(\"valueOf reads raw text\", () => {\n  assert.equal(valueOf(\"\"), null);\n  assert.equal(valueOf(\" 4.5 \"), 4.5);\n  assert.equal(valueOf(\"tRuE\"), true);\n  assert.equal(valueOf(\"'=x\"), \"=x\");\n  assert.equal(valueOf(\"Infinity\"), \"Infinity\");\n});\n\ntest(\"computeAll handles long chains, cycles and bad formulas\", () => {\n  const s = createSheet();\n  setCell(s, \"A1\", \"1\");\n  for (let r = 2; r <= 10000; r++) setCell(s, `A${r}`, `=A${r - 1}+1`);\n  setCell(s, \"C1\", \"=C1\");\n  setCell(s, \"C2\", \"=C1+1\");\n  setCell(s, \"D1\", \"=(\");\n  const v = computeAll(s);\n  assert.equal(v.get(\"A10000\"), 10000);\n  assert.equal(v.get(\"C1\"), \"#CYCLE!\");\n  assert.equal(v.get(\"C2\"), \"#CYCLE!\");\n  assert.equal(v.get(\"D1\"), \"#ERROR!\");\n});\n\ntest(\"dependents lists readers in dependency order, by row then column\", () => {\n  const s = createSheet();\n  setCell(s, \"A1\", \"1\");\n  setCell(s, \"B1\", \"=A1\");\n  setCell(s, \"A2\", \"=A1*2\");\n  setCell(s, \"C3\", \"=B1+A2\");\n  setCell(s, \"D1\", \"=A1\");\n  assert.deepEqual(dependents(s, \"A1\"), [\"A2\", \"B1\", \"D1\", \"C3\"]);\n});\nEOF\ncat > test/table.test.mjs <<'EOF'\nimport { test } from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { createSheet, setCell, getCell } from \"../src/sheet.mjs\";\nimport { computeAll } from \"../src/recalc.mjs\";\nimport { sortRange, pivot } from \"../src/table.mjs\";\n\ntest(\"sortRange sorts by keys, keeps the header and moves only range columns\", () => {\n  const s = createSheet();\n  const data = [[\"name\", \"qty\", \"x\"], [\"b\", \"2\", \"keep1\"], [\"A\", \"\", \"keep2\"], [\"c\", \"10\", \"keep3\"], [\"B\", \"2\", \"keep4\"]];\n  data.forEach((row, r) => row.forEach((raw, c) => setCell(s, `${\"ABC\"[c]}${r + 1}`, raw)));\n  sortRange(s, \"A1:B5\", [{ col: \"B\", desc: true }, { col: \"A\" }], { header: true });\n  assert.deepEqual(\n    [2, 3, 4, 5].map((r) => [getCell(s, `A${r}`), getCell(s, `B${r}`), getCell(s, `C${r}`)]),\n    [[\"c\", \"10\", \"keep3\"], [\"b\", \"2\", \"keep1\"], [\"B\", \"2\", \"keep4\"], [\"A\", \"\", \"keep2\"]],\n  );\n  assert.equal(getCell(s, \"A1\"), \"name\");\n});\n\ntest(\"pivot groups and aggregates with blank group last\", () => {\n  const s = createSheet();\n  const rows = [[\"cat\", \"amt\"], [\"x\", \"1\"], [\"y\", \"5\"], [\"X\", \"2\"], [\"\", \"7\"], [\"x\", \"tx\"]];\n  rows.forEach((row, r) => row.forEach((raw, c) => setCell(s, `${\"AB\"[c]}${r + 1}`, raw)));\n  const values = computeAll(s);\n  assert.deepEqual(pivot(values, \"A1:B6\", { rows: \"cat\", value: \"amt\", agg: \"sum\" }), [\n    { key: \"X\", value: 2 }, { key: \"x\", value: 1 }, { key: \"y\", value: 5 }, { key: \"(blank)\", value: 7 },\n  ].slice(0, 0).concat([{ key: \"x\", value: 1 }, { key: \"X\", value: 2 }, { key: \"y\", value: 5 }, { key: \"(blank)\", value: 7 }]));\n  assert.throws(() => pivot(values, \"A1:B6\", { rows: \"nope\", value: \"amt\", agg: \"sum\" }), /nope/);\n});\nEOF\nnode --test test/recalc.test.mjs test/table.test.mjs 2>&1 | tail -30",
+            "S=$(cygpath -w \"$LOCALAPPDATA\" 2>/dev/null); SP=\"<tmp>/claude/<tmp>-fanout-bench-fanout-da2d93-recalc-table/27502661-23ba-49f6-8400-e205e762aa26/scratchpad\"; mkdir -p \"$SP/mock\" && cd \"$SP/mock\" && rm -rf src test && cp -r \"<tmp>/fanout-bench-fanout-da2d93/recalc-table/src\" \"<tmp>/fanout-bench-fanout-da2d93/recalc-table/test\" . && cat > src/formula.mjs <<'EOF'\n// Minimal mock for local testing only: numbers, refs, + - * and parentheses.\nconst tokenize = (t) => {\n  const out = [];\n  const re = /\\s*(\\$?[A-Za-z]+\\$?\\d+|\\d+(\\.\\d+)?|[-+*()])/y;\n  let m; let pos = 0;\n  while (pos < t.length) {\n    re.lastIndex = pos;\n    m = re.exec(t);\n    if (!m) { if (/^\\s*$/.test(t.slice(pos))) break; throw new Error(\"bad\"); }\n    out.push(m[1]); pos = re.lastIndex;\n  }\n  return out;\n};\nexport function parseFormula(text) {\n  const toks = tokenize(text); let i = 0;\n  const peek = () => toks[i];\n  const expr = () => { let n = term(); while (peek() === \"+\" || peek() === \"-\") { const op = toks[i++]; n = { op, a: n, b: term() }; } return n; };\n  const term = () => { let n = factor(); while (peek() === \"*\") { i++; n = { op: \"*\", a: n, b: factor() }; } return n; };\n  const factor = () => {\n    const t = toks[i++];\n    if (t === undefined) throw new Error(\"eof\");\n    if (t === \"(\") { const n = expr(); if (toks[i++] !== \")\") throw new Error(\"paren\"); return n; }\n    if (/^\\d/.test(t)) return { num: Number(t) };\n    if (/^\\$?[A-Za-z]/.test(t)) return { ref: t.replace(/\\$/g, \"\").toUpperCase() };\n    throw new Error(\"unexpected \" + t);\n  };\n  const ast = expr();\n  if (i !== toks.length) throw new Error(\"trailing\");\n  return ast;\n}\nexport function refsOf(ast) {\n  if (ast.ref) return [ast.ref];\n  if (ast.num !== undefined) return [];\n  return [...refsOf(ast.a), ...refsOf(ast.b)];\n}\nexport function evaluate(ast, lookup) {\n  if (ast.num !== undefined) return ast.num;\n  if (ast.ref) { const v = lookup(ast.ref); if (typeof v === \"string\" && v.startsWith(\"#\")) return v; return v ?? 0; }\n  const a = evaluate(ast.a, lookup), b = evaluate(ast.b, lookup);\n  if (typeof a === \"string\") return a;\n  if (typeof b === \"string\") return b;\n  return ast.op === \"+\" ? a + b : ast.op === \"-\" ? a - b : a * b;\n}\nEOF\nnode --test test/recalc.test.mjs test/table.test.mjs 2>&1 | tail -60",
+            "SP=\"<tmp>/claude/<tmp>-fanout-bench-fanout-da2d93-recalc-table/27502661-23ba-49f6-8400-e205e762aa26/scratchpad\"; R=\"<tmp>/fanout-bench-fanout-da2d93/recalc-table\"; cd \"$SP/mock\" && rm -rf src test && cp -r \"$R/src\" \"$R/test\" . && cp \"$SP/mock/../mock/src/formula.mjs\" /dev/null 2>/dev/null; ls src; echo ---; node --test test/recalc.test.mjs test/table.test.mjs 2>&1 | tail -60",
+            "SP=\"<tmp>/claude/<tmp>-fanout-bench-fanout-da2d93-recalc-table/27502661-23ba-49f6-8400-e205e762aa26/scratchpad\"; R=\"<tmp>/fanout-bench-fanout-da2d93/recalc-table\"; mkdir -p \"$SP/run2\" && cp -r \"$R/src\" \"$R/test\" \"$SP/run2/\" && cp \"$SP/mock/src/formula.mjs\" \"$SP/run2/src/formula.mjs\" && echo '{\"type\":\"module\"}' > \"$SP/run2/package.json\" && cd \"$SP/run2\" && node --test test/recalc.test.mjs test/table.test.mjs 2>&1 | tail -60",
+            "cp -r \"<tmp>/fanout-bench-fanout-da2d93/recalc-table/src\" \"<tmp>/claude/<tmp>-fanout-bench-fanout-da2d93-recalc-table/27502661-23ba-49f6-8400-e205e762aa26/scratchpad/mock/\" && echo ok",
+            "cd \"<tmp>/fanout-bench-fanout-da2d93/recalc-table\" && node --import \"<tmp>/claude/<tmp>-fanout-bench-fanout-da2d93-recalc-table/27502661-23ba-49f6-8400-e205e762aa26/scratchpad/mock/hooks.mjs\" --test test/recalc.test.mjs test/table.test.mjs 2>&1 | tail -80",
+            "cd \"<tmp>/fanout-bench-fanout-da2d93/recalc-table\" && node --import \"<tmp>/claude/<tmp>-fanout-bench-fanout-da2d93-recalc-table/27502661-23ba-49f6-8400-e205e762aa26/scratchpad/mock/hooks.mjs\" --test test/recalc.test.mjs test/table.test.mjs 2>&1 | tail -80",
+            "cd \"<tmp>/fanout-bench-fanout-da2d93/recalc-table\" && node --import \"file:///<tmp>/claude/<tmp>-fanout-bench-fanout-da2d93-recalc-table/27502661-23ba-49f6-8400-e205e762aa26/scratchpad/mock/hooks.mjs\" --test test/recalc.test.mjs test/table.test.mjs 2>&1 | tail -80",
+            "cd \"<tmp>/fanout-bench-fanout-da2d93/recalc-table\" && node --import \"file:///<tmp>/claude/<tmp>-fanout-bench-fanout-da2d93-recalc-table/27502661-23ba-49f6-8400-e205e762aa26/scratchpad/mock/hooks.mjs\" --test test/recalc.test.mjs test/table.test.mjs 2>&1 | grep -E \"^(not ok|ok|# (pass|fail))|error:|expected|actual\" | head -40; cd \"<tmp>/fanout-bench-fanout-da2d93/recalc-table\" && node --import \"file:///<tmp>/claude/<tmp>-fanout-bench-fanout-da2d93-recalc-table/27502661-23ba-49f6-8400-e205e762aa26/scratchpad/mock/hooks.mjs\" --test test/recalc.test.mjs 2>&1 | grep -B2 -A25 \"not ok\" | head -60",
+            "cd \"<tmp>/fanout-bench-fanout-da2d93/recalc-table\" && node --import \"file:///<tmp>/claude/<tmp>-fanout-bench-fanout-da2d93-recalc-table/27502661-23ba-49f6-8400-e205e762aa26/scratchpad/mock/hooks.mjs\" --test test/recalc.test.mjs test/table.test.mjs 2>&1 | grep -E \"^(not ok|ok|# (pass|fail))\"",
+            "cd \"<tmp>/fanout-bench-fanout-da2d93/recalc-table\" && npm run gen 2>&1 | tail -5 && npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" ; node --test test/recalc.test.mjs test/table.test.mjs 2>&1 | grep -E \"^# (pass|fail)|not implemented\" | head -5",
+            "cd \"<tmp>/fanout-bench-fanout-da2d93/recalc-table\" && git status --short && git diff --stat",
+            "cd \"<tmp>/fanout-bench-fanout-da2d93/recalc-table\" && git checkout -- src/index.mjs && git status --short"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-da2d93\\recalc-table\\src\\recalc.mjs",
+            "<tmp>\\fanout-bench-fanout-da2d93\\recalc-table\\src\\table.mjs",
+            "<tmp>\\fanout-bench-fanout-da2d93\\recalc-table\\test\\recalc.test.mjs",
+            "<tmp>\\fanout-bench-fanout-da2d93\\recalc-table\\test\\table.test.mjs",
+            "<tmp>\\claude\\<tmp>-fanout-bench-fanout-da2d93-recalc-table\\27502661-23ba-49f6-8400-e205e762aa26\\scratchpad\\mock\\src\\formula.mjs",
+            "<tmp>\\claude\\<tmp>-fanout-bench-fanout-da2d93-recalc-table\\27502661-23ba-49f6-8400-e205e762aa26\\scratchpad\\mock\\hooks.mjs",
+            "<tmp>\\claude\\<tmp>-fanout-bench-fanout-da2d93-recalc-table\\27502661-23ba-49f6-8400-e205e762aa26\\scratchpad\\mock\\hooks.mjs"
+          ],
+          "Edit": [
+            "<tmp>\\claude\\<tmp>-fanout-bench-fanout-da2d93-recalc-table\\27502661-23ba-49f6-8400-e205e762aa26\\scratchpad\\mock\\hooks.mjs",
+            "<tmp>\\fanout-bench-fanout-da2d93\\recalc-table\\test\\table.test.mjs",
+            "<tmp>\\fanout-bench-fanout-da2d93\\recalc-table\\src\\recalc.mjs",
+            "<tmp>\\fanout-bench-fanout-da2d93\\recalc-table\\src\\recalc.mjs",
+            "<tmp>\\fanout-bench-fanout-da2d93\\recalc-table\\test\\recalc.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "numfmt",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 138,
+        "costUsd": 0.016133540000000002,
+        "inTokens": 218488,
+        "outTokens": 19023,
+        "error": null,
+        "sessionId": "8ebc35fa-ac70-4f5e-8cb4-55bf60ac0a85",
+        "turns": 10,
+        "modelSeconds": 91,
+        "tools": {
+          "Bash": [
+            "cd \"<tmp>/fanout-bench-fanout-da2d93/numfmt\" && cat package.json && ls src test && head -30 src/addr.mjs && ls test | head && head -20 \"test/$(ls test | head -1)\"",
+            "cd \"<tmp>/fanout-bench-fanout-da2d93/numfmt\" && cat package.json && ls src test",
+            "cd \"<tmp>/fanout-bench-fanout-da2d93/numfmt\" && node --test test/numfmt.test.mjs 2>&1 | tail -40; echo \"---\"; npm test 2>&1 | tail -15",
+            "cd \"<tmp>/fanout-bench-fanout-da2d93/numfmt\" && node --test test/numfmt.test.mjs 2>&1 | grep -E \"^# (pass|fail)|not ok|actual|expected\" ; echo \"---\"; npm test 2>&1 | grep -E \"^# (tests|pass|fail)\""
+          ],
+          "Read": [
+            "<tmp>/fanout-bench-fanout-da2d93/numfmt/test/sheet.test.mjs"
+          ],
+          "Write": [
+            "<tmp>/fanout-bench-fanout-da2d93/numfmt/src/numfmt.mjs",
+            "<tmp>/fanout-bench-fanout-da2d93/numfmt/test/numfmt.test.mjs"
+          ],
+          "Edit": [
+            "<tmp>/fanout-bench-fanout-da2d93/numfmt/test/numfmt.test.mjs",
+            "<tmp>/fanout-bench-fanout-da2d93/numfmt/src/numfmt.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "csv-structure",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 200,
+        "costUsd": 0.02259433,
+        "inTokens": 386747,
+        "outTokens": 25438,
+        "error": null,
+        "sessionId": "4bc6d9c2-06a0-46a5-a353-9f172f746bda",
+        "turns": 13,
+        "modelSeconds": 141,
+        "tools": {
+          "Bash": [
+            "cd <tmp>/fanout-bench-fanout-da2d93/csv-structure && ls -R src test && cat package.json && cat src/sheet.mjs src/addr.mjs src/index.mjs && ls test && head -30 test/*.mjs | head -80",
+            "cd <tmp>/fanout-bench-fanout-da2d93/csv-structure && ls scripts && cat scripts/gen-index.mjs | head -30 && git status --short && npm test 2>&1 | tail -5",
+            "cd <tmp>/fanout-bench-fanout-da2d93/csv-structure && npm run gen >/dev/null && node --test test/csv.test.mjs test/structure.test.mjs 2>&1 | tail -60; echo ---; npm test 2>&1 | tail -12; echo ---; git status --short"
+          ],
+          "Write": [
+            "<tmp>/fanout-bench-fanout-da2d93/csv-structure/src/csv.mjs",
+            "<tmp>/fanout-bench-fanout-da2d93/csv-structure/src/structure.mjs",
+            "<tmp>/fanout-bench-fanout-da2d93/csv-structure/test/csv.test.mjs",
+            "<tmp>/fanout-bench-fanout-da2d93/csv-structure/test/structure.test.mjs",
+            "<tmp>/fanout-bench-fanout-da2d93/csv-structure/test/structure.test.mjs"
+          ],
+          "Edit": [
+            "<tmp>/fanout-bench-fanout-da2d93/csv-structure/src/structure.mjs",
+            "<tmp>/fanout-bench-fanout-da2d93/csv-structure/src/structure.mjs",
+            "<tmp>/fanout-bench-fanout-da2d93/csv-structure/test/structure.test.mjs"
+          ],
+          "Read": [
+            "<tmp>/fanout-bench-fanout-da2d93/csv-structure/test/structure.test.mjs"
+          ]
+        }
+      }
+    ],
+    "conflicts": [],
+    "brokeAfter": [],
+    "repairCommits": 0,
+    "rehearsals": [
+      "CHECK OK numfmt\nCHECK OK csv-structure\nAll branches merge and pass together."
+    ],
+    "blockedFiles": [
+      "recalc-table: src/index.mjs",
+      "csv-structure: src/index.mjs"
+    ],
+    "flags": [],
+    "plan": "test: npm test\nregen: src/index.mjs via npm run gen\n\n## formula\nowns: src/formula.mjs, test/formula.test.mjs\ntask: Add `src/formula.mjs`\ncheck: node --test test/formula.test.mjs\nexposes: src/formula.mjs\n\n## recalc-table\nowns: src/recalc.mjs, test/recalc.test.mjs, src/table.mjs, test/table.test.mjs\ntask: Add `src/recalc.mjs`, built on `parseFormula`, `refsOf` and `evaluate` from `src/formula.mjs`; Add `src/table.mjs`\ncheck: node --test test/recalc.test.mjs test/table.test.mjs\nuses: src/formula.mjs\n\n## numfmt\nowns: src/numfmt.mjs, test/numfmt.test.mjs\ntask: Add `src/numfmt.mjs` with `formatNumber(value, pattern)`, a subset of spreadsheet number formats\ncheck: node --test test/numfmt.test.mjs\n\n## csv-structure\nowns: src/csv.mjs, test/csv.test.mjs, src/structure.mjs, test/structure.test.mjs\ntask: Add `src/csv.mjs`; Add `src/structure.mjs` with `insertRows(sheet, at, count = 1)`, `deleteRows(sheet, at, count = 1)`, `insertCols(sheet, at, count = 1)` and `deleteCols(sheet, a\ncheck: node --test test/csv.test.mjs test/structure.test.mjs\n",
+    "finalTestsPass": true,
+    "seconds": 341,
+    "acceptance": {
+      "pass": 33,
+      "total": 34,
+      "failed": [
+        "formula: references, coercion and errors"
+      ]
+    }
+  }
+]

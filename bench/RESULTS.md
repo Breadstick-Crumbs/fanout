@@ -16,6 +16,16 @@ Six-feature [library](library/) task, scored on 21 hidden tests no agent sees:
 - **One agent is still fastest at this size.** Parallel pays off when each part takes several minutes.
 - **Early signals, not conclusions:** Haiku sessions matching Sonnet, and Opus planning adding cost without changing results, rest on one or two runs. On a vague goal (planner picks the split), a Sonnet planner also matched Opus at half the planning cost ([below](#vague-goal-opus-vs-sonnet-planner-v016)).
 
+Six-module [sheet](sheet/) task (minutes per module), scored on 34 hidden tests, v0.21 defaults (plan drafted from the goal's sections, at most 4 sessions, short tests):
+
+| Setup | Wall time (median, range) | Agent cost | Hidden tests | Runs |
+|---|---|---|---|---|
+| One agent, Sonnet | 5m 44s (4m 05s – 6m 44s) | $0.58 – $0.71 | 33–34/34 | 3 |
+| fanout, Sonnet sessions | 3m 59s (3m 16s – 4m 40s) | $0.68 – $0.74 | 33–34/34 | 3 |
+| fanout, Haiku sessions | 5m 07s (5m 05s – 5m 41s) | $0.15 – $0.16 | 32–33/34 | 3 |
+
+- **On the large task fanout is now faster than one agent, at about 15% more cost** (medians). The ranges overlap, so it's a median result over three runs each, not a guarantee per run ([details](#repeats-with-the-new-defaults-v021)).
+
 The sections below are the history, in the order things were measured. Numbers from before v0.13's overhead fixes are slower than today's.
 
 ## Small task: four agents
@@ -266,6 +276,43 @@ The planner spent its minute reading the code (about 5s), deciding the split (10
 - **On the sheet task the review gave back most of the time:** 76s, close to planning from scratch, though at about two-thirds of the cost. The review prompt asks it to look through the code for hidden dependencies, and it did.
 - **The 7m 21s sheet run is mostly a fix round, not the review:** recalc+table broke once merged with formula and took 165s to fix, as in the earlier vague-goal run. recalc builds against formula's stub, so its own tests can't catch a mismatch with the real formula; that is the next thing to look at.
 - **One agent varies a lot between runs:** 4m 05s and $0.58 earlier, 6m 44s and $0.71 today, both scoring full or nearly full marks. Single runs of any setup are signals, not results.
+
+### Repeats with the new defaults (v0.21)
+
+Two changes since v0.20, both scripted steps rather than extra agent work:
+- **A drafted plan is reviewed only where it needs it.** The draft flags names a session uses from a file another session owns, and the agent checks just those.
+- **A broken session fixes against the real code.** It gets the branches merged ahead of it merged into its own branch, plus the failing tests instead of the last 20 lines of output.
+
+Same day, Sonnet planner, short tests, `--draft`:
+
+| Run | Planning | Wall time | Cost | Hidden tests | Fix rounds |
+|---|---|---|---|---|---|
+| sheet, Sonnet sessions ([13:39](results/2026-10-25-13-39.md)) | 22s | 3m 16s | $0.68 | 34/34 | 0 |
+| sheet, Sonnet sessions ([13:43](results/2026-10-25-13-43.md)) | 24s | 3m 59s | $0.74 | 33/34 | 0 |
+| sheet, Haiku sessions ([13:48](results/2026-10-25-13-48.md)) | 38s | 5m 07s | $0.15 | 32/34 | 0 |
+| sheet, Haiku sessions ([13:54](results/2026-10-25-13-54.md)) | 31s | 5m 41s | $0.15 | 33/34 | 0 |
+| sheet, one Sonnet agent ([13:59](results/2026-10-25-13-59.md)) | - | 5m 44s | $0.62 | 34/34 | - |
+| library, Sonnet sessions ([14:04](results/2026-10-25-14-04.md)) | 42s | 4m 06s | $0.43 | 21/21 | 0 |
+
+- **Planning on the sheet task is back to about 25s** (from 76s with the full review). The draft flagged nothing there, so the agent only wrote the formula contract.
+- **The flags caught the library task's hidden dependency.** They named fines → `createStore` (and two plain calls), and the agent added `payments` to `createStore` on main before the sessions started, the same shared change the full review made. All 21 hidden tests passed with no fix round, but planning took 42s, about as long as the full review (41s), since this agent had real work to do.
+- **One agent on the sheet task, three runs:** 4m 05s / $0.58 / 33 of 34; 6m 44s / $0.71 / 34; 5m 44s / $0.62 / 34. Median 5m 44s and $0.62.
+- **fanout with Sonnet sessions, drafted plan, three runs** (with 11:39, the same setup bar the flags): 3m 16s / $0.68 / 34; 3m 59s / $0.74 / 33; 4m 40s / $0.72 / 34. Median 3m 59s and $0.72.
+- **So on this task fanout is now faster than one agent, at slightly higher cost:** each fanout run beat the median one-agent run, and the median is about 1.4× faster for about 15% more. The ranges overlap at the edges (one agent's best run, 4m 05s, beat fanout's slowest, 4m 40s), so this holds for the median, not every run.
+- **Haiku sessions with a drafted plan cost a quarter as much but lose hidden tests:** 32, 33 and 33 of 34 over three runs ($0.15–0.16), against 34/34 for Haiku with the hand-picked three-session split. The cheap setup is good for cost, not yet for a full score.
+- **No run broke after merging,** so these runs don't measure the new fix step. The two saved breaks were replayed instead (below).
+
+### Replaying the two fix rounds
+
+The two runs where recalc+table broke (11:09 and 12:04) still had their branches on disk. Each was replayed on the new code from the same state: the recalc+table branch reset to its commit before the fix, rehearsed against main as it was before merging, then fanout's fix step. That step merges formula's branch into recalc+table and gives a fresh Sonnet agent the brief and the failing test. Same bug, same break, one replay each:
+
+| Break | Before: fix round | After: fix round | Shell commands | Rehearse after |
+|---|---|---|---|---|
+| 12:04: `dependents` ignored plain value cells | 165s, $0.17 | 49s, $0.09 | 18 → 2 | passes |
+| 11:09: own test expected the wrong `dependents` order | 117s, $0.11 | 39s, $0.07 | 17 → 4 | passes |
+
+- **Fix rounds now take about a third of the time and half the cost.** The report now shows the failing assertion (expected against actual), and the real formula code is in the session's checkout. The agent no longer rebuilds a merged copy by hand: it reads the failure, makes the one edit both earlier fixes made, and reruns the tests.
+- **Still a cost when it happens:** about 40–50s and $0.07–0.09 per break. Preventing the break (testing a session that builds on another against that session's real code before it finishes) would save that too; not tried yet.
 
 ## What this does and doesn't show
 

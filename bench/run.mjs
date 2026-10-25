@@ -17,7 +17,7 @@ import { scrub } from "./scrub.mjs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parsePlan, parseRegen, planSetting, blockReason } from "../skills/fanout/fanout.mjs";
-import { runAgent, staggered, plannerPrompt, contractsPrompt, contractsReady, brief as laneBrief } from "../skills/fanout/run.mjs";
+import { runAgent, staggered, plannerPrompt, contractsPrompt, contractsReady, bringIn, brief as laneBrief } from "../skills/fanout/run.mjs";
 import { draftPlan } from "../skills/fanout/draft.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -222,7 +222,11 @@ async function fanout() {
     const line = r.out.split("\n").find((x) => /^(BROKE after|CONFLICT merging|REGEN FAILED after) /.test(x));
     const l = line?.match(/(?:after|merging) ([\w-]+)/)?.[1];
     if (!l || !wts[l]) break;
-    R.agents.push(await agent({ lane: l, role: "fix", cwd: wts[l], prompt: `${brief(sessions.find((s) => s.name === l))}\n\nYour branch was merged with the others in the plan's order and it broke:\n${tail(r.out, 20)}\n\nFix it within the files you may edit.` }));
+    // As fanout run: the branches merged ahead of the lane are merged into it first, so it fixes against their real code.
+    const { merged } = bringIn(wts[l], order, l, regen);
+    R.broughtIn = [...(R.broughtIn ?? []), ...merged.map((m) => `${m} -> ${l}`)];
+    const brought = merged.length ? `\n\n${merged.join(", ")} ${merged.length > 1 ? "are" : "is"} now merged into your branch, so their real code is in your checkout: run the tests there to see the break.` : "";
+    R.agents.push(await agent({ lane: l, role: "fix", cwd: wts[l], prompt: `${brief(sessions.find((s) => s.name === l))}\n\nYour branch was merged with the others in the plan's order and it broke:\n${r.out.trimEnd()}${brought}\n\nFix it within the files you may edit.` }));
     if (commitLane(l).ok) R.repairCommits++;
   }
   for (const l of order) {
