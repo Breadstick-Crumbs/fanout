@@ -17,7 +17,7 @@ import { scrub } from "./scrub.mjs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parsePlan, parseRegen, planSetting, blockReason } from "../skills/fanout/fanout.mjs";
-import { runAgent, staggered, plannerPrompt, contractsPrompt, contractsReady, bringIn, brief as laneBrief, signInProblem, mixAgents, readyTracker, earlyTest } from "../skills/fanout/run.mjs";
+import { runAgent, staggered, plannerPrompt, contractsPrompt, contractsReady, bringIn, brief as laneBrief, contractSpecLines, signInProblem, mixAgents, readyTracker, earlyTest } from "../skills/fanout/run.mjs";
 import { failureLines } from "../skills/fanout/fanout.mjs";
 import { draftPlan } from "../skills/fanout/draft.mjs";
 
@@ -208,7 +208,7 @@ async function fanout() {
   const wts = Object.fromEntries(names.map((l) => [l, join(dir, l)]));
   for (const l of names) git(repo, "worktree", "add", "-q", "-b", `fanout/${l}`, wts[l], "main");
   // The same brief `fanout run` gives, with the full task spec appended (the plan's task: line is one line).
-  const brief = (s) => laneBrief(s, sessions, regen, planSetting(text, "test"), (specs?.[s.name] ? `\nFull spec for this session:\n${specs[s.name]}` : VAGUE ? "\nThe full spec is in TASKS.md: read the parts your task covers." : `\nFull task spec:\n${PREAMBLE}\n\n${TASKS[s.name]}`), repo, { shortTests: LEAN });
+  const brief = (s) => laneBrief(s, sessions, regen, planSetting(text, "test"), (specs?.[s.name] ? `\nFull spec for this session:\n${specs[s.name]}\n${contractSpecLines(s, sessions, specs, repo)}`.trimEnd() : VAGUE ? "\nThe full spec is in TASKS.md: read the parts your task covers." : `\nFull task spec:\n${PREAMBLE}\n\n${TASKS[s.name]}`), repo, { shortTests: LEAN });
   // Commit a lane, as the git hook allows; files the plan forbids are reverted and counted.
   const commitLane = (l) => {
     const s = sessions.find((x) => x.name === l);

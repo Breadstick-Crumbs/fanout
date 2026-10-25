@@ -499,6 +499,17 @@ test("with shared files, an agent only writes the contracts; fanout tests and co
   assert.equal(g("show", "fanout/b:src/a.txt"), "stub");
 });
 
+test("a session gets what the owner's part of the goal says about the contract's exports", () => {
+  useFake();
+  const repo = draftRepo("Shared notes for all.\n\n## a\nAdd `src/a.mjs`.\n- `parse(text)`: takes the text without the leading `=`.\n- Unrelated detail.\n\n## b\nAdd `src/b.txt`, built on `src/a.mjs`.\n");
+  const r = runDraft(repo, { FAKE_CONTRACT: "src/a.mjs=export function parse(text) { throw new Error(); }\n" });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const b = calls().find((c) => c.stdin.includes('session "b"')).stdin;
+  assert.match(b, /What the goal says about src\/a\.mjs \(from a's part; build against exactly this\):\n- `parse\(text\)`: takes the text without the leading `=`\./);
+  assert.doesNotMatch(b.slice(b.indexOf("What the goal says")), /Unrelated detail|Shared notes/);
+  assert.doesNotMatch(calls().find((c) => c.stdin.includes('session "a"')).stdin, /What the goal says/);
+});
+
 test("contracts that break the tests go back to the agent once, with the failure", () => {
   useFake();
   const repo = draftRepo("## a\nAdd `src/a.txt`.\n\n## b\nAdd `src/b.txt`, built on `src/a.txt`.\n");

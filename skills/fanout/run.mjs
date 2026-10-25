@@ -24,7 +24,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { parsePlan, parseRegen, planSetting, check, rehearse, blockReason, mainRoot, appendLog, matches, ownsFile, contractOwner, failureLines } from "./fanout.mjs";
-import { draftPlan } from "./draft.mjs";
+import { draftPlan, jsExports } from "./draft.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "fanout.mjs");
@@ -312,6 +312,28 @@ function inlineContracts(s, root) {
   return "Their current contents (no need to read them again):\n" + texts.map(([f, t]) => `--- ${f}\n${t.trimEnd()}`).join("\n");
 }
 
+// With a drafted plan, a session only gets its own sections of the goal, but what a contract's functions
+// must do is written in the owner's. On the sheet benchmark recalc-table passed formula text with its
+// leading "=" to parseFormula, which formula's section says takes the text without it; the stub it built
+// against had only the signature, and its short tests didn't call it, so the early test and rehearse
+// passed and four hidden tests failed. So the owner's lines naming a contract's exports are added to the
+// brief, without AI.
+export function contractSpecLines(s, sessions, specs, root) {
+  const out = [];
+  for (const f of s.uses.filter((u) => !/[*?{]/.test(u) && existsSync(join(root ?? "", u)))) {
+    const owner = contractOwner(sessions.filter((x) => x !== s), f);
+    if (!owner || !specs?.[owner.name]) continue;
+    const src = readFileSync(join(root, f), "utf8");
+    const names = f.endsWith(".php") ? [...src.matchAll(/^function\s+&?\s*([A-Za-z_]\w*)\s*\(/gm)].map((m) => m[1]) : jsExports(src);
+    if (!names.length) continue;
+    const named = new RegExp(`(?<![\\w$])(?:${names.map((n) => n.replace(/\$/g, "\\$")).join("|")})(?![\\w$])`);
+    const spec = specs[owner.name], body = spec.slice(Math.max(0, spec.search(/^## /m))); // not the shared opening text
+    const lines = body.split("\n").filter((l) => named.test(l)).slice(0, 30);
+    if (lines.length) out.push(`What the goal says about ${f} (from ${owner.name}'s part; build against exactly this):\n${lines.join("\n")}`);
+  }
+  return out.join("\n");
+}
+
 // shortTests: sessions keep their own tests short, since rehearse runs the full test command on the merged
 // branches. On the sheet benchmark it cut the sessions' cost by a fifth (Sonnet) to a third (Haiku).
 export function brief(s, sessions, regen, test, note = "", root = null, { shortTests = false } = {}) {
@@ -438,7 +460,7 @@ export async function cli(argv) {
   const agents = [], fixes = {}, earlyFixes = {}, phases = {}, t0 = Date.now();
   let testRuns = 0, phaseStart = t0, sessions = [], specs = {};
   // A drafted plan's one-line tasks leave out most of the goal, so each session's brief gets its own sections.
-  const specNote = (s) => (specs[s.name] ? `\nFull spec for this session:\n${specs[s.name]}` : "");
+  const specNote = (s) => (specs[s.name] ? `\nFull spec for this session:\n${specs[s.name]}` : "") + (s.uses.length ? `\n${contractSpecLines(s, sessions, specs, root)}`.trimEnd() : "");
   const phase = (name) => { const now = Date.now(); phases[name] = Math.round((now - phaseStart) / 1000); phaseStart = now; };
   // .fanout/live.json: where the run is, for `fanout status` in another terminal. Cost is known per
   // finished agent run (Claude reports it at the end), so a running session shows its time so far.

@@ -15,6 +15,13 @@ import { readFileSync } from "node:fs";
 import { join, basename, dirname, extname } from "node:path";
 import { matches } from "./fanout.mjs";
 
+// The names a JS/TS module exports.
+export function jsExports(src) {
+  const names = [...src.matchAll(/^export\s+(?:default\s+)?(?:async\s+)?(?:function\*?|const|let|var|class)\s+([A-Za-z_$][\w$]*)/gm)].map((m) => m[1]);
+  for (const m of src.matchAll(/^export\s*\{([^}]*)\}/gm)) names.push(...m[1].split(",").map((x) => x.trim().split(/\s+as\s+/).pop()).filter(Boolean));
+  return names;
+}
+
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 const ticks = (s) => [...s.matchAll(/`([^`\n]+)`/g)].map((m) => m[1]);
 const sentences = (s) => s.split(/(?<=[.!?])\s+|\n+/).filter(Boolean);
@@ -114,9 +121,7 @@ export function draftPlan({ goal, root, maxSessions = 4 }) {
     if ((!php && !/\.(m?[jt]sx?|cjs)$/.test(f)) || isGenerated(f)) continue;
     let src = "";
     try { src = readFileSync(join(root, f), "utf8"); } catch { continue; }
-    const names = php ? [...src.matchAll(/^function\s+&?\s*([A-Za-z_]\w*)\s*\(/gm)].map((m) => m[1])
-      : [...src.matchAll(/^export\s+(?:default\s+)?(?:async\s+)?(?:function\*?|const|let|var|class)\s+([A-Za-z_$][\w$]*)/gm)].map((m) => m[1]);
-    if (!php) for (const m of src.matchAll(/^export\s*\{([^}]*)\}/gm)) names.push(...m[1].split(",").map((x) => x.trim().split(/\s+as\s+/).pop()).filter(Boolean));
+    const names = php ? [...src.matchAll(/^function\s+&?\s*([A-Za-z_]\w*)\s*\(/gm)].map((m) => m[1]) : jsExports(src);
     for (const n of names) (defs.get(n) ?? defs.set(n, new Set()).get(n)).add(f);
   }
   const flags = [];
