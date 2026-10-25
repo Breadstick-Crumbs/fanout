@@ -188,6 +188,17 @@ function defaultBase(cwd) {
   } catch { /* detached or not a repo */ }
   return "main";
 }
+// The repo's own default branch, for overlap (no plan): origin/HEAD, else main or master, else the
+// checkout's branch. Not defaultBase: a fan-out builds on whatever branch the main checkout is on, but
+// with no plan the main checkout may just be on a feature branch (seen: docs/caching-findings).
+function repoDefaultBranch(cwd) {
+  const root = mainRoot(cwd), has = (b) => { try { git(["rev-parse", "--verify", "--quiet", "refs/heads/" + b], root); return true; } catch { return false; } };
+  try {
+    const b = git(["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"], root).trim().replace(/^origin\//, "");
+    if (b && has(b)) return b;
+  } catch { /* no remote HEAD */ }
+  return ["main", "master"].find(has) ?? defaultBase(cwd);
+}
 const defaultPlan = (cwd) => resolve(mainRoot(cwd), ".fanout", "plan.md");
 
 // Merges the branches in plan order on a throwaway worktree, then rebuilds generated files and runs the
@@ -423,7 +434,7 @@ function main(argv) {
   if (cmd === "precommit") return precommit(cwd);
   if (cmd === "install-git-hook") return installHook(cwd, argv.includes("--force"));
   if (cmd === "status") return showStatus(cwd, arg(argv, "--base") ?? defaultBase(cwd));
-  if (cmd === "overlap") return showOverlap(cwd, arg(argv, "--base") ?? defaultBase(cwd), argv.includes("--all"));
+  if (cmd === "overlap") return showOverlap(cwd, arg(argv, "--base") ?? repoDefaultBranch(cwd), argv.includes("--all"));
   if (cmd === "log") return showLog(cwd, Number(arg(argv, "--last", "20")));
   if (!["check", "verify", "rehearse"].includes(cmd)) { console.error("usage: fanout check [plan.md] | verify [--session name] [--base <branch>] | rehearse [--base <branch>] [--test cmd] | run [\"goal\"] [--yes] | status [--base <branch>] | overlap [--base <branch>] [--all] | log [--last 20] | install-git-hook [--force] | guard"); return 2; }
   const planPath = explicitPlan(argv) ?? defaultPlan(cwd);

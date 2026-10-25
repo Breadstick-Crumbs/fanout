@@ -495,3 +495,13 @@ test("overlap: finds files changed in more than one checkout, committed or not, 
   assert.doesNotMatch(r.stdout, /claude\/old/);
   assert.match(run(["overlap", "--all"], { cwd: d }).stdout, /claude\/old: 1 file\(s\) changed/);
 });
+
+test("overlap: compares against main even when the main checkout is on a feature branch", () => {
+  const d = dir();
+  const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(d, "a.txt"), "1"); g("add", "-A"); g("commit", "-qm", "init");
+  g("checkout", "-qb", "docs/notes"); writeFileSync(join(d, "a.txt"), "2"); g("commit", "-qam", "notes");
+  const r = run(["overlap"], { cwd: d });
+  assert.match(r.stdout, /^docs\/notes: 1 file\(s\) changed/m, r.stdout); // against main; against itself it would show nothing
+});
