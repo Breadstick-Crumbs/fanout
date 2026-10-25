@@ -7,7 +7,7 @@
 
 <p align="center"><b>Run several coding agents at once. Merge once. Nothing breaks.</b></p>
 
-fanout splits a job across parallel agents (Claude Code, Codex, or both), keeps each one in its own files, and tests all their branches together before anything reaches `main`. No dependencies, no config. Just Node 18+ and git.
+fanout splits a job across parallel agents (Claude Code, Codex, or both), gives each one its own git worktree and its own files, and tests all their branches together before anything reaches `main`. No dependencies, no config. Just Node 18+ and git.
 
 Already have several sessions open on one repo? `fanout overlap` needs no plan. It lists every checkout (worktrees, other sessions, your own), what each has changed, committed or not, and which files two of them are both changing, with a dry-run merge to show whether they'd really conflict.
 
@@ -202,7 +202,26 @@ Parallel agents aren't free. Each one loads and reads the code on its own, so sp
 
 Even when you don't split the work, `rehearse` and the edit guard cost nothing to run.
 
+## Compared with
+
+| | Worktrees by hand | A merge queue or CI | fanout |
+|---|---|---|---|
+| Each agent gets its own folder and branch | Yes | No | Yes |
+| Stops an agent editing another's files | No | No | Yes, as it happens |
+| Freezes shared types while agents work | No | No | Yes |
+| Finds branches that merge cleanly but break together | After merging | After merging | Before `main` |
+| Sends the break back to the agent that caused it | No, you fix it | No, you fix it | Yes |
+| Spots sessions you didn't plan editing the same files | No | No | `fanout overlap` |
+
+fanout runs before your CI, not instead of it.
+
 ## FAQ
+
+**How do I run multiple Claude Code (or Codex) agents in parallel without merge conflicts?**
+Ask your agent to "split this into parallel sessions", or run `fanout run "<goal>"`. Each agent gets its own git worktree and its own files, so two agents never edit the same file, and every branch is tested together before it reaches `main`.
+
+**I already have several sessions open on one repo. Will they conflict?**
+Run `fanout overlap`. No plan needed. It shows which checkouts are changing the same files and dry-runs the merge to tell you whether they really conflict.
 
 **Do I need to configure anything?**
 No. The plan is the only file, and your agent writes it.

@@ -1,0 +1,33 @@
+# fanout
+
+> fanout runs several coding agents (Claude Code, Codex, or any CLI agent) in parallel on one git repo without merge conflicts. Each agent works on its own branch and git worktree and may only change the files it owns. Shared interfaces are committed first and frozen. Before anything reaches main, fanout merges every branch on a scratch copy and runs the tests once, and sends each break back to the agent that caused it. No dependencies, no config: Node 18+ and git. MIT licensed.
+
+Use fanout when:
+- you already run several agent sessions or worktrees on one repo and want to know which ones are changing the same files (`fanout overlap`, no plan needed)
+- a job is big enough to split across parallel agents and splits into parts with their own files
+- several agents touch shared code, where a clean git merge can still break the build
+- you run agents headless or in CI, or mix Claude Code and Codex
+
+For small changes, one agent is faster and cheaper.
+
+## Install
+
+- Claude Code: `/plugin marketplace add Breadstick-Crumbs/fanout` then `/plugin install fanout@fanout`
+- Codex: `codex plugin marketplace add Breadstick-Crumbs/fanout` then `codex plugin add fanout@fanout`
+- Any agent, no install: `npx github:Breadstick-Crumbs/fanout run "<goal>"`
+
+## Commands
+
+- `fanout run "<goal>"`: plan, run agents in parallel, rehearse, fix, merge
+- `fanout overlap`: which checkouts are changing the same files, and would they conflict
+- `fanout check`: is the plan safe; prints the merge order
+- `fanout verify`: in a session's folder, anything outside its lane
+- `fanout rehearse`: merge every branch on a scratch copy, test once
+- `fanout install-git-hook`: enforce the plan on every commit, for any agent
+- `fanout status`, `fanout log`: sessions, costs, past runs
+
+## Docs
+
+- [README](https://github.com/Breadstick-Crumbs/fanout/blob/main/README.md): how it works, the plan format, what it catches, FAQ
+- [Benchmark results](https://github.com/Breadstick-Crumbs/fanout/blob/main/bench/RESULTS.md): with and without fanout, cost and time
+- [Skill](https://github.com/Breadstick-Crumbs/fanout/blob/main/skills/fanout/SKILL.md): the instructions the agent follows
