@@ -1,0 +1,177 @@
+[
+  {
+    "condition": "fanout",
+    "agents": [
+      {
+        "role": "coordinator",
+        "lane": "-",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 29,
+        "costUsd": 0.0598473,
+        "inTokens": 55239,
+        "outTokens": 1555,
+        "error": null,
+        "sessionId": "b5656130-6724-4e5a-9cfa-9e59813415d2",
+        "turns": 5,
+        "modelSeconds": 14,
+        "tools": {
+          "Bash": [
+            "cd <tmp>/fanout-bench-fanout-9MWXZ0/repo && ls . src test; cat package.json; head -30 src/sheet.mjs; grep -n export src/addr.mjs",
+            "cd <tmp>/fanout-bench-fanout-9MWXZ0/repo && cat > src/formula.mjs <<'E'\n// Formula parsing and evaluation. Formula text is given without the leading \"=\".\n\n// Parses formula text into an AST. Throws SyntaxError on bad syntax.\nexport function parseFormula(text) {\n  throw new Error(\"not implemented\");\n}\n\n// Normalized addresses the formula reads (ranges expanded row by row), each once, in order of first appearance.\nexport function refsOf(ast) {\n  throw new Error(\"not implemented\");\n}\n\n// The formula's value; lookup(addr) returns a cell's value (null when empty).\nexport function evaluate(ast, lookup) {\n  throw new Error(\"not implemented\");\n}\nE\ncat > src/recalc.mjs <<'E'\n// Cell values and recalculation.\nimport { parseFormula, refsOf, evaluate } from \"./formula.mjs\";\n\n// Value of a non-formula cell's raw text.\nexport function valueOf(raw) {\n  throw new Error(\"not implemented\");\n}\n\n// Map from every non-empty cell's address to its value.\nexport function computeAll(sheet) {\n  throw new Error(\"not implemented\");\n}\n\n// Formula cells reading addr directly or indirectly, in dependency order.\nexport function dependents(sheet, addr) {\n  throw new Error(\"not implemented\");\n}\nE"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-9MWXZ0\\repo\\src\\formula.mjs",
+            "<tmp>\\fanout-bench-fanout-9MWXZ0\\repo\\src\\recalc.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "formula",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 103,
+        "costUsd": 0.14652279999999998,
+        "inTokens": 108728,
+        "outTokens": 8529,
+        "error": null,
+        "sessionId": "217acae8-01e6-4038-ba24-24b74315429b",
+        "turns": 10,
+        "modelSeconds": 64,
+        "tools": {
+          "Bash": [
+            "cat src/addr.mjs; ls src test; cat package.json",
+            "npm run gen 2>&1 | tail -3; npm test 2>&1 | tail -30",
+            "npm run gen 2>&1; npm test 2>&1",
+            "powershell -NoProfile -Command \"npm run gen; npm test\" 2>&1",
+            "node --test test/formula.test.mjs 2>&1"
+          ],
+          "Read": [
+            "<tmp>\\fanout-bench-fanout-9MWXZ0\\formula\\src\\addr.mjs"
+          ],
+          "Glob": [
+            "**/*"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-9MWXZ0\\formula\\src\\formula.mjs",
+            "<tmp>\\fanout-bench-fanout-9MWXZ0\\formula\\test\\formula.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "recalc",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 135,
+        "costUsd": 0.1823008,
+        "inTokens": 155063,
+        "outTokens": 9977,
+        "error": null,
+        "sessionId": "ac9c5ffa-fa1a-42c0-8d88-b1b5c16bdb68",
+        "turns": 11,
+        "modelSeconds": 72,
+        "tools": {
+          "Bash": [
+            "cat src/sheet.mjs src/addr.mjs; ls src test; cat package.json",
+            "cat src/recalc.mjs; cat src/index.mjs",
+            "cat > src/recalc.mjs <<'EOF'\n// Cell values and recalculation.\nimport { parseFormula, refsOf, evaluate } from \"./formula.mjs\";\nimport { parseAddr } from \"./addr.mjs\";\n\nconst NUMBER = /^[+-]?(\\d+\\.?\\d*|\\.\\d+)(e[+-]?\\d+)?$/i;\n\n// Value of a non-formula cell's raw text.\nexport function valueOf(raw) {\n  if (raw === \"\") return null;\n  const t = raw.trim();\n  if (NUMBER.test(t) && Number.isFinite(Number(t))) return Number(t);\n  const u = raw.toUpperCase();\n  if (u === \"TRUE\") return true;\n  if (u === \"FALSE\") return false;\n  if (raw[0] === \"'\") return raw.slice(1);\n  return raw;\n}\n\nconst key = (addr) => { const a = parseAddr(addr); return a.row * 20000 + a.col; };\n\n// Parses every formula cell; returns { asts, deps } (deps only for formulas that parse).\nfunction analyze(sheet) {\n  const asts = new Map(), deps = new Map(), bad = new Set();\n  for (const [addr, raw] of sheet.cells) {\n    if (raw[0] !== \"=\") continue;\n    try {\n      const ast = parseFormula(raw.slice(1));\n      asts.set(addr, ast);\n      deps.set(addr, refsOf(ast).filter((r) => sheet.cells.get(r)?.[0] === \"=\"));\n    } catch {\n      bad.add(addr);\n    }\n  }\n  for (const [addr, d] of deps) deps.set(addr, d.filter((r) => asts.has(r)));\n  return { asts, deps, bad };\n}\n\n// Iterative Tarjan; returns SCCs in dependency order (a cell's dependencies come first).\nfunction sccs(deps) {\n  const index = new Map(), low = new Map(), on = new Set(), stack = [], out = [];\n  let n = 0;\n  for (const root of deps.keys()) {\n    if (index.has(root)) continue;\n    const work = [[root, 0]];\n    index.set(root, n); low.set(root, n++); stack.push(root); on.add(root);\n    while (work.length) {\n      const top = work[work.length - 1];\n      const [v, i] = top;\n      const ds = deps.get(v);\n      if (i < ds.length) {\n        top[1]++;\n        const w = ds[i];\n        if (!index.has(w)) {\n          index.set(w, n); low.set(w, n++); stack.push(w); on.add(w);\n          work.push([w, 0]);\n        } else if (on.has(w)) low.set(v, Math.min(low.get(v), index.get(w)));\n      } else {\n        work.pop();\n        if (work.length) {\n          const p = work[work.length - 1][0];\n          low.set(p, Math.min(low.get(p), low.get(v)));\n        }\n        if (low.get(v) === index.get(v)) {\n          const comp = [];\n          let w;\n          do { w = stack.pop(); on.delete(w); comp.push(w); } while (w !== v);\n          out.push(comp);\n        }\n      }\n    }\n  }\n  return out;\n}\n\nconst isCycle = (comp, deps) => comp.length > 1 || deps.get(comp[0]).includes(comp[0]);\n\n// Map from every non-empty cell's address to its value.\nexport function computeAll(sheet) {\n  const { asts, deps, bad } = analyze(sheet);\n  const values = new Map();\n  for (const [addr, raw] of sheet.cells) {\n    if (raw[0] !== \"=\") values.set(addr, valueOf(raw));\n    else if (bad.has(addr)) values.set(addr, \"#ERROR!\");\n  }\n  const lookup = (a) => values.get(a) ?? null;\n  for (const comp of sccs(deps)) {\n    if (isCycle(comp, deps)) for (const a of comp) values.set(a, \"#CYCLE!\");\n    else values.set(comp[0], evaluate(asts.get(comp[0]), lookup));\n  }\n  const out = new Map();\n  for (const addr of sheet.cells.keys()) out.set(addr, values.get(addr));\n  return out;\n}\n\n// Formula cells reading addr directly or indirectly, in dependency order.\nexport function dependents(sheet, addr) {\n  const { deps } = analyze(sheet);\n  const a = (() => { const p = parseAddr(addr); return `${[...Array(0)]}` && null; })();\n  void a;\n  const cyc = new Set();\n  for (const comp of sccs(deps)) if (isCycle(comp, deps)) for (const c of comp) cyc.add(c);\n  const rev = new Map();\n  for (const [c, ds] of deps) for (const d of ds) (rev.get(d) ?? rev.set(d, []).get(d)).push(c);\n  // Direct readers may reference non-formula addr, so build readers from raw refs.\n  return order(sheet, addr, deps, rev, cyc);\n}\nEOF",
+            "python3 - <<'EOF'\np='src/recalc.mjs'\ns=open(p).read()\ni=s.index(\"// Formula cells reading addr directly\")\ns=s[:i]+'''// Formula cells reading addr directly or indirectly, in dependency order.\nexport function dependents(sheet, addr) {\n  const { deps, refs } = analyze(sheet);\n  const start = toAddr(parseAddr(addr).col, parseAddr(addr).row);\n  const cyc = new Set();\n  for (const comp of sccs(deps)) if (isCycle(comp, deps)) for (const c of comp) cyc.add(c);\n  const rev = new Map();\n  for (const [c, rs] of refs) for (const r of rs) (rev.get(r) ?? rev.set(r, []).get(r)).push(c);\n  const found = new Set(), queue = [start];\n  while (queue.length) {\n    for (const c of rev.get(queue.pop()) ?? []) {\n      if (c === start || found.has(c)) continue;\n      found.add(c);\n      queue.push(c);\n    }\n  }\n  for (const c of cyc) found.delete(c);\n  const pending = new Map(), readers = new Map();\n  for (const c of found) {\n    const ds = [...new Set(deps.get(c))].filter((d) => found.has(d));\n    pending.set(c, ds.length);\n    for (const d of ds) (readers.get(d) ?? readers.set(d, []).get(d)).push(c);\n  }\n  const heap = [];\n  const push = (c) => {\n    const k = key(c);\n    let i = heap.length;\n    heap.push(c);\n    while (i > 0 && key(heap[(i - 1) >> 1]) > k) { heap[i] = heap[(i - 1) >> 1]; i = (i - 1) >> 1; }\n    heap[i] = c;\n  };\n  const pop = () => {\n    const top = heap[0], last = heap.pop();\n    if (heap.length) {\n      const k = key(last);\n      let i = 0;\n      for (;;) {\n        let m = 2 * i + 1;\n        if (m >= heap.length) break;\n        if (m + 1 < heap.length && key(heap[m + 1]) < key(heap[m])) m++;\n        if (key(heap[m]) >= k) break;\n        heap[i] = heap[m]; i = m;\n      }\n      heap[i] = last;\n    }\n    return top;\n  };\n  for (const [c, n] of pending) if (n === 0) push(c);\n  const out = [];\n  while (heap.length) {\n    const c = pop();\n    out.push(c);\n    for (const r of readers.get(c) ?? []) if (--pending.set(r, pending.get(r) - 1).get(r) === 0) push(r);\n  }\n  return out;\n}\n'''\ns=s.replace('import { parseAddr }','import { parseAddr, toAddr }')\ns=s.replace(\"const asts = new Map(), deps = new Map(), bad = new Set();\",\"const asts = new Map(), deps = new Map(), refs = new Map(), bad = new Set();\")\ns=s.replace(\"      deps.set(addr, refsOf(ast).filter((r) => sheet.cells.get(r)?.[0] === \\\"=\\\"));\",\"      refs.set(addr, refsOf(ast));\\n      deps.set(addr, refs.get(addr));\")\ns=s.replace(\"return { asts, deps, bad };\",\"return { asts, deps, refs, bad };\")\nopen(p,'w').write(s)\nEOF\ncat > test/recalc.test.mjs <<'EOF'\nimport test from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { valueOf, computeAll, dependents } from \"../src/recalc.mjs\";\nimport { createSheet, setCell } from \"../src/sheet.mjs\";\n\nconst make = (o) => { const s = createSheet(); for (const [k, v] of Object.entries(o)) setCell(s, k, v); return s; };\n\ntest(\"valueOf\", () => {\n  assert.equal(valueOf(\"\"), null);\n  assert.equal(valueOf(\" 4.5 \"), 4.5);\n  assert.equal(valueOf(\"true\"), true);\n  assert.equal(valueOf(\"'12\"), \"12\");\n  assert.equal(valueOf(\"hi\"), \"hi\");\n});\n\ntest(\"computeAll cycles and long chain\", () => {\n  const s = make({ A1: \"=B1\", B1: \"=A1\", C1: \"=A1\", D1: \"=D1\", E1: \"=(\" });\n  const v = computeAll(s);\n  assert.equal(v.get(\"A1\"), \"#CYCLE!\");\n  assert.equal(v.get(\"B1\"), \"#CYCLE!\");\n  assert.equal(v.get(\"D1\"), \"#CYCLE!\");\n  assert.equal(v.get(\"E1\"), \"#ERROR!\");\n  const c = make({ A1: \"1\" });\n  for (let i = 2; i <= 10000; i++) setCell(c, `A${i}`, `=A${i - 1}+1`);\n  assert.equal(computeAll(c).get(\"A10000\"), 10000);\n});\n\ntest(\"dependents\", () => {\n  const s = make({ A1: \"1\", B1: \"=A1\", A2: \"=B1+A1\", C3: \"=A2\", D1: \"=D2\", D2: \"=D1+A1\" });\n  assert.deepEqual(dependents(s, \"A1\"), [\"B1\", \"A2\", \"C3\"]);\n});\nEOF\nnpm run gen >/dev/null; npm test 2>&1 | tail -30",
+            "npm run gen 2>&1 | tail -3; npm test 2>&1 | tail -40",
+            "S=/tmp/x; rm -rf $S; mkdir -p $S/src $S/test; cp src/*.mjs $S/src/; cp test/recalc.test.mjs $S/test/; echo '{\"type\":\"module\"}' > $S/package.json\ncat > $S/src/formula.mjs <<'EOF'\nexport function parseFormula(t){ if(t===\"(\") throw new SyntaxError(\"x\"); return t; }\nexport function refsOf(t){ return [...new Set(t.match(/[A-Z]+\\d+/g)||[])]; }\nexport function evaluate(t,l){ let s=0; for(const p of t.split(\"+\")){ const v=/^[A-Z]+\\d+$/.test(p)?l(p):Number(p); if(typeof v===\"string\") return v; s+=v??0;} return s; }\nEOF\ncd $S && node --test test/recalc.test.mjs 2>&1 | grep -E \"^# (pass|fail)|not ok\"",
+            "S=<tmp>/claude/<tmp>-fanout-bench-fanout-9MWXZ0-recalc/ac9c5ffa-fa1a-42c0-8d88-b1b5c16bdb68/scratchpad/x; mkdir -p \"$S/test\"; cp src/addr.mjs src/sheet.mjs src/recalc.mjs \"$S/src/\"; cp test/recalc.test.mjs \"$S/test/\"; echo '{\"type\":\"module\"}' > \"$S/package.json\"; cd \"$S\" && node --test test/recalc.test.mjs 2>&1 | grep -E \"^# (pass|fail)|not ok|Error\""
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-9MWXZ0\\recalc\\src\\recalc.mjs",
+            "<tmp>\\fanout-bench-fanout-9MWXZ0\\recalc\\test\\recalc.test.mjs",
+            "<tmp>\\claude\\<tmp>-fanout-bench-fanout-9MWXZ0-recalc\\ac9c5ffa-fa1a-42c0-8d88-b1b5c16bdb68\\scratchpad\\x\\src\\formula.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "numfmt",
+        "kind": "codex",
+        "agent": "codex",
+        "seconds": 413,
+        "costUsd": null,
+        "inTokens": 423019,
+        "outTokens": 4111,
+        "error": null,
+        "sessionId": "01a173ea-d1ab-74b1-96b4-9551603bbbd2"
+      },
+      {
+        "role": "lane",
+        "lane": "csv",
+        "kind": "codex",
+        "agent": "codex",
+        "seconds": 287,
+        "costUsd": null,
+        "inTokens": 183060,
+        "outTokens": 2546,
+        "error": null,
+        "sessionId": "01a173ea-e084-7453-a411-dd0c9349cfb0"
+      },
+      {
+        "role": "lane",
+        "lane": "structure",
+        "kind": "codex",
+        "agent": "codex",
+        "seconds": 611,
+        "costUsd": null,
+        "inTokens": 246933,
+        "outTokens": 3292,
+        "error": null,
+        "sessionId": "01a173ea-e385-7e13-8c98-f2ca97dd55d7"
+      },
+      {
+        "role": "lane",
+        "lane": "table",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 86,
+        "costUsd": 0.1049894,
+        "inTokens": 66745,
+        "outTokens": 5781,
+        "error": null,
+        "sessionId": "99b4cfcd-e310-49db-93c6-88e183fc673a",
+        "turns": 7,
+        "modelSeconds": 40,
+        "tools": {
+          "Read": [
+            "<tmp>\\fanout-bench-fanout-9MWXZ0\\table\\src\\sheet.mjs",
+            "<tmp>\\fanout-bench-fanout-9MWXZ0\\table\\src\\addr.mjs"
+          ],
+          "Bash": [
+            "cd <tmp>/fanout-bench-fanout-9MWXZ0/table && cat > src/table.mjs <<'EOF'\n// Sorting and pivoting of cell ranges.\nimport { parseAddr, toAddr, colIndex } from \"./addr.mjs\";\nimport { getCell, setCell } from \"./sheet.mjs\";\nimport { valueOf } from \"./recalc.mjs\";\n\nfunction parseRange(range) {\n  const [a, b] = range.split(\":\");\n  const p = parseAddr(a), q = parseAddr(b ?? a);\n  return {\n    c0: Math.min(p.col, q.col), c1: Math.max(p.col, q.col),\n    r0: Math.min(p.row, q.row), r1: Math.max(p.row, q.row),\n  };\n}\n\nconst isEmpty = (v) => v == null || v === \"\";\nconst rank = (v) => (typeof v === \"number\" ? 0 : typeof v === \"string\" ? 1 : 2);\n\n// Orders non-empty values: numbers, then strings (case-insensitive), then booleans (false first).\nfunction compareValues(a, b) {\n  const ra = rank(a), rb = rank(b);\n  if (ra !== rb) return ra - rb;\n  if (ra === 0) return a - b;\n  if (ra === 1) {\n    const x = a.toLowerCase(), y = b.toLowerCase();\n    return x < y ? -1 : x > y ? 1 : 0;\n  }\n  return Number(a) - Number(b);\n}\n\nexport function sortRange(sheet, range, keys, options = {}) {\n  const { c0, c1, r0, r1 } = parseRange(range);\n  const start = options.header ? r0 + 1 : r0;\n  const rows = [];\n  for (let r = start; r <= r1; r++) {\n    const raws = [];\n    for (let c = c0; c <= c1; c++) raws.push(getCell(sheet, toAddr(c, r)));\n    rows.push({ raws, index: r - start });\n  }\n  const cols = keys.map((k) => ({ i: colIndex(k.col) - c0, desc: !!k.desc }));\n  for (const row of rows) {\n    row.vals = cols.map((k) => {\n      if (k.i < 0 || k.i > c1 - c0) return null;\n      const raw = row.raws[k.i];\n      return raw === \"\" ? null : valueOf(raw);\n    });\n  }\n  rows.sort((x, y) => {\n    for (let n = 0; n < cols.length; n++) {\n      const a = x.vals[n], b = y.vals[n];\n      const ea = isEmpty(a), eb = isEmpty(b);\n      if (ea || eb) {\n        if (ea && eb) continue;\n        return ea ? 1 : -1;\n      }\n      const d = compareValues(a, b);\n      if (d) return cols[n].desc ? -d : d;\n    }\n    return x.index - y.index;\n  });\n  rows.forEach((row, n) => {\n    row.raws.forEach((raw, k) => setCell(sheet, toAddr(c0 + k, start + n), raw));\n  });\n}\n\nexport function pivot(values, range, { rows, value, agg }) {\n  const { c0, c1, r0, r1 } = parseRange(range);\n  const find = (name) => {\n    for (let c = c0; c <= c1; c++) {\n      if (String(values.get(toAddr(c, r0)) ?? \"\") === name) return c;\n    }\n    throw new Error(`no such column: ${name}`);\n  };\n  const kc = find(rows), vc = find(value);\n  const groups = new Map();\n  let blank;\n  for (let r = r0 + 1; r <= r1; r++) {\n    const k = values.get(toAddr(kc, r)), v = values.get(toAddr(vc, r));\n    let list;\n    if (isEmpty(k)) list = blank ??= [];\n    else {\n      list = groups.get(k);\n      if (!list) groups.set(k, (list = []));\n    }\n    list.push(v);\n  }\n  const aggregate = (vs) => {\n    if (agg === \"count\") return vs.filter((v) => !isEmpty(v)).length;\n    const nums = vs.filter((v) => typeof v === \"number\");\n    if (agg === \"sum\") return nums.reduce((s, v) => s + v, 0);\n    if (!nums.length) return null;\n    if (agg === \"avg\") return nums.reduce((s, v) => s + v, 0) / nums.length;\n    if (agg === \"min\") return Math.min(...nums);\n    if (agg === \"max\") return Math.max(...nums);\n    throw new Error(`unknown aggregate: ${agg}`);\n  };\n  const out = [...groups.keys()].sort(compareValues).map((key) => ({ key, value: aggregate(groups.get(key)) }));\n  if (blank) out.push({ key: \"(blank)\", value: aggregate(blank) });\n  return out;\n}\nEOF\ncat > test/table.test.mjs <<'EOF'\nimport { test } from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { createSheet, setCell, getCell } from \"../src/sheet.mjs\";\nimport { sortRange, pivot } from \"../src/table.mjs\";\n\ntest(\"sortRange sorts by value, stable, header kept, empties last\", () => {\n  const s = createSheet();\n  [[\"n\", \"x\"], [\"b\", \"1\"], [\"\", \"2\"], [\"B\", \"3\"], [\"10\", \"4\"], [\"9\", \"5\"]].forEach((r, i) =>\n    r.forEach((v, j) => setCell(s, \"AB\"[j] + (i + 1), v)));\n  sortRange(s, \"A1:B6\", [{ col: \"A\" }], { header: true });\n  assert.deepEqual([1, 2, 3, 4, 5, 6].map((r) => getCell(s, \"B\" + r)), [\"x\", \"5\", \"4\", \"1\", \"3\", \"2\"]);\n});\n\ntest(\"pivot groups and aggregates\", () => {\n  const v = new Map([[\"A1\", \"k\"], [\"B1\", \"v\"], [\"A2\", \"b\"], [\"B2\", 1], [\"A3\", 2], [\"B3\", 5], [\"B4\", 3], [\"A5\", \"b\"], [\"B5\", 4]]);\n  assert.deepEqual(pivot(v, \"A1:B5\", { rows: \"k\", value: \"v\", agg: \"sum\" }),\n    [{ key: 2, value: 5 }, { key: \"b\", value: 5 }, { key: \"(blank)\", value: 3 }]);\n  assert.throws(() => pivot(v, \"A1:B5\", { rows: \"zz\", value: \"v\", agg: \"sum\" }), /zz/);\n});\nEOF\nnpm run gen 2>&1 | tail -3; npm test 2>&1 | tail -30",
+            "cd <tmp>/fanout-bench-fanout-9MWXZ0/table && npm run gen 2>&1 | tail -3; npm test 2>&1 | tail -40"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-9MWXZ0\\table\\src\\table.mjs",
+            "<tmp>\\fanout-bench-fanout-9MWXZ0\\table\\test\\table.test.mjs"
+          ]
+        }
+      }
+    ],
+    "conflicts": [],
+    "brokeAfter": [],
+    "repairCommits": 0,
+    "rehearsals": [
+      "CHECK OK structure\nCHECK OK table\nAll branches merge and pass together."
+    ],
+    "blockedFiles": [
+      "csv: src/index.mjs",
+      "table: src/index.mjs"
+    ],
+    "flags": [],
+    "plan": "test: npm test\nregen: src/index.mjs via npm run gen\n\n## formula\nowns: src/formula.mjs, test/formula.test.mjs\ntask: Add `src/formula.mjs`\ncheck: node --test test/formula.test.mjs\nexposes: src/formula.mjs\n\n## recalc\nowns: src/recalc.mjs, test/recalc.test.mjs\ntask: Add `src/recalc.mjs`, built on `parseFormula`, `refsOf` and `evaluate` from `src/formula.mjs`\ncheck: node --test test/recalc.test.mjs\nexposes: src/recalc.mjs\nuses: src/formula.mjs\n\n## numfmt\nowns: src/numfmt.mjs, test/numfmt.test.mjs\ntask: Add `src/numfmt.mjs` with `formatNumber(value, pattern)`, a subset of spreadsheet number formats\ncheck: node --test test/numfmt.test.mjs\n\n## csv\nowns: src/csv.mjs, test/csv.test.mjs\ntask: Add `src/csv.mjs`\ncheck: node --test test/csv.test.mjs\n\n## structure\nowns: src/structure.mjs, test/structure.test.mjs\ntask: Add `src/structure.mjs` with `insertRows(sheet, at, count = 1)`, `deleteRows(sheet, at, count = 1)`, `insertCols(sheet, at, count = 1)` and `deleteCols(sheet, a\ncheck: node --test test/structure.test.mjs\n\n## table\nowns: src/table.mjs, test/table.test.mjs\ntask: Add `src/table.mjs`\ncheck: node --test test/table.test.mjs\nuses: src/recalc.mjs\n",
+    "finalTestsPass": true,
+    "seconds": 689,
+    "acceptance": {
+      "pass": 34,
+      "total": 34,
+      "failed": []
+    }
+  }
+]

@@ -8,7 +8,7 @@
 //
 // Fixtures: shop (4 small tasks), library (6 bigger ones) and sheet (6 large ones, minutes each). If bench/<fixture>-acceptance/ exists, its hidden
 // tests are copied in at the end and scored, so every setup is judged the same way.
-//   node bench/run.mjs [single|baseline|fanout|both|all] [--fixture shop|library|sheet] [--groups a+b,c+d] [--lean] [--draft [--max-sessions 4] [--review]] [--single-budget 5] [--dry]   (both = baseline + fanout; all adds single) [--model sonnet] [--budget 1] [--codex-lane receipt|none]
+//   node bench/run.mjs [single|baseline|fanout|both|all] [--fixture shop|library|sheet] [--groups a+b,c+d] [--lean] [--draft [--max-sessions 4] [--review]] [--single-budget 5] [--dry]   (both = baseline + fanout; all adds single) [--model sonnet] [--budget 1] [--codex-lane receipt[,csv]|none]
 // --dry swaps every agent for a no-op (the coordinator writes a canned plan) to test the plumbing.
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from "node:fs";
@@ -39,7 +39,7 @@ const PLANNER_MODEL = opt("--planner-model", MODEL), SESSION_MODEL = opt("--sess
 const modelForRole = (role) => (role === "coordinator" ? PLANNER_MODEL : role === "lane" || role === "fix" ? SESSION_MODEL : MODEL);
 const FIXTURE = opt("--fixture", "shop"), FIXTURE_DIR = join(ROOT, "bench", FIXTURE), ACCEPTANCE = join(ROOT, "bench", `${FIXTURE}-acceptance`);
 const TASKS_MD = readFileSync(join(FIXTURE_DIR, "TASKS.md"), "utf8");
-const CODEX_LANE = opt("--codex-lane", "none"); // a task name to run that lane in Codex
+const CODEX_LANE = opt("--codex-lane", "none"), CODEX_LANES = CODEX_LANE.split(","); // lane name(s), comma-separated, to run in Codex
 const TASKS = Object.fromEntries(TASKS_MD.split(/^## /m).slice(1)
   .map((b) => { const [name, ...rest] = b.split("\n"); return [name.trim(), rest.join("\n").trim()]; }));
 const LANES = Object.keys(TASKS);
@@ -64,7 +64,7 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
 // One agent call via fanout's own runner (skills/fanout/run.mjs). Never throws.
 async function agent({ lane, role, cwd, prompt, plugin = false, allowGit = false, dryAction }) {
-  const kind = lane === CODEX_LANE && role !== "coordinator" && role !== "integrator" ? "codex" : "claude";
+  const kind = CODEX_LANES.includes(lane) && role !== "coordinator" && role !== "integrator" ? "codex" : "claude";
   if (DRY) { dryAction?.(); return { role, lane, kind, seconds: 0, costUsd: 0, inTokens: 0, outTokens: 0, error: null }; }
   const r = await runAgent({ agent: kind, cwd, prompt, plugin, allowGit, model: kind === "claude" ? modelForRole(role) : undefined, budget: kind !== "claude" ? undefined : role === "single" ? SINGLE_BUDGET : BUDGET });
   return { role, lane, kind, ...r };
@@ -252,7 +252,7 @@ function report(results) {
   const agents = results.flatMap((R) => R.agents.map((a) => `| ${R.condition} | ${a.role} | ${a.lane} | ${a.kind} | ${a.seconds}s | ${a.modelSeconds ?? "?"}s | ${a.turns ?? "?"} | ${toolsOf(a)} | ${usd(a.costUsd)} | ${Math.round((a.inTokens + a.outTokens) / 1000)}k | ${a.error ?? ""} |`));
   return `# Benchmark ${new Date().toISOString().slice(0, 16).replace("T", " ")}${DRY ? " (dry run)" : ""}
 
-Models: ${MODEL} (single agent, integrator), planner ${PLANNER_MODEL}, sessions ${SESSION_MODEL}${CODEX_LANE === "none" ? "" : `, Codex for the "${CODEX_LANE}" lane`}. Fixture: ${FIXTURE}${VAGUE ? " (vague goal: the planner picks the split)" : ""}${GROUPS ? `, lanes ${LANES.join(", ")}` : ""}${LEAN ? ", lean lanes (at most 3 tests each)" : ""}${DRAFT ? `, plan drafted without AI${REVIEW ? " (full review)" : ""}` : ""}. Budget cap per Claude agent: ${BUDGET} (single agent: ${SINGLE_BUDGET}).
+Models: ${MODEL} (single agent, integrator), planner ${PLANNER_MODEL}, sessions ${SESSION_MODEL}${CODEX_LANE === "none" ? "" : `, Codex for ${CODEX_LANES.map((l) => `"${l}"`).join(", ")}`}. Fixture: ${FIXTURE}${VAGUE ? " (vague goal: the planner picks the split)" : ""}${GROUPS ? `, lanes ${LANES.join(", ")}` : ""}${LEAN ? ", lean lanes (at most 3 tests each)" : ""}${DRAFT ? `, plan drafted without AI${REVIEW ? " (full review)" : ""}` : ""}. Budget cap per Claude agent: ${BUDGET} (single agent: ${SINGLE_BUDGET}).
 
 | Condition | Conflicts merging into main | Merges that broke tests | Repair commits | Final tests pass | Hidden tests | Wall time | Agent cost | Tokens | Agent runs |
 |---|---|---|---|---|---|---|---|---|---|

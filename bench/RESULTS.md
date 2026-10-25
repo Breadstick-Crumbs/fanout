@@ -314,6 +314,21 @@ The two runs where recalc+table broke (11:09 and 12:04) still had their branches
 - **Fix rounds now take about a third of the time and half the cost.** The report now shows the failing assertion (expected against actual), and the real formula code is in the session's checkout. The agent no longer rebuilds a merged copy by hand: it reads the failure, makes the one edit both earlier fixes made, and reruns the tests.
 - **Still a cost when it happens:** about 40–50s and $0.07–0.09 per break. Preventing the break (testing a session that builds on another against that session's real code before it finishes) would save that too; not tried yet.
 
+### Claude and Codex sessions together (v0.21.1)
+
+Six sessions on the sheet task, one per module, three in Claude (formula, recalc, table: the chain that builds on each other) and three in Codex (numfmt, csv, structure), with a drafted plan and short tests. `--codex-lane` now takes several names. One run ([16:46](results/2026-10-25-16-46.md)), Codex CLI 0.164 with its default model:
+
+| Setup | Wall time | Claude cost | Hidden tests | Slowest session |
+|---|---|---|---|---|
+| 6 Claude sessions (09:29) | 7m 32s | $0.99 | 34/34 | recalc 211s |
+| 4 Claude sessions (median of 3) | 3m 59s | $0.72 | 33–34/34 | - |
+| 3 Claude + 3 Codex | 11m 29s | $0.49 + Codex quota | 34/34 | structure (Codex) 611s |
+
+- **Codex does sidestep the Claude account's limit:** the three Claude sessions wrote at about 133–145 tokens/s, near one agent alone (~170), against ~83 when six Claude sessions ran at once. They finished in 86–135s.
+- **But the Codex sessions were the bottleneck:** 287s, 413s and 611s for modules Claude sessions did in 1.5–3.5 minutes. So the run took 11m 29s, slower than six Claude sessions and nearly three times four.
+- **The result was right:** 34/34 hidden tests, rehearse passed first time, no fix round. Codex's change to the generated `src/index.mjs` was reverted when its work was committed, as designed (Codex sessions are guarded at commit time only).
+- **What it's good for:** Claude cost fell to $0.49, since Codex sessions use your ChatGPT plan's quota instead. Mixing in Codex saves Claude spend and quota, not time. For speed, keep to at most four Claude sessions; give Codex parts that nothing else waits on. A faster Codex setting (lower reasoning effort) wasn't tried.
+
 ## What this does and doesn't show
 
 - **It shows** that on overlapping work, fanout kept `main` free of conflicts and breakage, with no integration step afterwards, at about the same Claude cost: $0.50–$0.92 against $0.59–$0.63.
