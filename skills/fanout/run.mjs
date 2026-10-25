@@ -112,10 +112,13 @@ function runOnce({ agent = "claude", cwd, prompt, model, budget, plugin = false,
     cmd = [bin("claude"), "-p", ...(resume ? ["--resume", resume] : []), "--tools", CLAUDE_TOOLS, "--permission-mode", "acceptEdits", "--allowedTools", q(tools.join(",")), "--output-format", "stream-json", "--verbose",
       "--strict-mcp-config", ...sources, ...guardSettings(), ...(model ? ["--model", model] : []), ...(budget ? ["--max-budget-usd", budget] : [])].join(" ");
   } else if (agent === "codex") {
-    // FANOUT_CODEX_EFFORT (minimal|low|medium|high) sets Codex's reasoning effort for its sessions.
-    const effort = process.env.FANOUT_CODEX_EFFORT;
+    // FANOUT_CODEX_EFFORT (minimal|low|medium|high) sets Codex's reasoning effort for its sessions;
+    // FANOUT_CODEX_TIER sets its service tier ("fast" = Codex's Fast tier, service_tier=priority: about a
+    // fifth quicker on the sheet benchmark, at more usage).
+    const effort = process.env.FANOUT_CODEX_EFFORT, tier = process.env.FANOUT_CODEX_TIER === "fast" ? "priority" : process.env.FANOUT_CODEX_TIER;
+    const conf = (k, v) => (v && /^\w+$/.test(v) ? ["-c", `${k}=${v}`] : []);
     cmd = [bin("codex"), "exec", "--json", "-s", "workspace-write", "--skip-git-repo-check", "-C", q(cwd), ...(model ? ["-m", model] : []),
-      ...(effort && /^\w+$/.test(effort) ? ["-c", `model_reasoning_effort=${effort}`] : []), ...(resume ? ["resume", resume] : [])].join(" ");
+      ...conf("model_reasoning_effort", effort), ...conf("service_tier", tier), ...(resume ? ["resume", resume] : [])].join(" ");
   } else cmd = agent;
   return new Promise((done) => {
     const p = spawn(cmd, { cwd, shell: true });
