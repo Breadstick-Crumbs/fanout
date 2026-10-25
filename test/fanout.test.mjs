@@ -481,7 +481,7 @@ test("overlap: finds files changed in more than one checkout, committed or not, 
   g(d, "worktree", "add", "-q", "-b", "claude/chat", chat);
   writeFileSync(join(chat, "footer.php"), "a\nb\nC\n"); g(chat, "commit", "-qam", "chat");
   r = run(["overlap"], { cwd: d });
-  assert.match(r.stdout, /OVERLAP claude\/footer <-> claude\/chat: footer\.php\n  their commits merge cleanly/);
+  assert.match(r.stdout, /OVERLAP claude\/chat <-> claude\/footer: footer\.php\n  their commits merge cleanly/);
   writeFileSync(join(chat, "footer.php"), "Z\nb\nC\n"); g(chat, "commit", "-qam", "chat 2");
   r = run(["overlap"], { cwd: d });
   assert.equal(r.status, 1);

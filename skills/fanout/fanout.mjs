@@ -380,6 +380,8 @@ export function checkoutOverlap(cwd, base, { activeHours = 24 } = {}) {
     const name = t.branch ?? `(detached ${t.head.slice(0, 7)})`;
     out.push({ name, path: t.path, head: t.head, committed, dirty, files, behind: Number(spawnSync("git", ["rev-list", "--count", `${t.head}..${base}`], { cwd: root, encoding: "utf8" }).stdout) || 0 });
   }
+  // Stable output: the base's own checkout first, then by name (git lists worktrees by path).
+  out.sort((a, b) => (a.name === base ? -1 : b.name === base ? 1 : a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   const pairs = [];
   for (let i = 0; i < out.length; i++) for (let j = i + 1; j < out.length; j++) {
     const a = out[i], b = out[j], shared = a.files.filter((f) => b.files.includes(f));
