@@ -157,6 +157,21 @@ A client's WordPress theme: move About, Contact, the quote cart and search resul
 
 One agent was faster and cheaper and made no link mistake. It put all four pages in one new file (`inc/f-pages.php`, 554 lines). This matches the benchmark: four pages of 2–3 minutes each is too small for parallel to pay. fanout's planning (about 1.5 minutes) plus the slowest lane is longer than one agent doing all of it. Parallel needs parts that each take much longer than planning does. One run each; looks were not compared.
 
+## Large task: a spreadsheet engine (v0.18)
+
+The [sheet](sheet/) fixture was built to be big enough for parallel work to win: six heavy modules ([TASKS.md](sheet/TASKS.md)): a formula parser and evaluator, recalculation with cycle detection, number formats, CSV, row/column insert and delete with reference rewriting, and sort/pivot. recalc builds on formula, and table builds on recalc. Scored on 34 hidden tests ([sheet-acceptance/](sheet-acceptance/)), checked against a reference solution ([sheet-reference/](sheet-reference/)). One run each, Sonnet, 25 October 2026 ([09:21](results/2026-10-25-09-21.md), [09:29](results/2026-10-25-09-29.md)).
+
+| Setup | Wall time | Agent cost | Output tokens | Hidden tests | Conflicts / repairs on `main` |
+|---|---|---|---|---|---|
+| One agent | 4m 05s | $0.58 | 37k | 33/34 | 0 / 0 |
+| Six agents, fanout | 7m 32s | $0.99 | 53k | 34/34 | 0 / 0 (1 lane fix before merging) |
+
+- **One agent still won on time and cost,** by about 1.8× and 1.7×. The task was meant to take minutes per module, and the single agent did all six in 4 minutes.
+- **The lanes alone barely beat one agent.** The slowest lane (recalc) took 211s, against 241s for one agent doing everything. Planning (81s), rehearse, one fix (43s) and merging added about 4 minutes on top.
+- **Parallel agents wrote at about half the speed.** The single agent produced about 170 output tokens per second of model time; the six lanes running at once averaged about 80. They also wrote more: 48k tokens across the lanes against 37k for the whole job in one session, since each lane re-reads the code and writes its own tests. So six agents in parallel did not give six times the throughput.
+- **fanout did its job on quality:** rehearse caught a break after the formula lane, that lane fixed it before anything reached `main`, and the result passed all 34 hidden tests. The single agent missed one (column delete with reversed range corners).
+- **What this means:** making the task bigger doesn't move the break-even much on its own, because one agent gets faster per task as it goes and parallel agents slow each other down. Parallel pays off when parts are long *and* the run isn't throughput-bound. The per-lane overhead (planning, re-reading, per-lane tests, rehearse) is the cost to cut.
+
 ## What this does and doesn't show
 
 - **It shows** that on overlapping work, fanout kept `main` free of conflicts and breakage, with no integration step afterwards, at about the same Claude cost: $0.50–$0.92 against $0.59–$0.63.
@@ -180,4 +195,5 @@ node bench/run.mjs all --fixture library --budget 2 --single-budget 5   # the bi
 node bench/run.mjs both --dry                # plumbing only, no agents
 node bench/run.mjs both --codex-lane receipt # run the receipt lane in Codex
 node bench/run.mjs fanout --fixture library --vague --planner-model opus   # one-line goal: the planner picks the split
+node bench/run.mjs single --fixture sheet --single-budget 8 && node bench/run.mjs fanout --fixture sheet --budget 2   # the large task
 ```
