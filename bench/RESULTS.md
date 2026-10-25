@@ -342,6 +342,21 @@ Six sessions on the sheet task, one per module, three in Claude (formula, recalc
 - **The run had one break** (recalc against formula, both Claude). Its fix round took 21s and $0.05: the first in-run measurement of v0.21's fix step.
 - **So for mixed runs, run Codex on low effort.** One run; whether low effort holds up on harder parts is untested.
 
+**Where a Codex session's time goes.** One module (numfmt) with fanout's brief, `codex exec` started directly with each JSON event timed, scored on the 6 hidden numfmt tests. One run per row, low effort throughout, Codex CLI 0.164:
+
+| Setup | Time | Hidden tests |
+|---|---|---|
+| gpt-6.1-sol (your default model), alone | 205s | 6/6 |
+| gpt-6.1-sol, three sessions at once | 211s, 231s, 284s | 6/6 each |
+| gpt-6.1-sol, Fast tier (`-c service_tier=priority`, uses more quota) | 168s | 6/6 |
+| gpt-6-luna (the fast model) | 152s | 5/6 |
+| (Claude Sonnet sessions on numfmt, earlier runs) | 80–171s | - |
+
+- **Running commands is a small part:** 13–20s per session. Most of the time is the model deciding its next step, 5–28s per step over about ten steps; some file edits also took 8–23s to apply.
+- **Codex sessions slow each other a little:** three at once took 1.0–1.4× as long as one alone, much less than six Claude sessions on one account (about 2×).
+- **The Fast tier cut about a fifth** with no loss; gpt-6-luna cut about a quarter but missed a hidden test.
+- **Every Codex call carries about 18.7k tokens of instructions** before the task (Codex's own instructions, the skill list from installed plugins, tool definitions, your AGENTS.md), mostly served from cache after the first call. Turning plugins off with `-c` overrides didn't change it.
+
 ## What this does and doesn't show
 
 - **It shows** that on overlapping work, fanout kept `main` free of conflicts and breakage, with no integration step afterwards, at about the same Claude cost: $0.50–$0.92 against $0.59–$0.63.
