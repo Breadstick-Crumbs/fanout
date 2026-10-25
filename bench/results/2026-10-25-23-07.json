@@ -1,0 +1,120 @@
+[
+  {
+    "condition": "fanout",
+    "agents": [
+      {
+        "role": "coordinator",
+        "lane": "-",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 16,
+        "costUsd": 0.0490195,
+        "inTokens": 41874,
+        "outTokens": 655,
+        "error": null,
+        "sessionId": "3647c8f6-d2b1-4970-b52c-77d7713588eb",
+        "turns": 3,
+        "modelSeconds": 8,
+        "tools": {
+          "Bash": [
+            "cd \"<tmp>/fanout-bench-fanout-HI5ST8/repo\"; ls; cat .fanout/plan.md | head -50; cat src/sheet.mjs src/addr.mjs; cat package.json"
+          ],
+          "Write": [
+            "<tmp>/fanout-bench-fanout-HI5ST8/repo/src/formula.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "formula",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 169,
+        "costUsd": 0.23473689999999997,
+        "inTokens": 123353,
+        "outTokens": 14652,
+        "error": null,
+        "sessionId": "60e03304-5f54-4de5-9690-ddfea3ca3deb",
+        "turns": 9,
+        "modelSeconds": 146,
+        "tools": {
+          "Bash": [
+            "cat src/addr.mjs; ls src test; cat package.json",
+            "cat src/formula.mjs; cat src/index.mjs",
+            "cat > src/formula.mjs <<'EOF'\n// Formula parsing and evaluation. Values: number, string, boolean, null (empty), or an error string starting with \"#\".\nimport { parseAddr, toAddr } from \"./addr.mjs\";\n\nconst TOKEN = /\\s*(?:(\\d+\\.?\\d*(?:[eE][+-]?\\d+)?|\\.\\d+(?:[eE][+-]?\\d+)?)|\"((?:[^\"]|\"\")*)\"|([$A-Za-z_][$A-Za-z0-9_.]*)|(<=|>=|<>|[-+*\\/^&=<>():,]))/y;\nconst REF = /^\\$?[A-Za-z]{1,3}\\$?[1-9]\\d*$/;\n\nfunction tokenize(text) {\n  const toks = [];\n  let pos = 0;\n  while (true) {\n    const ws = /\\s*/y;\n    ws.lastIndex = pos;\n    ws.exec(text);\n    pos = ws.lastIndex;\n    if (pos >= text.length) break;\n    TOKEN.lastIndex = pos;\n    const m = TOKEN.exec(text);\n    if (!m) throw new SyntaxError(`unexpected character '${text[pos]}' at ${pos}`);\n    pos = TOKEN.lastIndex;\n    if (m[1] !== undefined) toks.push({ t: \"num\", v: Number(m[1]) });\n    else if (m[2] !== undefined) toks.push({ t: \"str\", v: m[2].replace(/\"\"/g, '\"') });\n    else if (m[3] !== undefined) toks.push({ t: \"word\", v: m[3] });\n    else toks.push({ t: \"op\", v: m[4] });\n  }\n  return toks;\n}\n\nconst normRef = (s) => s.replace(/\\$/g, \"\").toUpperCase();\n\n// Parses formula text (without the leading \"=\") into an AST. Throws SyntaxError on bad syntax.\nexport function parseFormula(text) {\n  const toks = tokenize(String(text));\n  let i = 0;\n  const isOp = (...ops) => toks[i] && toks[i].t === \"op\" && ops.includes(toks[i].v);\n  const expect = (op) => {\n    if (!isOp(op)) throw new SyntaxError(`expected '${op}'`);\n    i++;\n  };\n\n  function binary(next, ops) {\n    let left = next();\n    while (isOp(...ops)) {\n      const op = toks[i++].v;\n      left = { type: \"bin\", op, left, right: next() };\n    }\n    return left;\n  }\n  const comparison = () => binary(concat, [\"=\", \"<>\", \"<\", \">\", \"<=\", \">=\"]);\n  const concat = () => binary(additive, [\"&\"]);\n  const additive = () => binary(term, [\"+\", \"-\"]);\n  const term = () => binary(power, [\"*\", \"/\"]);\n  const power = () => binary(unary, [\"^\"]);\n  function unary() {\n    if (isOp(\"-\", \"+\")) {\n      const op = toks[i++].v;\n      return { type: \"unary\", op, arg: unary() };\n    }\n    return primary();\n  }\n  function primary() {\n    const tok = toks[i];\n    if (!tok) throw new SyntaxError(\"unexpected end of formula\");\n    i++;\n    if (tok.t === \"num\") return { type: \"num\", value: tok.v };\n    if (tok.t === \"str\") return { type: \"str\", value: tok.v };\n    if (tok.t === \"op\") {\n      if (tok.v === \"(\") {\n        const e = comparison();\n        expect(\")\");\n        return e;\n      }\n      throw new SyntaxError(`unexpected '${tok.v}'`);\n    }\n    const w = tok.v;\n    if (isOp(\"(\")) {\n      i++;\n      const args = [];\n      if (!isOp(\")\")) {\n        args.push(comparison());\n        while (isOp(\",\")) {\n          i++;\n          args.push(comparison());\n        }\n      }\n      expect(\")\");\n      return { type: \"call\", name: w.toUpperCase(), args };\n    }\n    if (REF.test(w)) {\n      if (isOp(\":\")) {\n        i++;\n        const t2 = toks[i];\n        if (!t2 || t2.t !== \"word\" || !REF.test(t2.v)) throw new SyntaxError(\"bad range\");\n        i++;\n        const a = parseAddr(w.replace(/\\$/g, \"\")), b = parseAddr(t2.v.replace(/\\$/g, \"\"));\n        return {\n          type: \"range\",\n          c1: Math.min(a.col, b.col), c2: Math.max(a.col, b.col),\n          r1: Math.min(a.row, b.row), r2: Math.max(a.row, b.row),\n        };\n      }\n      return { type: \"ref\", addr: normRef(w) };\n    }\n    const u = w.toUpperCase();\n    if (u === \"TRUE\") return { type: \"bool\", value: true };\n    if (u === \"FALSE\") return { type: \"bool\", value: false };\n    return { type: \"name\", name: u };\n  }\n\n  const ast = comparison();\n  if (i < toks.length) throw new SyntaxError(`unexpected '${toks[i].v}'`);\n  return ast;\n}\n\nfunction* rangeAddrs(n) {\n  for (let r = n.r1; r <= n.r2; r++) for (let c = n.c1; c <= n.c2; c++) yield toAddr(c, r);\n}\n\n// Normalized addresses (no $, upper case) the formula reads, ranges expanded row by row, each once, in order of first appearance.\nexport function refsOf(ast) {\n  const seen = new Set();\n  const walk = (n) => {\n    if (n.type === \"ref\") seen.add(n.addr);\n    else if (n.type === \"range\") for (const a of rangeAddrs(n)) seen.add(a);\n    else if (n.type === \"bin\") (walk(n.left), walk(n.right));\n    else if (n.type === \"unary\") walk(n.arg);\n    else if (n.type === \"call\") n.args.forEach(walk);\n  };\n  walk(ast);\n  return [...seen];\n}\n\nconst isErr = (v) => typeof v === \"string\" && v.startsWith(\"#\");\nconst NUMRE = /^[+-]?(\\d+\\.?\\d*|\\.\\d+)([eE][+-]?\\d+)?$/;\n\nfunction toNum(v) {\n  if (isErr(v)) return v;\n  if (v === null) return 0;\n  if (typeof v === \"boolean\") return v ? 1 : 0;\n  if (typeof v === \"string\") {\n    const t = v.trim();\n    return NUMRE.test(t) ? Number(t) : \"#VALUE!\";\n  }\n  return v;\n}\nconst fin = (x) => (typeof x === \"number\" && !Number.isFinite(x) ? \"#NUM!\" : x);\n\nfunction toText(v) {\n  if (v === null) return \"\";\n  if (typeof v === \"boolean\") return v ? \"TRUE\" : \"FALSE\";\n  return String(v);\n}\n\nfunction toBool(v) {\n  if (isErr(v)) return v;\n  if (v === null) return false;\n  if (typeof v === \"number\") return v !== 0;\n  if (typeof v === \"boolean\") return v;\n  const u = v.trim() === v ? v.toUpperCase() : v.toUpperCase();\n  if (u === \"TRUE\") return true;\n  if (u === \"FALSE\") return false;\n  return \"#VALUE!\";\n}\n\nconst rank = (v) => (typeof v === \"number\" ? 0 : typeof v === \"string\" ? 1 : 2);\n\nfunction compare(a, b) {\n  if (a === null && b === null) { a = 0; b = 0; }\n  else if (a === null) a = typeof b === \"number\" ? 0 : typeof b === \"string\" ? \"\" : false;\n  else if (b === null) b = typeof a === \"number\" ? 0 : typeof a === \"string\" ? \"\" : false;\n  const ra = rank(a), rb = rank(b);\n  if (ra !== rb) return ra - rb;\n  if (ra === 1) { a = a.toLowerCase(); b = b.toLowerCase(); }\n  return a < b ? -1 : a > b ? 1 : 0;\n}\n\n// Scales x by 10^k without binary floating-point error.\nconst shift = (x, k) => {\n  const [m, e] = x.toExponential().split(\"e\");\n  return Number(`${m}e${Number(e) + k}`);\n};\n\nfunction round(x, d) {\n  d = Math.trunc(d);\n  const abs = Math.abs(x);\n  const r = shift(Math.round(shift(abs, d)), -d);\n  return x < 0 ? -r : r;\n}\n\n// [min, max] argument counts\nconst ARITY = {\n  IF: [2, 3], NOT: [1, 1], ROUND: [2, 2], ABS: [1, 1], LEN: [1, 1], UPPER: [1, 1], LOWER: [1, 1],\n  SUM: [0, Infinity], AVERAGE: [0, Infinity], MIN: [0, Infinity], MAX: [0, Infinity], COUNT: [0, Infinity],\n  AND: [1, Infinity], OR: [1, Infinity], CONCAT: [0, Infinity],\n};\n\n// The formula's value. lookup(addr) returns a cell's value for a normalized address, null for an empty cell.\nexport function evaluate(ast, lookup) {\n  const ev = (n) => {\n    switch (n.type) {\n      case \"num\": case \"str\": case \"bool\": return n.value;\n      case \"ref\": return lookup(n.addr);\n      case \"range\": return \"#VALUE!\";\n      case \"name\": return \"#NAME?\";\n      case \"unary\": {\n        const v = toNum(ev(n.arg));\n        if (isErr(v)) return v;\n        return n.op === \"-\" ? fin(-v) : v;\n      }\n      case \"bin\": return binary(n);\n      case \"call\": return call(n);\n    }\n  };\n\n  function binary(n) {\n    const a = ev(n.left);\n    if (isErr(a)) return a;\n    const b = ev(n.right);\n    if (isErr(b)) return b;\n    switch (n.op) {\n      case \"&\": return toText(a) + toText(b);\n      case \"=\": return compare(a, b) === 0;\n      case \"<>\": return compare(a, b) !== 0;\n      case \"<\": return compare(a, b) < 0;\n      case \">\": return compare(a, b) > 0;\n      case \"<=\": return compare(a, b) <= 0;\n      case \">=\": return compare(a, b) >= 0;\n    }\n    const x = toNum(a);\n    if (isErr(x)) return x;\n    const y = toNum(b);\n    if (isErr(y)) return y;\n    switch (n.op) {\n      case \"+\": return fin(x + y);\n      case \"-\": return fin(x - y);\n      case \"*\": return fin(x * y);\n      case \"/\": return y === 0 ? \"#DIV/0!\" : fin(x / y);\n      case \"^\": return fin(Math.pow(x, y));\n    }\n  }\n\n  // Calls fn(value, isDirect) for each argument value in order (ranges expanded); stops and returns an error if fn does.\n  function each(args, fn) {\n    for (const a of args) {\n      if (a.type === \"range\") {\n        for (const addr of rangeAddrs(a)) {\n          const r = fn(lookup(addr), false);\n          if (r !== undefined) return r;\n        }\n      } else {\n        const r = fn(ev(a), true);\n        if (r !== undefined) return r;\n      }\n    }\n  }\n\n  function call(n) {\n    const arity = ARITY[n.name];\n    if (!arity) return \"#NAME?\";\n    const args = n.args;\n    if (args.length < arity[0] || args.length > arity[1]) return \"#VALUE!\";\n    switch (n.name) {\n      case \"SUM\": case \"AVERAGE\": case \"MIN\": case \"MAX\": {\n        const nums = [];\n        const err = each(args, (v, direct) => {\n          if (isErr(v)) return v;\n          if (direct) {\n            const x = toNum(v);\n            if (isErr(x)) return x;\n            nums.push(x);\n          } else if (typeof v === \"number\") nums.push(v);\n        });\n        if (err !== undefined) return err;\n        if (n.name === \"SUM\") return fin(nums.reduce((s, x) => s + x, 0));\n        if (n.name === \"AVERAGE\") return nums.length ? fin(nums.reduce((s, x) => s + x, 0) / nums.length) : \"#DIV/0!\";\n        if (!nums.length) return 0;\n        return n.name === \"MIN\" ? Math.min(...nums) : Math.max(...nums);\n      }\n      case \"COUNT\": {\n        let c = 0;\n        each(args, (v) => { if (typeof v === \"number\") c++; });\n        return c;\n      }\n      case \"IF\": {\n        const c = toBool(ev(args[0]));\n        if (isErr(c)) return c;\n        if (c) return ev(args[1]);\n        return args.length > 2 ? ev(args[2]) : false;\n      }\n      case \"AND\": case \"OR\": {\n        const and = n.name === \"AND\";\n        let acc = and;\n        const err = each(args, (v, direct) => {\n          if (isErr(v)) return v;\n          let b;\n          if (direct) {\n            b = toBool(v);\n            if (isErr(b)) return b;\n          } else if (typeof v === \"number\") b = v !== 0;\n          else if (typeof v === \"boolean\") b = v;\n          else return;\n          acc = and ? acc && b : acc || b;\n        });\n        return err !== undefined ? err : acc;\n      }\n      case \"NOT\": {\n        const b = toBool(ev(args[0]));\n        return isErr(b) ? b : !b;\n      }\n      case \"ROUND\": {\n        const x = toNum(ev(args[0]));\n        if (isErr(x)) return x;\n        const d = toNum(ev(args[1]));\n        if (isErr(d)) return d;\n        return fin(round(x, d));\n      }\n      case \"ABS\": {\n        const x = toNum(ev(args[0]));\n        return isErr(x) ? x : Math.abs(x);\n      }\n      case \"LEN\": case \"UPPER\": case \"LOWER\": {\n        const v = ev(args[0]);\n        if (isErr(v)) return v;\n        const s = toText(v);\n        return n.name === \"LEN\" ? s.length : n.name === \"UPPER\" ? s.toUpperCase() : s.toLowerCase();\n      }\n      case \"CONCAT\": {\n        let out = \"\";\n        const err = each(args, (v) => {\n          if (isErr(v)) return v;\n          out += toText(v);\n        });\n        return err !== undefined ? err : out;\n      }\n    }\n  }\n\n  return ev(ast);\n}\nEOF\ncat > test/formula.test.mjs <<'EOF'\nimport { test } from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { parseFormula, refsOf, evaluate } from \"../src/formula.mjs\";\n\nconst cells = { A1: 1, A2: 2, B1: \"x\", B2: null, C1: \"#DIV/0!\" };\nconst run = (f) => evaluate(parseFormula(f), (a) => cells[a] ?? null);\n\ntest(\"operators and precedence\", () => {\n  assert.equal(run(\"-2^2\"), 4);\n  assert.equal(run(\"2^3^2\"), 64);\n  assert.equal(run('\"a\"&1+2&TRUE'), \"a3TRUE\");\n  assert.equal(run(\"1/0\"), \"#DIV/0!\");\n  assert.equal(run('\"abc\"<\"ABD\"'), true);\n  assert.equal(run(\"A1:A2\"), \"#VALUE!\");\n  assert.throws(() => parseFormula(\"1+\"), SyntaxError);\n});\n\ntest(\"functions\", () => {\n  assert.equal(run(\"SUM(A1:B2, 3)\"), 6);\n  assert.equal(run(\"sum(C1:C1)\"), \"#DIV/0!\");\n  assert.equal(run(\"COUNT(A1:B2)\"), 2);\n  assert.equal(run(\"ROUND(-2.5,0)\"), -3);\n  assert.equal(run(\"ROUND(1.005,2)\"), 1.01);\n  assert.equal(run(\"IF(TRUE,1,1/0)\"), 1);\n  assert.equal(run(\"FOO(1)\"), \"#NAME?\");\n  assert.equal(run(\"ABS()\"), \"#VALUE!\");\n});\n\ntest(\"refsOf\", () => {\n  assert.deepEqual(refsOf(parseFormula(\"$b$1+SUM(A1:B2)\")), [\"B1\", \"A1\", \"A2\", \"B2\"]);\n});\nEOF\nnpm run gen 2>&1 | tail -2; npm test 2>&1 | tail -25",
+            "git status --short; wc -l src/formula.mjs test/formula.test.mjs",
+            "npm test 2>&1 | tail -30",
+            "npm run gen 2>&1 | tail -2; npm test 2>&1 | grep -E \"^# (tests|pass|fail)|not ok|Error|expected|actual\" | head -30"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-HI5ST8\\formula\\src\\formula.mjs",
+            "<tmp>\\fanout-bench-fanout-HI5ST8\\formula\\test\\formula.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "recalc-table",
+        "kind": "codex",
+        "agent": "codex",
+        "seconds": 268,
+        "costUsd": null,
+        "inTokens": 181178,
+        "outTokens": 4869,
+        "error": null,
+        "sessionId": "01a1754d-4238-70e0-a9c6-aed4cffda137"
+      },
+      {
+        "role": "lane",
+        "lane": "numfmt",
+        "kind": "codex",
+        "agent": "codex",
+        "seconds": 230,
+        "costUsd": null,
+        "inTokens": 166258,
+        "outTokens": 3542,
+        "error": null,
+        "sessionId": "01a1754d-4bc1-7863-bfbd-1d025e1d87ce"
+      },
+      {
+        "role": "lane",
+        "lane": "csv-structure",
+        "kind": "codex",
+        "agent": "codex",
+        "seconds": 229,
+        "costUsd": null,
+        "inTokens": 200400,
+        "outTokens": 3592,
+        "error": null,
+        "sessionId": "01a1754d-5265-7d01-a754-47a4fe2d8cf6"
+      }
+    ],
+    "conflicts": [],
+    "brokeAfter": [],
+    "repairCommits": 0,
+    "rehearsals": [
+      "CHECK OK numfmt\nCHECK OK csv-structure\nAll branches merge and pass together."
+    ],
+    "blockedFiles": [
+      "recalc-table: src/index.mjs"
+    ],
+    "flags": [],
+    "plan": "test: npm test\nregen: src/index.mjs via npm run gen\n\n## formula\nowns: src/formula.mjs, test/formula.test.mjs\ntask: Add `src/formula.mjs` with:\r\ncheck: node --test test/formula.test.mjs\nexposes: src/formula.mjs\n\n## recalc-table\nowns: src/recalc.mjs, test/recalc.test.mjs, src/table.mjs, test/table.test.mjs\ntask: Add `src/recalc.mjs`, built on `parseFormula`, `refsOf` and `evaluate` from `src/formula.mjs`:\r; Add `src/table.mjs`:\r\ncheck: node --test test/recalc.test.mjs test/table.test.mjs\nuses: src/formula.mjs\n\n## numfmt\nowns: src/numfmt.mjs, test/numfmt.test.mjs\ntask: Add `src/numfmt.mjs` with `formatNumber(value, pattern)`, a subset of spreadsheet number formats\ncheck: node --test test/numfmt.test.mjs\n\n## csv-structure\nowns: src/csv.mjs, test/csv.test.mjs, src/structure.mjs, test/structure.test.mjs\ntask: Add `src/csv.mjs`:\r; Add `src/structure.mjs` with `insertRows(sheet, at, count = 1)`, `deleteRows(sheet, at, count = 1)`, `insertCols(sheet, at, count = 1)` and `deleteCols(sheet, a\ncheck: node --test test/csv.test.mjs test/structure.test.mjs\n",
+    "mix": {
+      "formula": "claude",
+      "recalc-table": "codex",
+      "numfmt": "codex",
+      "csv-structure": "codex"
+    },
+    "earlyTests": [
+      "recalc-table with formula: pass"
+    ],
+    "finalTestsPass": true,
+    "seconds": 304,
+    "acceptance": {
+      "pass": 34,
+      "total": 34,
+      "failed": []
+    }
+  }
+]

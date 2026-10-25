@@ -357,6 +357,25 @@ Six sessions on the sheet task, one per module, three in Claude (formula, recalc
 - **The Fast tier cut about a fifth** with no loss; gpt-6-luna cut about a quarter but missed a hidden test.
 - **Every Codex call carries about 18.7k tokens of instructions** before the task (Codex's own instructions, the skill list from installed plugins, tool definitions, your AGENTS.md), mostly served from cache after the first call. Turning plugins off with `-c` overrides didn't change it.
 
+### Early tests and `--mix` (v0.22)
+
+Two changes, both scripted:
+- **Early test:** when a session that builds on others is done and so are they, their branches are merged into its branch and the plan's test runs there while the other sessions still work. A failure goes straight back to that session; a pass undoes the merge and runs no agent.
+- **`--mix`:** sessions others build on run in Claude (at most three), the rest in Codex.
+
+Sheet task, drafted plan (four sessions: formula, recalc-table, numfmt, csv-structure), Sonnet, short tests, one run each:
+
+| Run | Wall time | Claude cost | Hidden tests | Early test | Fix rounds | Slowest session |
+|---|---|---|---|---|---|---|
+| 4 Claude sessions ([23:02](results/2026-10-25-23-02.md)) | 3m 37s | $0.88 | 34/34 | recalc-table vs formula: **failed**, fixed in 23s ($0.05) | 1 (early), rehearse passed first time | numfmt 178s |
+| `--mix`: 1 Claude + 3 Codex ([23:07](results/2026-10-25-23-07.md)) | 5m 04s | $0.28 + Codex quota | 34/34 | recalc-table vs formula: passed, no agent | 0 | recalc-table (Codex) 268s |
+| (4 Claude sessions, median of 3, v0.21) | 3m 59s | $0.72 | 33–34/34 | - | 0 | - |
+
+- **The early test caught the recalc-against-formula break** (the one rehearse found in about 3 of 10 earlier runs) 2m 32s into the run, while numfmt was still working. The fix took 23s and $0.05, and finished before numfmt did, so it added nothing to the wall time; rehearse then passed first time. Before, the same break cost a rehearse, a fix round after every session finished (21–49s) and a second rehearse.
+- **The run's cost ($0.88) is above the v0.21 median ($0.72)**: its four session agents cost $0.78 this time; the early fix itself was $0.05. One run, so this says the early test works, not that it changes the median.
+- **`--mix` with the four-session draft puts only formula in Claude:** nothing builds on recalc-table, numfmt or csv-structure. The three Codex sessions (low effort, now the default) took 229–268s, so the run took 5m 04s, about as long as the six-session 3 Claude + 3 Codex run (5m 09s), for $0.28 of Claude spend: 40% of the four-Claude median. The early test ran on a Codex session and passed.
+- **So:** `--mix` is for saving Claude spend and quota, at about a minute more than the four-Claude median on this task; for speed, run four Claude sessions. One run each.
+
 ## What this does and doesn't show
 
 - **It shows** that on overlapping work, fanout kept `main` free of conflicts and breakage, with no integration step afterwards, at about the same Claude cost: $0.50–$0.92 against $0.59–$0.63.

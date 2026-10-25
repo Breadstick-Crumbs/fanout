@@ -8,7 +8,7 @@
 //
 // Fixtures: shop (4 small tasks), library (6 bigger ones) and sheet (6 large ones, minutes each). If bench/<fixture>-acceptance/ exists, its hidden
 // tests are copied in at the end and scored, so every setup is judged the same way.
-//   node bench/run.mjs [single|baseline|fanout|both|all] [--fixture shop|library|sheet] [--groups a+b,c+d] [--lean] [--draft [--max-sessions 4] [--review]] [--single-budget 5] [--dry]   (both = baseline + fanout; all adds single) [--model sonnet] [--budget 1] [--codex-lane receipt[,csv]|none]
+//   node bench/run.mjs [single|baseline|fanout|both|all] [--fixture shop|library|sheet] [--groups a+b,c+d] [--lean] [--draft [--max-sessions 4] [--review]] [--single-budget 5] [--dry]   (both = baseline + fanout; all adds single) [--model sonnet] [--budget 1] [--codex-lane receipt[,csv]|none] [--mix]
 // --dry swaps every agent for a no-op (the coordinator writes a canned plan) to test the plumbing.
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from "node:fs";
@@ -17,7 +17,8 @@ import { scrub } from "./scrub.mjs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parsePlan, parseRegen, planSetting, blockReason } from "../skills/fanout/fanout.mjs";
-import { runAgent, staggered, plannerPrompt, contractsPrompt, contractsReady, bringIn, brief as laneBrief, signInProblem } from "../skills/fanout/run.mjs";
+import { runAgent, staggered, plannerPrompt, contractsPrompt, contractsReady, bringIn, brief as laneBrief, signInProblem, mixAgents, readyTracker, earlyTest } from "../skills/fanout/run.mjs";
+import { failureLines } from "../skills/fanout/fanout.mjs";
 import { draftPlan } from "../skills/fanout/draft.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -40,6 +41,8 @@ const modelForRole = (role) => (role === "coordinator" ? PLANNER_MODEL : role ==
 const FIXTURE = opt("--fixture", "shop"), FIXTURE_DIR = join(ROOT, "bench", FIXTURE), ACCEPTANCE = join(ROOT, "bench", `${FIXTURE}-acceptance`);
 const TASKS_MD = readFileSync(join(FIXTURE_DIR, "TASKS.md"), "utf8");
 const CODEX_LANE = opt("--codex-lane", "none"), CODEX_LANES = CODEX_LANE.split(","); // lane name(s), comma-separated, to run in Codex
+// --mix: as fanout run --mix, the fanout lanes others build on run in Claude, the rest in Codex (set once the plan is known).
+const MIX = argv.includes("--mix");
 const TASKS = Object.fromEntries(TASKS_MD.split(/^## /m).slice(1)
   .map((b) => { const [name, ...rest] = b.split("\n"); return [name.trim(), rest.join("\n").trim()]; }));
 const LANES = Object.keys(TASKS);
@@ -219,8 +222,28 @@ async function fanout() {
     }
     return git(wts[l], "commit", "-qm", l);
   };
-  R.agents.push(...await staggered(names, (l) => agent({ lane: l, role: "lane", cwd: wts[l], prompt: brief(sessions.find((s) => s.name === l)) })));
-  for (const l of names) commitLane(l);
+  if (MIX) { const m = mixAgents(sessions); CODEX_LANES.splice(0, CODEX_LANES.length, ...names.filter((l) => m[l] === "codex")); R.mix = m; log(`fanout: --mix: ${names.map((l) => `${l} ${m[l]}`).join(", ")}`); }
+  // As fanout run: each lane is committed as it finishes, and a lane that builds on others is tested against
+  // them as soon as they and it are done (earlyTest); a failure goes straight back to it, before rehearse.
+  const tracker = readyTracker(sessions), rounds = [];
+  R.earlyTests = [];
+  const earlyRound = async (s) => {
+    const e = earlyTest(wts[s.name], order, s.name, regen, planSetting(text, "test"));
+    if (!e) return;
+    R.earlyTests.push(`${s.name} with ${e.merged.join(", ")}: ${e.ok ? "pass" : "fail"}`);
+    log(`fanout: early test ${s.name} with ${e.merged.join(", ")}: ${e.ok ? "pass" : "fail"}`);
+    if (e.ok) return;
+    R.agents.push(await agent({ lane: s.name, role: "fix", cwd: wts[s.name], prompt: `${brief(s)}\n\nYour work was committed. ${e.merged.join(", ")} finished too and ${e.merged.length > 1 ? "are" : "is"} now merged into your branch, and \`${planSetting(text, "test")}\` fails there:\n${failureLines(e.out)}\n\nTheir real code is in your checkout: fix the break within the files you may change.` }));
+    if (commitLane(s.name).ok) R.repairCommits++;
+  };
+  const startRounds = (ready) => ready.forEach((s) => rounds.push(earlyRound(s).catch((e) => log(`fanout: early test ${s.name} failed to run: ${e.message}`)).then(() => startRounds(tracker.settle(s.name)))));
+  R.agents.push(...await staggered(names, async (l) => {
+    const a = await agent({ lane: l, role: "lane", cwd: wts[l], prompt: brief(sessions.find((s) => s.name === l)) });
+    commitLane(l);
+    if (!a.error) startRounds(tracker.done(l));
+    return a;
+  }));
+  for (let i = 0; i < rounds.length; i++) await rounds[i];
   for (let round = 0; round < 3; round++) {
     const r = run(process.execPath, [FANOUT, "rehearse"], repo);
     R.rehearsals.push(tail(r.out, 3));
@@ -259,13 +282,13 @@ function report(results) {
   const agents = results.flatMap((R) => R.agents.map((a) => `| ${R.condition} | ${a.role} | ${a.lane} | ${a.kind} | ${a.seconds}s | ${a.modelSeconds ?? "?"}s | ${a.turns ?? "?"} | ${toolsOf(a)} | ${usd(a.costUsd)} | ${Math.round((a.inTokens + a.outTokens) / 1000)}k | ${a.error ?? ""} |`));
   return `# Benchmark ${new Date().toISOString().slice(0, 16).replace("T", " ")}${DRY ? " (dry run)" : ""}
 
-Models: ${MODEL} (single agent, integrator), planner ${PLANNER_MODEL}, sessions ${SESSION_MODEL}${CODEX_LANE === "none" ? "" : `, Codex for ${CODEX_LANES.map((l) => `"${l}"`).join(", ")}`}. Fixture: ${FIXTURE}${VAGUE ? " (vague goal: the planner picks the split)" : ""}${GROUPS ? `, lanes ${LANES.join(", ")}` : ""}${LEAN ? ", lean lanes (at most 3 tests each)" : ""}${DRAFT ? `, plan drafted without AI${REVIEW ? " (full review)" : ""}` : ""}. Budget cap per Claude agent: ${BUDGET} (single agent: ${SINGLE_BUDGET}).
+Models: ${MODEL} (single agent, integrator), planner ${PLANNER_MODEL}, sessions ${SESSION_MODEL}${MIX ? `, --mix (Codex for ${CODEX_LANES.map((l) => `"${l}"`).join(", ") || "none"})` : CODEX_LANE === "none" ? "" : `, Codex for ${CODEX_LANES.map((l) => `"${l}"`).join(", ")}`}. Fixture: ${FIXTURE}${VAGUE ? " (vague goal: the planner picks the split)" : ""}${GROUPS ? `, lanes ${LANES.join(", ")}` : ""}${LEAN ? ", lean lanes (at most 3 tests each)" : ""}${DRAFT ? `, plan drafted without AI${REVIEW ? " (full review)" : ""}` : ""}. Budget cap per Claude agent: ${BUDGET} (single agent: ${SINGLE_BUDGET}).
 
 | Condition | Conflicts merging into main | Merges that broke tests | Repair commits | Final tests pass | Hidden tests | Wall time | Agent cost | Tokens | Agent runs |
 |---|---|---|---|---|---|---|---|---|---|
 ${rows.join("\n")}
 
-${results.map((R) => R.condition === "fanout" ? `fanout: rehearsals ${R.rehearsals.length}, files reverted for leaving their lane: ${R.blockedFiles.length ? R.blockedFiles.join("; ") : "none"}${R.error ? `. Error: ${R.error}` : ""}` : "").filter(Boolean).join("\n")}
+${results.map((R) => R.condition === "fanout" ? `fanout: rehearsals ${R.rehearsals.length}, early tests: ${R.earlyTests?.length ? R.earlyTests.join("; ") : "none"}, files reverted for leaving their lane: ${R.blockedFiles.length ? R.blockedFiles.join("; ") : "none"}${R.error ? `. Error: ${R.error}` : ""}` : "").filter(Boolean).join("\n")}
 
 | Condition | Role | Lane | Agent | Time | Model time | Turns | Tools | Cost | Tokens | Error |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -286,7 +309,7 @@ function acceptance(repo) {
 const timed = async (fn) => { const t0 = Date.now(), R = await fn(); R.seconds = Math.round((Date.now() - t0) / 1000); R.acceptance = acceptance(R.repo); delete R.repo; results.push(R); };
 const want = { single: ["single"], baseline: ["baseline"], fanout: ["fanout"], both: ["baseline", "fanout"], all: ["single", "baseline", "fanout"] }[MODE];
 if (!want) { console.error("usage: node bench/run.mjs [single|baseline|fanout|both|all] [--dry] ..."); process.exit(2); }
-const signIn = DRY ? null : signInProblem(["claude", ...(CODEX_LANE !== "none" ? ["codex"] : [])]);
+const signIn = DRY ? null : signInProblem(["claude", ...(MIX || CODEX_LANE !== "none" ? ["codex"] : [])]);
 if (signIn) { console.error(`bench: ${signIn}`); process.exit(2); }
 for (const c of want) await timed({ single, baseline, fanout }[c]);
 const md = report(results);

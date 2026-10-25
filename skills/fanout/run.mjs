@@ -1,5 +1,5 @@
 // fanout run: the whole fan-out as one command.
-//   fanout run ["goal" | --goal-file TASKS.md] [--yes] [--agent claude|codex|"<cmd>"] [--model m] [--session-model m] [--budget usd] [--fixes 2] [--max-sessions 4] [--full-tests] [--no-draft] [--review] [--no-merge]
+//   fanout run ["goal" | --goal-file TASKS.md] [--yes] [--agent claude|codex|"<cmd>"] [--model m] [--session-model m] [--budget usd] [--fixes 2] [--max-sessions 4] [--full-tests] [--no-draft] [--review] [--mix] [--no-merge]
 //
 // 1. Plan: uses .fanout/plan.md if it exists. A goal written as "## name" sections with the files in
 //    backticks is drafted into a plan without AI (draft.mjs); an agent writes the contract files and
@@ -7,7 +7,9 @@
 //    plan from the goal and the plan rules (plannerPrompt), and commits the contract files.
 // 2. Approve: shows the plan once (skip with --yes).
 // 3. Lanes: one agent per session, in parallel, each in .fanout/lanes/<name> on branch fanout/<name>.
-//    Their work is committed for them; files the plan forbids are reverted.
+//    Their work is committed for them; files the plan forbids are reverted. A session that builds on
+//    others is tested against their branches as soon as they and it are done (earlyTest), and a failure
+//    goes straight back to it. --mix puts the sessions others build on in Claude, the rest in Codex.
 // 4. Rehearse: merge everything on a scratch copy and test. A break goes back to the lane that caused
 //    it, which fixes its own branch, with the branches merged ahead of it brought in first (bringIn).
 //    A lane that fails --fixes times stops the run for a human.
@@ -21,7 +23,7 @@ import { createInterface } from "node:readline/promises";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { parsePlan, parseRegen, planSetting, check, rehearse, blockReason, mainRoot, appendLog, matches, ownsFile } from "./fanout.mjs";
+import { parsePlan, parseRegen, planSetting, check, rehearse, blockReason, mainRoot, appendLog, matches, ownsFile, contractOwner, failureLines } from "./fanout.mjs";
 import { draftPlan } from "./draft.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -241,6 +243,61 @@ export function bringIn(wt, order, name, regen) {
   return { merged, conflicted };
 }
 
+// The sessions each session builds on: those exposing what it uses, the ones it is "after", and theirs in
+// turn. All of them merge ahead of it.
+export function dependencies(sessions) {
+  const direct = Object.fromEntries(sessions.map((s) => [s.name, new Set([...s.after,
+    ...s.uses.map((u) => contractOwner(sessions.filter((x) => x !== s), u)?.name).filter(Boolean)])]));
+  const all = (n, seen = new Set()) => { for (const d of direct[n] ?? []) if (!seen.has(d)) { seen.add(d); all(d, seen); } return seen; };
+  return Object.fromEntries(sessions.map((s) => [s.name, [...all(s.name)]]));
+}
+
+// --mix: Claude for the sessions others build on, Codex for the rest. On the sheet benchmark Codex
+// sessions took 2-3x as long as Claude ones (165-201s on low effort), so they go where nothing waits on
+// them; the Claude sessions on the chain the others build on ran at full speed with at most three of them
+// (six Claude sessions at once ran at about half speed). Above three, the sessions with the most sessions
+// built on them stay in Claude. A session's own agent: wins.
+export const MIX_CLAUDE_MAX = 3;
+export function mixAgents(sessions, maxClaude = MIX_CLAUDE_MAX) {
+  const deps = dependencies(sessions);
+  const dependents = (s) => sessions.filter((x) => deps[x.name].includes(s.name)).length;
+  const claude = sessions.filter((s) => dependents(s) > 0).sort((a, b) => dependents(b) - dependents(a)).slice(0, maxClaude).map((s) => s.name);
+  return Object.fromEntries(sessions.map((s) => [s.name, s.agent || (claude.includes(s.name) ? "claude" : "codex")]));
+}
+
+// Which finished sessions are ready for an early test (earlyTest): those with dependencies, once each of
+// them is settled. A session with none settles when it finishes; one with some, after its own early test
+// (and fix), so a session further down a chain is tested against the fixed code. done() and settle()
+// return the sessions that became ready, each once.
+export function readyTracker(sessions) {
+  const deps = dependencies(sessions), done = new Set(), settled = new Set(), started = new Set();
+  const ready = () => {
+    for (const s of sessions) if (done.has(s.name) && !deps[s.name].length) settled.add(s.name);
+    const r = sessions.filter((s) => deps[s.name].length && done.has(s.name) && !started.has(s.name) && deps[s.name].every((d) => settled.has(d)));
+    r.forEach((s) => started.add(s.name));
+    return r;
+  };
+  return { done: (n) => { done.add(n); return ready(); }, settle: (n) => { settled.add(n); return ready(); } };
+}
+
+// A finished session's test against the finished sessions it builds on, before rehearse. On the sheet
+// benchmark recalc broke against formula's real code in about 3 of 10 four-session runs, found only by
+// rehearse once every session was done; a fix round then cost 21-49s more. Here the sessions merged ahead
+// of it are brought into its branch (bringIn) as soon as they and it are done, and the plan's test runs
+// in its checkout while the other sessions still work. No agent runs unless it fails. Only the test, not
+// the session's check:, which is about the fully merged code. Returns null when nothing new was merged.
+export function earlyTest(wt, order, name, regen, test) {
+  if (!test) return null;
+  const before = git(wt, "rev-parse", "HEAD").out.trim();
+  const { merged, conflicted } = bringIn(wt, order, name, regen);
+  if (!merged.length) return null;
+  const r = sh(test, wt);
+  // A pass leaves nothing to fix: the branch goes back to the session's own commits (rehearse merges them
+  // all anyway), without what the test and the regen wrote. A failure keeps the merges for the fix.
+  if (r.ok) { git(wt, "reset", "-q", "--hard", before); git(wt, "clean", "-fdq"); }
+  return { ok: r.ok, merged, conflicted, out: r.out };
+}
+
 // Contracts a session builds against are pasted into its brief when they're small, so it doesn't spend
 // turns reading them (each turn resends the whole conversation). Larger ones are just named.
 const CONTRACT_INLINE_BYTES = 8000;
@@ -375,7 +432,7 @@ export async function cli(argv) {
   if (!(existsSync(exclude) && readFileSync(exclude, "utf8").includes(".fanout/"))) appendFileSync(exclude, "\n.fanout/\n");
   const planPath = join(root, ".fanout", "plan.md");
   const start = git(root, "rev-parse", "HEAD").out.trim();
-  const agents = [], fixes = {}, phases = {}, t0 = Date.now();
+  const agents = [], fixes = {}, earlyFixes = {}, phases = {}, t0 = Date.now();
   let testRuns = 0, phaseStart = t0, sessions = [], specs = {};
   // A drafted plan's one-line tasks leave out most of the goal, so each session's brief gets its own sections.
   const specNote = (s) => (specs[s.name] ? `\nFull spec for this session:\n${specs[s.name]}` : "");
@@ -395,7 +452,7 @@ export async function cli(argv) {
   const totals = () => {
     const known = agents.filter((a) => a.costUsd != null);
     return { costUsd: known.reduce((a, x) => a + x.costUsd, 0), costUnknown: known.length < agents.length,
-      tokens: agents.reduce((a, x) => a + x.inTokens + x.outTokens, 0), fixes: Object.values(fixes).reduce((a, b) => a + b, 0) };
+      tokens: agents.reduce((a, x) => a + x.inTokens + x.outTokens, 0), fixes: [...Object.values(fixes), ...Object.values(earlyFixes)].reduce((a, b) => a + b, 0), earlyFixes: Object.keys(earlyFixes).length };
   };
   // Every path that got past the preconditions ends here, so each run leaves one line in .fanout/log.jsonl.
   const finish = (code, result) => {
@@ -456,9 +513,11 @@ export async function cli(argv) {
   if (problems.length) { problems.forEach((p) => console.log(p)); console.error("fanout run: fix the plan, then run again."); return finish(1, "plan invalid"); }
 
   // 2. Approve
-  const agentFor = (s) => s.agent || defaultAgent;
+  const mix = flag("--mix") ? mixAgents(sessions) : null;
+  const agentFor = (s) => s.agent || mix?.[s.name] || defaultAgent;
   if (signInStop(sessions.map(agentFor))) return finish(1, "not signed in");
   console.log(`\n${text.trim()}\n\nMerge order: ${order.join(" -> ")}`);
+  if (mix) console.log(`Agents (--mix: Claude for sessions others build on, at most ${MIX_CLAUDE_MAX}; Codex for the rest): ${sessions.map((s) => `${s.name} ${agentFor(s)}`).join(", ")}`);
   if (!flag("--yes")) {
     if (!process.stdin.isTTY) { console.log("\nRun again with --yes to start these sessions."); return agents.length ? finish(0, "planned") : 0; }
     const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -503,8 +562,36 @@ export async function cli(argv) {
     setLive(s.name, { state: "failed", since: null });
     return { ...r, failed: true };
   };
+  // A session that builds on others gets an early test once they and it are done (earlyTest), and a
+  // failure goes straight back to it while the rest still work, instead of waiting for rehearse.
+  const session = {}, tracker = readyTracker(sessions), rounds = [];
+  const earlyRound = async (s) => {
+    if (ahead(s) === 0) return;
+    const e = earlyTest(wt[s.name], order, s.name, regen, test);
+    if (!e) return;
+    testRuns++;
+    if (e.ok) { log(`${s.name}: tests pass with ${e.merged.join(", ")} merged in`); return; }
+    earlyFixes[s.name] = 1;
+    log(`${s.name}: tests fail with ${e.merged.join(", ")} merged in; sending it the failure now`);
+    const report = `Your work was committed. ${e.merged.join(", ")} finished too and ${e.merged.length > 1 ? "are" : "is"} now merged into your branch, and \`${test}\` fails there:\n${failureLines(e.out)}\n\n`
+      + `${e.conflicted.length ? `${e.conflicted.join(", ")} conflicted with your branch and ${e.conflicted.length > 1 ? "were" : "was"} left out.\n` : ""}Their real code is in your checkout: fix the break within the files you may change.`;
+    setLive(s.name, { state: "fixing (early)", since: Date.now() });
+    const fix = track("fix", s.name, await runAgent({ agent: agentFor(s), cwd: wt[s.name], model: modelFor(s), budget, allow: [test, s.check], resume: session[s.name], prompt: report,
+      fallbackPrompt: brief(s, sessions, regen, test, `${specNote(s)}\n${report}`, root, { shortTests }) }));
+    session[s.name] = fix.sessionId ?? session[s.name];
+    commitLane(wt[s.name], sessions, s, regen, `fanout: fix ${s.name}`);
+    setLive(s.name, { state: "fixed", since: null });
+    log(`${s.name}: ${fix.error ? `fix agent failed (${fix.error}); rehearse will check it` : `fixed in ${fix.seconds}s`}`);
+  };
+  const startRounds = (ready) => ready.forEach((s) => rounds.push(earlyRound(s).catch((e) => log(`${s.name}: early test failed to run (${e.message})`)).then(() => startRounds(tracker.settle(s.name)))));
   live.phase = "sessions"; writeLive();
-  const lanes = await staggered(sessions, runLane);
+  const lanes = await staggered(sessions, async (s) => {
+    const r = await runLane(s);
+    session[s.name] = r.sessionId;
+    if (!r.failed) startRounds(tracker.done(s.name));
+    return r;
+  });
+  for (let i = 0; i < rounds.length; i++) await rounds[i]; // rounds can start more rounds as they end
   const failed = sessions.find((s, i) => lanes[i].failed);
   if (failed) {
     log(`stopped: ${failed.name} agent failed twice. Its work is in .fanout/lanes/${failed.name}; run again to retry unfinished sessions.`);
@@ -514,8 +601,6 @@ export async function cli(argv) {
     log("stopped: no session changed anything. If that's unexpected, the agents may have been blocked from editing; run again with FANOUT_TRACE_DIR set to see their tool calls.");
     return finish(1, "stopped: no changes");
   }
-  const session = Object.fromEntries(sessions.map((s, i) => [s.name, lanes[i].sessionId]));
-
   phase("sessions");
 
   // 4. Rehearse, and send each break back to the lane that caused it

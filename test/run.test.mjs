@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runAgent, brief, plannerPrompt, staggered, allowCommands } from "../skills/fanout/run.mjs";
+import { runAgent, brief, plannerPrompt, staggered, allowCommands, mixAgents, readyTracker, dependencies } from "../skills/fanout/run.mjs";
 import { parsePlan } from "../skills/fanout/fanout.mjs";
 import { scrub } from "../bench/scrub.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -376,6 +376,64 @@ test("a signed-out CLI stops the run before any agent starts", () => {
   assert.equal(calls().length, 0);
   // Signed out of Codex doesn't matter when no session uses it.
   assert.equal(runCli(mkRepo(PLAN_AB), { FAKE_SIGNED_OUT: "codex" }).status, 0);
+});
+
+test("--mix: Claude for sessions others build on (at most 3), Codex for the rest, shown before approval", () => {
+  const [core, mid, top, side] = parsePlan("## core\nowns: core.txt\nexposes: core.txt\n## mid\nowns: mid.txt\nexposes: mid.txt\nuses: core.txt\n## top\nowns: top.txt\nuses: mid.txt\n## side\nowns: side.txt\nagent: claude\n");
+  assert.deepEqual(mixAgents([core, mid, top, side]), { core: "claude", mid: "claude", top: "codex", side: "claude" });
+  // A chain of five: the four built on compete for three Claude slots, most dependents first.
+  const chain = parsePlan([1, 2, 3, 4, 5].map((i) => `## s${i}\nowns: s${i}.txt\n${i < 5 ? `exposes: s${i}.txt\n` : ""}${i > 1 ? `uses: s${i - 1}.txt\n` : ""}`).join("\n"));
+  assert.deepEqual(mixAgents(chain), { s1: "claude", s2: "claude", s3: "claude", s4: "codex", s5: "codex" });
+  useFake();
+  const plan = "## core\nowns: core.txt\nexposes: core.txt\ntask: core\n\n## ui\nowns: ui.txt\nuses: core.txt\ntask: ui\n\n## docs\nowns: docs.txt\ntask: docs\n";
+  const r = spawnSync(process.execPath, [join(import.meta.dirname, "../skills/fanout/fanout.mjs"), "run", "--yes", "--no-merge", "--mix"],
+    { cwd: mkRepo(plan, { "core.txt": "stub" }), encoding: "utf8", env: { ...process.env, FANOUT_STAGGER_MS: "0" } });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /Agents \(--mix.*\): core claude, ui codex, docs codex/);
+  const kinds = Object.fromEntries(calls().map((c) => [c.stdin.match(/session "(\w+)"/)?.[1], c.args[0] === "exec" ? "codex" : "claude"]));
+  assert.deepEqual(kinds, { core: "claude", ui: "codex", docs: "codex" });
+});
+
+// b builds on a; the test fails once both are in, until b's file says "fixed".
+const PLAN_DEP = "test: node t.mjs\n\n## a\nowns: a.txt\nexposes: a.txt\ntask: a\n\n## b\nowns: b.txt\nuses: a.txt\ntask: b\n";
+const T_DEP = `import { existsSync, readFileSync } from "node:fs";
+if (existsSync("a.txt") && readFileSync("a.txt", "utf8") === "x" && existsSync("b.txt") && readFileSync("b.txt", "utf8") !== "fixed") { console.log("not ok 1 - b against a"); process.exit(1); }`;
+
+test("a session that builds on another is tested against it as soon as both are done, and fixed at once", () => {
+  useFake();
+  const repo = mkRepo(PLAN_DEP, { "t.mjs": T_DEP, "a.txt": "stub" });
+  const r = runCli(repo, { FAKE_FIX_FILE: "b.txt" });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /b: tests fail with a merged in; sending it the failure now/);
+  assert.match(r.stdout, /b: fixed in \d+s/);
+  assert.match(r.stdout, /rehearse: all branches merge and pass together/);
+  const fix = calls().find((c) => c.args.includes("--resume"));
+  assert.match(fix.stdin, /a finished too and is now merged into your branch, and `node t\.mjs` fails there:\nnot ok 1 - b against a/);
+  assert.equal(fix.args[fix.args.indexOf("--resume") + 1], "sess-1"); // b's own session
+  const run = JSON.parse(runLog(repo).trim().split("\n").at(-1));
+  assert.equal(run.earlyFixes, 1);
+  assert.equal(run.fixes, 1);
+});
+
+test("the early test costs no agent when nothing breaks", () => {
+  useFake();
+  const repo = mkRepo(PLAN_DEP.replace("node t.mjs", "node -e \"\""), { "a.txt": "stub" });
+  const r = runCli(repo);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /b: tests pass with a merged in/);
+  assert.equal(calls().length, 2);
+  assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: join(repo, ".fanout/lanes/b"), encoding: "utf8" }), "");
+});
+
+test("readyTracker: a session is ready once it and everything it builds on are settled", () => {
+  const sessions = parsePlan("## a\nowns: a\nexposes: a\n## b\nowns: b\nexposes: b\nuses: a\n## c\nowns: c\nuses: b\n## d\nowns: d\n");
+  const t = readyTracker(sessions), names = (xs) => xs.map((s) => s.name);
+  assert.deepEqual(names(t.done("c")), []);
+  assert.deepEqual(names(t.done("b")), []);
+  assert.deepEqual(names(t.done("a")), ["b"]); // c waits for b's own early test
+  assert.deepEqual(names(t.settle("b")), ["c"]);
+  assert.deepEqual(names(t.done("d")), []);
+  assert.deepEqual(dependencies(sessions).c.sort(), ["a", "b"]);
 });
 
 // A repo for drafted plans: src/ exists, and the test fails while a file named BAD exists.

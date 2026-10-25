@@ -242,7 +242,10 @@ Codex sessions run on low reasoning effort: on the [sheet benchmark](bench/RESUL
 Before any agent starts, `fanout run` checks that each CLI it will use is signed in (`claude auth status`, `codex login status`) and stops with one line if not, instead of letting every agent fail. It commits only its own files in your checkout (the planner's contracts and the regenerated files), so another session's uncommitted work there stays out of its commits; the checkout still has to be clean when the run starts.
 
 **Can I mix Claude Code and Codex?**
-Yes. Sessions are just git branches. Run some in Claude, some in Codex, or headless (`claude -p`, `codex exec`).
+Yes. Sessions are just git branches. Run some in Claude, some in Codex, or headless (`claude -p`, `codex exec`). `fanout run --mix` picks for you: sessions that others build on (another session `uses` what they expose, or is `after` them) run in Claude, at most three of them, and the rest in Codex. Codex sessions took 2–3× as long as Claude ones on our benchmark, so they go where nothing waits on them. The plan shows the assignment before you approve it, and a session's own `agent:` line wins.
+
+**What happens when a session breaks another's code?**
+As soon as a session that builds on others is done and so are they, `fanout run` merges their branches into its branch and runs the plan's test there, while the other sessions are still working. If it fails, that session gets the failure straight away (its own agent session is resumed). If it passes, the merge is undone and no agent runs. Then `rehearse` tests everything together as before.
 
 **What if two tasks need the same file?**
 Give it to one session. If others depend on it, make it a contract (`exposes` / `uses`). If it's generated, list it under `regen`.

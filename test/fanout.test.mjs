@@ -527,7 +527,8 @@ if (name === "b") {
 `);
   const fixLog = join(dir(), "fix.txt");
   mkdirSync(join(d, ".fanout"));
-  writeFileSync(join(d, ".fanout/plan.md"), "test: node test.mjs\n\n## a\nowns: a.mjs\nexposes: a.mjs\ntask: a returns 1\n\n## b\nowns: b.mjs\nuses: a.mjs\ntask: b returns a() + 1\n");
+  // b doesn't declare that it uses a.mjs, so no early test catches it before rehearse (that's in run.test.mjs).
+  writeFileSync(join(d, ".fanout/plan.md"), "test: node test.mjs\n\n## a\nowns: a.mjs\nexposes: a.mjs\ntask: a returns 1\n\n## b\nowns: b.mjs\ntask: b returns a() + 1\n");
   const r = run(["run", "--yes", "--no-merge", "--agent", `node "${fake}"`], { cwd: d, env: { ...process.env, FANOUT_STAGGER_MS: "0", FIX_LOG: fixLog } });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /rehearse: BROKE after b/);
