@@ -100,6 +100,15 @@ const prefixClash = (a, b) => {
 function git(args, cwd) {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
 }
+// Files a lane changed itself, against base. Before a fix round fanout run merges the branches ahead of
+// a lane into it, so it can test on their real code; files that came in only through those merges aren't
+// the lane's edits. Its own commits are the first-parent, non-merge ones.
+function laneChanged(base, head, cwd) {
+  const changed = git(["diff", "--name-only", `${base}...${head}`], cwd).split("\n").filter(Boolean);
+  if (git(["rev-list", "--merges", "--count", `${base}..${head}`], cwd).trim() === "0") return changed;
+  const own = new Set(git(["log", "--first-parent", "--no-merges", "--name-only", "--format=", `${base}..${head}`], cwd).split("\n").filter(Boolean));
+  return changed.filter((f) => own.has(f));
+}
 function repoFiles(cwd) {
   try { return git(["ls-files", "--cached", "--others", "--exclude-standard"], cwd).split("\n").filter(Boolean); }
   catch { return null; }
@@ -205,7 +214,7 @@ const defaultPlan = (cwd) => resolve(mainRoot(cwd), ".fanout", "plan.md");
 // test command once. Only if that fails does it bisect over the merge order (about log2(n) more runs)
 // to name the branch whose merge broke things, so a passing rehearsal costs one test run, not n.
 // The worktree sits in .fanout/ inside the main checkout so node_modules etc. still resolve.
-// Output is a few lines plus the tail of a failing run: cheap for an agent to read and act on.
+// Output is a few lines plus the failing tests of a failing run (failureLines): cheap for an agent to act on.
 // A session's "check:" is a command proving its own done: (a grep, a curl, a script). The test alone can
 // pass on code that doesn't do the job (a lint can't see a dead link or a missing switch), so once all
 // branches merge and pass, each session's check runs on the merged code; a failure names that session.
@@ -213,7 +222,7 @@ export function rehearse(order, { cwd, base = "main", test, regen = [], checks =
   const log = [], root = mainRoot(cwd), wt = join(root, ".fanout", "rehearse");
   let testRuns = 0;
   const sh = (cmd) => { if (cmd === test) testRuns++; return spawnSync(cmd, { cwd: wt, shell: true, encoding: "utf8" }); };
-  const tailOf = (r) => `${r.stdout ?? ""}${r.stderr ?? ""}`.trimEnd().split("\n").slice(-tail).join("\n");
+  const tailOf = (r) => failureLines(`${r.stdout ?? ""}${r.stderr ?? ""}`, tail);
   const g = (...a) => execFileSync("git", ["-c", "user.name=fanout", "-c", "user.email=fanout@local", ...a],
     { cwd: wt, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   const drop = () => { try { git(["worktree", "remove", "--force", wt], root); } catch { /* not there */ } };
@@ -279,6 +288,25 @@ export function rehearse(order, { cwd, base = "main", test, regen = [], checks =
   return { ok, log, testRuns };
 }
 
+// The part of a failing run an agent needs. With TAP output (node --test when not on a terminal) the end is
+// mostly the summary (# pass, # skipped, # duration_ms), so fix agents on the sheet benchmark reran the
+// tests to see what failed. Here each "not ok" line comes with the diagnostics under it, then the counts.
+// Other output: the last `tail` lines, as before.
+export function failureLines(out, tail = 20, max = 80) {
+  const lines = out.trimEnd().split("\n");
+  const starts = lines.flatMap((l, i) => (/^\s*not ok\b/.test(l) ? [i] : []));
+  if (!starts.length) return lines.slice(-tail).join("\n");
+  const picked = [];
+  for (const i of starts) {
+    // A test file's own top-level "not ok" only repeats the failures listed under its subtests.
+    if (picked.length && /^not ok \d+ - \S+\.(m?[jt]s|cjs)$/.test(lines[i])) continue;
+    picked.push(lines[i]);
+    for (let j = i + 1, n = 0; j < lines.length && n < 25 && !/^\s*(not )?ok\b|^\s*# Subtest|^# tests\b/.test(lines[j]); j++, n++) picked.push(lines[j]);
+  }
+  const counts = lines.filter((l) => /^# (tests|pass|fail) \d/.test(l));
+  return [...(picked.length > max ? [...picked.slice(0, max), `... (${picked.length - max} more lines)`] : picked), ...counts].join("\n");
+}
+
 // Run log: one JSON line per fan-out or rehearsal in .fanout/log.jsonl (git-ignored, stays local),
 // so real projects produce their own numbers: time, cost, fixes, test runs, result.
 export function appendLog(cwd, rec) {
@@ -319,7 +347,7 @@ function showStatus(cwd, base) {
     try {
       const ahead = git(["rev-list", "--count", `${base}..${branch}`], root).trim();
       behind = Math.max(behind, Number(git(["rev-list", "--count", `${branch}..${base}`], root).trim()) || 0);
-      const changed = git(["diff", "--name-only", `${base}...${branch}`], root).split("\n").filter(Boolean);
+      const changed = laneChanged(base, branch, root);
       const contracts = contractChanges(sessions, changed);
       const frozen = contracts.filter((f) => contractOwner(sessions, f).name !== s.name);
       const generated = changed.filter((f) => regenFor(regen, f));
@@ -463,7 +491,7 @@ function main(argv) {
   const s = sessions.find((x) => x.name === name);
   if (!s) { console.error(`No session "${name}" in plan. Pass --session or run from a fanout/<name> branch.`); return 2; }
   const base = arg(argv, "--base") ?? defaultBase(cwd), head = arg(argv, "--head", "HEAD");
-  const changed = git(["diff", "--name-only", `${base}...${head}`], cwd).split("\n").filter(Boolean);
+  const changed = laneChanged(base, head, cwd);
   const contracts = contractChanges(sessions, changed);
   const frozen = contracts.filter((f) => contractOwner(sessions, f).name !== name), evolved = contracts.filter((f) => !frozen.includes(f));
   const generated = changed.filter((f) => regenFor(regen, f));

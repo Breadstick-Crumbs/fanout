@@ -505,3 +505,50 @@ test("overlap: compares against main even when the main checkout is on a feature
   const r = run(["overlap"], { cwd: d });
   assert.match(r.stdout, /^docs\/notes: 1 file\(s\) changed/m, r.stdout); // against main; against itself it would show nothing
 });
+
+test("run: a broken lane gets the branches ahead of it merged in, so it fixes against their real code", () => {
+  const d = dir();
+  const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(d, "test.mjs"), 'import { existsSync } from "node:fs";\nif (existsSync("b.mjs")) { const { b } = await import("./b.mjs"); if (b() !== 2) { console.error("b is " + b()); process.exit(1); } }\n');
+  // a.mjs starts as a stub that throws, the way a contract does.
+  writeFileSync(join(d, "a.mjs"), 'export const a = () => { throw new Error("not implemented"); };\n');
+  g("add", "-A"); g("commit", "-qm", "init with contract");
+  // b guesses a returns 0 while it can only see the stub; on its fix it reads a.mjs from its own checkout.
+  const fake = join(dir(), "agent.mjs");
+  writeFileSync(fake, `import { readFileSync, writeFileSync, appendFileSync } from "node:fs";
+const brief = readFileSync(0, "utf8"), name = brief.match(/session "(\\w+)"/)?.[1] ?? "b";
+if (name === "a") writeFileSync("a.mjs", "export const a = () => 1;\\n");
+if (name === "b") {
+  const real = readFileSync("a.mjs", "utf8").includes("=> 1");
+  if (brief.includes("it broke")) appendFileSync(process.env.FIX_LOG, brief);
+  writeFileSync("b.mjs", 'export const b = () => ' + (real ? '1 + 1' : '0 + 2 + 1') + ";\\n");
+}
+`);
+  const fixLog = join(dir(), "fix.txt");
+  mkdirSync(join(d, ".fanout"));
+  writeFileSync(join(d, ".fanout/plan.md"), "test: node test.mjs\n\n## a\nowns: a.mjs\nexposes: a.mjs\ntask: a returns 1\n\n## b\nowns: b.mjs\nuses: a.mjs\ntask: b returns a() + 1\n");
+  const r = run(["run", "--yes", "--no-merge", "--agent", `node "${fake}"`], { cwd: d, env: { ...process.env, FANOUT_STAGGER_MS: "0", FIX_LOG: fixLog } });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /rehearse: BROKE after b/);
+  assert.match(r.stdout, /ready to merge in order a -> b \(3 agent runs, 1 fixes/);
+  assert.match(readFileSync(fixLog, "utf8"), /a is now merged into your branch/);
+  // The merged-in a.mjs isn't counted as b's edit.
+  const v = run(["verify", "--session", "b", "--head", "fanout/b"], { cwd: d });
+  assert.equal(v.status, 0, v.stdout + v.stderr);
+  assert.match(v.stdout, /b: 1 changed, 0 outside its owns, 0 contracts changed/);
+});
+
+test("failureLines: the failing tests and their diagnostics from TAP, not the summary", async () => {
+  const { failureLines } = await import("../skills/fanout/fanout.mjs");
+  const tap = ["TAP version 13", "# Subtest: recalc", "    # Subtest: dependents", "    not ok 1 - dependents", "      ---",
+    "      error: 'Expected values to be strictly deep-equal'", "      expected: [B2, C1, A3]", "      ...", "    ok 2 - order",
+    "not ok 1 - test/recalc.test.mjs", "  ---", "  ...", "1..1", "# tests 2", "# suites 0", "# pass 1", "# fail 1",
+    "# cancelled 0", "# skipped 0", "# todo 0", "# duration_ms 12.3"].join("\n");
+  const out = failureLines(tap);
+  assert.match(out, /not ok 1 - dependents/);
+  assert.match(out, /expected: \[B2, C1, A3\]/);
+  assert.match(out, /# fail 1/);
+  assert.doesNotMatch(out, /duration_ms|ok 2 - order|recalc\.test\.mjs/);
+  assert.equal(failureLines("a\nb\nc", 2), "b\nc"); // not TAP: the tail, as before
+});

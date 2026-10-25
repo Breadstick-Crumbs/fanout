@@ -9,7 +9,8 @@
 // 3. Lanes: one agent per session, in parallel, each in .fanout/lanes/<name> on branch fanout/<name>.
 //    Their work is committed for them; files the plan forbids are reverted.
 // 4. Rehearse: merge everything on a scratch copy and test. A break goes back to the lane that caused
-//    it, which fixes its own branch. A lane that fails --fixes times stops the run for a human.
+//    it, which fixes its own branch, with the branches merged ahead of it brought in first (bringIn).
+//    A lane that fails --fixes times stops the run for a human.
 // 5. Merge into the base branch in order, rebuild generated files, test once more.
 //
 // Agents: "claude" and "codex" run headless; anything else is a shell command that gets the brief on
@@ -175,6 +176,22 @@ export function commitLane(wt, sessions, s, regen, msg) {
   }
   const c = git(wt, "commit", "-qm", msg);
   return { committed: c.ok, reverted };
+}
+
+// Before a fix round, merges into the lane's branch every branch merged ahead of it, so its own checkout has
+// the real code it builds on instead of the contract stubs, and the plan's test reproduces the break there.
+// On the sheet benchmark the fix agents had only the stubs and spent 12-15 of their 17-18 commands
+// rebuilding a merged copy by hand; the fixes themselves were one edit. A branch that conflicts is left out.
+export function bringIn(wt, order, name, regen) {
+  const merged = [], conflicted = [];
+  for (const o of order.slice(0, Math.max(0, order.indexOf(name)))) {
+    const b = `fanout/${o}`;
+    if (!git(wt, "rev-parse", "--verify", "--quiet", b).ok || git(wt, "merge-base", "--is-ancestor", b, "HEAD").ok) continue;
+    if (git(wt, "merge", "--no-ff", "--no-edit", "-m", `fanout: merge ${o} into ${name} to fix against it`, b).ok) merged.push(o);
+    else { git(wt, "merge", "--abort"); conflicted.push(o); }
+  }
+  if (merged.length) for (const g of regen) sh(g.cmd, wt);
+  return { merged, conflicted };
 }
 
 // Contracts a session builds against are pasted into its brief when they're small, so it doesn't spend
@@ -459,7 +476,10 @@ export async function cli(argv) {
       log(`stopped: ${name ?? "a lane"} still breaks after ${maxFixes} fixes. Its work is in .fanout/lanes/${name}; fix it there, then run again.`);
       return finish(1, `stopped: ${name} still breaks`);
     }
-    const report = `Your branch was merged with the others in plan order and it broke:\n${r.log.join("\n")}\n\nFix it within the files you may change.`;
+    const { merged, conflicted } = bringIn(wt[name], order, name, regen);
+    const brought = [merged.length ? `${merged.join(", ")} ${merged.length > 1 ? "are" : "is"} now merged into your branch, so their real code is in your checkout: run the tests there to see the break.` : "",
+      conflicted.length ? `${conflicted.join(", ")} conflicted with your branch and ${conflicted.length > 1 ? "were" : "was"} left out.` : ""].filter(Boolean).join(" ");
+    const report = `Your branch was merged with the others in plan order and it broke:\n${r.log.join("\n")}\n\n${brought ? brought + "\n" : ""}Fix it within the files you may change.`;
     setLive(name, { state: `fixing (${fixes[name]})`, since: Date.now() });
     // Resume the lane's own session with just the break report; if that fails, send the full brief again.
     const fix = await runAgent({ agent: agentFor(s), cwd: wt[name], model: modelFor(s), budget, allow: [test, s.check], resume: session[name], prompt: report,
