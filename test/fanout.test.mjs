@@ -460,3 +460,38 @@ test("status: warns when the base has commits the lanes don't", () => {
   writeFileSync(join(d, "y.txt"), "2"); g("add", "-A"); g("commit", "-qm", "moved on");
   assert.match(run(["status"], { cwd: d }).stdout, /master has 1 commit\(s\) the lanes don't/);
 });
+
+test("overlap: finds files changed in more than one checkout, committed or not, and dry-merges them", () => {
+  const d = dir(), wt = (n) => join(dir(), n);
+  const g = (cwd, ...a) => execFileSync("git", a, { cwd, stdio: "ignore" });
+  g(d, "init", "-q", "-b", "master"); g(d, "config", "user.email", "t@t"); g(d, "config", "user.name", "t");
+  writeFileSync(join(d, "footer.php"), "a\nb\nc\n"); writeFileSync(join(d, "home.php"), "1\n"); g(d, "add", "-A"); g(d, "commit", "-qm", "init");
+  assert.match(run(["overlap"], { cwd: d }).stdout, /No active checkout has changes/);
+  // Like the real case: one session edits footer.php in the main checkout (uncommitted), another commits it in a worktree.
+  const footer = wt("footer"), chat = wt("chat"), old = wt("old");
+  g(d, "worktree", "add", "-q", "-b", "claude/footer", footer);
+  writeFileSync(join(footer, "footer.php"), "A\nb\nc\n"); g(footer, "commit", "-qam", "footer");
+  writeFileSync(join(d, "footer.php"), "a\nb\nC\n");
+  let r = run(["overlap"], { cwd: d });
+  assert.equal(r.status, 0, r.stdout);
+  assert.match(r.stdout, /OVERLAP master <-> claude\/footer: footer\.php/);
+  assert.match(r.stdout, /uncommitted, so not merge-checked: footer\.php/);
+  // Committed on both sides: different lines merge cleanly, the same line conflicts.
+  g(d, "checkout", "--", "footer.php");
+  g(d, "worktree", "add", "-q", "-b", "claude/chat", chat);
+  writeFileSync(join(chat, "footer.php"), "a\nb\nC\n"); g(chat, "commit", "-qam", "chat");
+  r = run(["overlap"], { cwd: d });
+  assert.match(r.stdout, /OVERLAP claude\/footer <-> claude\/chat: footer\.php\n  their commits merge cleanly/);
+  writeFileSync(join(chat, "footer.php"), "Z\nb\nC\n"); g(chat, "commit", "-qam", "chat 2");
+  r = run(["overlap"], { cwd: d });
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /CONFLICT if merged: footer\.php/);
+  // A worktree with only old commits is skipped unless --all.
+  g(d, "worktree", "add", "-q", "-b", "claude/old", old);
+  writeFileSync(join(old, "home.php"), "2\n"); g(old, "add", "-A");
+  execFileSync("git", ["commit", "-qm", "old"], { cwd: old, stdio: "ignore", env: { ...process.env, GIT_COMMITTER_DATE: "2020-01-01T00:00:00Z", GIT_AUTHOR_DATE: "2020-01-01T00:00:00Z" } });
+  r = run(["overlap"], { cwd: d });
+  assert.match(r.stdout, /1 older checkout\(s\) with no recent work skipped/);
+  assert.doesNotMatch(r.stdout, /claude\/old/);
+  assert.match(run(["overlap", "--all"], { cwd: d }).stdout, /claude\/old: 1 file\(s\) changed/);
+});

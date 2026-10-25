@@ -7,6 +7,7 @@
 //   fanout install-git-hook [--force]               same rules as a git pre-commit hook, for agents outside Claude Code
 //   fanout run ["goal"] [--yes] [--agent claude|codex|"<cmd>"]   do the whole fan-out: plan, agents, rehearse, fix, merge (see run.mjs)
 //   fanout status [--base <branch>]                     one table: each session's branch, commits, files, worktree, verify flags, agent state and cost (fanout run), last run and rehearse
+//   fanout overlap [--base <branch>] [--all]            every active checkout (any worktree, any session) and its changes, files changed in more than one, dry-run merge
 //   fanout log [--last 20]                          past runs and rehearsals from .fanout/log.jsonl: time, cost, fixes, test runs
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, chmodSync, existsSync, realpathSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -354,6 +355,62 @@ function liveCells(x, running) {
   if (x.since) state = running ? `${state} ${mins((Date.now() - x.since) / 1000)}` : `${state}, stopped`;
   return [state, x.costUsd === null ? "?" : x.costUsd == null ? "-" : `$${x.costUsd.toFixed(2)}`];
 }
+// Every checkout of the repo (main checkout and worktrees, whoever made them: fanout lanes, the desktop
+// app's sessions, a human), what each has changed against the base, committed or not, and where two
+// collide. Needs no plan. Pairs that share files also get a dry-run merge of their commits
+// (git merge-tree, nothing is written), so "conflict" means a real one. Built from a real case: two
+// sessions, one in the main checkout with uncommitted edits, one in a worktree, both about to edit footer.php.
+export function checkoutOverlap(cwd, base, { activeHours = 24 } = {}) {
+  const root = mainRoot(cwd);
+  const trees = git(["worktree", "list", "--porcelain"], root).split(/\n\n+/).filter(Boolean).map((b) => ({
+    path: b.match(/^worktree (.+)$/m)?.[1], head: b.match(/^HEAD (\w+)$/m)?.[1], branch: b.match(/^branch refs\/heads\/(.+)$/m)?.[1] ?? null,
+  })).filter((t) => t.path && t.head && !/[\\/]\.fanout[\\/]rehearse$/.test(t.path));
+  const out = [], cutoff = Date.now() / 1000 - activeHours * 3600;
+  let idle = 0;
+  for (const t of trees) {
+    const committed = t.branch === base ? [] : spawnSync("git", ["diff", "--name-only", `${base}...${t.head}`], { cwd: root, encoding: "utf8" }).stdout?.split("\n").filter(Boolean) ?? [];
+    const st = spawnSync("git", ["status", "--porcelain", "-uall"], { cwd: t.path, encoding: "utf8" });
+    const dirty = (st.stdout ?? "").split("\n").filter(Boolean).map((l) => l.slice(3).replace(/^.* -> /, "").replace(/^"|"$/g, "")).filter((f) => !f.startsWith(".fanout/"));
+    const files = [...new Set([...committed, ...dirty])];
+    if (!files.length) continue;
+    // Old worktrees nobody works in (finished or abandoned sessions) would drown the live ones:
+    // a checkout counts only with uncommitted changes or a commit in the last activeHours (null = all).
+    const last = Number(spawnSync("git", ["log", "-1", "--format=%ct", t.head], { cwd: root, encoding: "utf8" }).stdout) || 0;
+    if (activeHours != null && !dirty.length && last < cutoff) { idle++; continue; }
+    const name = t.branch ?? `(detached ${t.head.slice(0, 7)})`;
+    out.push({ name, path: t.path, head: t.head, committed, dirty, files, behind: Number(spawnSync("git", ["rev-list", "--count", `${t.head}..${base}`], { cwd: root, encoding: "utf8" }).stdout) || 0 });
+  }
+  const pairs = [];
+  for (let i = 0; i < out.length; i++) for (let j = i + 1; j < out.length; j++) {
+    const a = out[i], b = out[j], shared = a.files.filter((f) => b.files.includes(f));
+    if (!shared.length) continue;
+    let conflicts = null;
+    if (a.committed.some((f) => shared.includes(f)) && b.committed.some((f) => shared.includes(f)) && a.head !== b.head) {
+      const m = spawnSync("git", ["merge-tree", "--write-tree", "--name-only", "--no-messages", a.head, b.head], { cwd: root, encoding: "utf8" });
+      conflicts = m.status === 1 ? (m.stdout ?? "").split("\n").slice(1).filter(Boolean) : [];
+    }
+    pairs.push({ a: a.name, b: b.name, shared, conflicts, uncommitted: shared.filter((f) => a.dirty.includes(f) || b.dirty.includes(f)) });
+  }
+  return { checkouts: out, pairs, idle };
+}
+
+function showOverlap(cwd, base, all) {
+  const { checkouts, pairs, idle } = checkoutOverlap(cwd, base, { activeHours: all ? null : 24 });
+  const skipped = idle ? ` (${idle} older checkout(s) with no recent work skipped; --all shows them)` : "";
+  if (!checkouts.length) { console.log(`No active checkout has changes against ${base}${skipped}.`); return 0; }
+  if (skipped) console.log(skipped.trim().slice(1, -1));
+  for (const c of checkouts) console.log(`${c.name}: ${c.files.length} file(s) changed${c.dirty.length ? ` (${c.dirty.length} uncommitted)` : ""}${c.behind ? `, ${c.behind} commit(s) behind ${base}` : ""}  ${c.path}`);
+  if (!pairs.length) { console.log("No overlaps: no file is changed in more than one checkout."); return 0; }
+  const list = (fs) => fs.slice(0, 5).join(", ") + (fs.length > 5 ? ` +${fs.length - 5} more` : "");
+  for (const p of pairs) {
+    console.log(`OVERLAP ${p.a} <-> ${p.b}: ${list(p.shared)}`);
+    if (p.conflicts?.length) console.log(`  CONFLICT if merged: ${list(p.conflicts)}`);
+    else if (p.conflicts) console.log("  their commits merge cleanly");
+    if (p.uncommitted.length) console.log(`  uncommitted, so not merge-checked: ${list(p.uncommitted)}`);
+  }
+  return pairs.some((p) => p.conflicts?.length) ? 1 : 0;
+}
+
 const explicitPlan = (argv) => (argv[1] && !argv[1].startsWith("--") ? argv[1] : null);
 
 function main(argv) {
@@ -364,8 +421,9 @@ function main(argv) {
   if (cmd === "precommit") return precommit(cwd);
   if (cmd === "install-git-hook") return installHook(cwd, argv.includes("--force"));
   if (cmd === "status") return showStatus(cwd, arg(argv, "--base") ?? defaultBase(cwd));
+  if (cmd === "overlap") return showOverlap(cwd, arg(argv, "--base") ?? defaultBase(cwd), argv.includes("--all"));
   if (cmd === "log") return showLog(cwd, Number(arg(argv, "--last", "20")));
-  if (!["check", "verify", "rehearse"].includes(cmd)) { console.error("usage: fanout check [plan.md] | verify [--session name] [--base <branch>] | rehearse [--base <branch>] [--test cmd] | run [\"goal\"] [--yes] | status [--base <branch>] | log [--last 20] | install-git-hook [--force] | guard"); return 2; }
+  if (!["check", "verify", "rehearse"].includes(cmd)) { console.error("usage: fanout check [plan.md] | verify [--session name] [--base <branch>] | rehearse [--base <branch>] [--test cmd] | run [\"goal\"] [--yes] | status [--base <branch>] | overlap [--base <branch>] [--all] | log [--last 20] | install-git-hook [--force] | guard"); return 2; }
   const planPath = explicitPlan(argv) ?? defaultPlan(cwd);
   let text;
   try { text = readFileSync(planPath, "utf8"); } catch { console.error(`No plan at ${planPath}`); return 2; }

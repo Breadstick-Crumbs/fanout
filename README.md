@@ -9,6 +9,8 @@
 
 fanout splits a job across parallel agents (Claude Code, Codex, or both), keeps each one in its own files, and tests all their branches together before anything reaches `main`. No dependencies, no config. Just Node 18+ and git.
 
+Already have several sessions open on one repo? `fanout overlap` needs no plan. It lists every checkout (worktrees, other sessions, your own), what each has changed, committed or not, and which files two of them are both changing, with a dry-run merge to show whether they'd really conflict.
+
 ## The problem
 
 Running agents in parallel is easy. Merging their work is not:
@@ -161,6 +163,7 @@ node skills/fanout/fanout.mjs verify             # in a session's folder: anythi
 node skills/fanout/fanout.mjs rehearse           # merge every branch on a scratch copy, test once
 node skills/fanout/fanout.mjs install-git-hook   # enforce the plan on every commit
 node skills/fanout/fanout.mjs status             # each session: branch, commits, files, anything flagged; during a run, its agent state and cost
+node skills/fanout/fanout.mjs overlap            # no plan needed: which checkouts are changing the same files, and would they conflict?
 node skills/fanout/fanout.mjs log                # past runs and rehearsals: time, cost, fixes, result
 ```
 
@@ -192,6 +195,7 @@ Parallel agents aren't free. Each one loads and reads the code on its own, so sp
 **Use one agent** unless each part is substantial. On our six-feature benchmark (21 hidden tests, passed by every setup), one Sonnet agent finished in about 1m 40s for $0.25; six agents with fanout took about 2m 45s. Each parallel agent pays its own start-up and reading time, roughly a minute, so parts need to take several minutes each before splitting saves time. Running the sessions on a cheaper model brings the cost down to about $0.15 ([full results](bench/RESULTS.md)).
 
 **Use fanout** when:
+- you already run several sessions on one repo (the desktop app's sessions, worktrees, a teammate). Run `fanout overlap` before anyone merges or deploys. This is where real use found the most value: two sessions about to edit the same footer file, one of them with uncommitted changes in the main checkout;
 - the job is big enough that one agent would take a long time, and it splits into parts with their own files;
 - several agents touch shared code, where a clean merge can still break the build;
 - you run agents headless or in CI, or mix Claude Code and Codex, and nobody is watching each merge.
