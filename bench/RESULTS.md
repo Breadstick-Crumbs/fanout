@@ -14,7 +14,7 @@ Six-feature [library](library/) task, scored on 21 hidden tests no agent sees:
 
 - **Without fanout, parallel agents collided every time.** With fanout, never.
 - **One agent is still fastest at this size.** Parallel pays off when each part takes several minutes.
-- **Early signals, not conclusions:** Haiku sessions matching Sonnet, and Opus planning adding cost without changing results, rest on one or two runs of precisely specified tasks.
+- **Early signals, not conclusions:** Haiku sessions matching Sonnet, and Opus planning adding cost without changing results, rest on one or two runs. On a vague goal (planner picks the split), a Sonnet planner also matched Opus at half the planning cost ([below](#vague-goal-opus-vs-sonnet-planner-v016)).
 
 The sections below are the history, in the order things were measured. Numbers from before v0.13's overhead fixes are slower than today's.
 
@@ -120,6 +120,33 @@ The fixes: agents start with the project's settings only (fanout's guard is load
 - **Fastest is still one Sonnet agent; cheapest is one Haiku agent.** fanout with a cheap session model sits between them, and is the option that keeps `main` safe once work is split.
 - **The tasks are well specified,** which suits cheaper models. On fuzzier real work, check a run's results before making Haiku sessions your default.
 
+## Vague goal: Opus vs Sonnet planner (v0.16)
+
+The planner got only "Add the features described in TASKS.md to this library. Split the work however you think best." No session names, no inline spec. Sessions on Sonnet read TASKS.md themselves. One run each, 25 October 2026 ([00:09](results/2026-10-25-00-09.md), [00:16](results/2026-10-25-00-16.md)).
+
+| Planner | Sessions it chose | Planner cost | Total cost | Wall time | Hidden tests | Conflicts / repairs | Reverted |
+|---|---|---|---|---|---|---|---|
+| Opus | 4 (search+api, csv+reports merged) | $0.20 | $0.83 | 8m 27s | 21/21 | 0 / 0 | 1 file (`src/index.mjs`, generated) |
+| Sonnet | 5 (csv+reports merged) | $0.10 | $0.56 | 7m 11s | 21/21 | 0 / 0 | none |
+
+- Both planners found the real dependencies on their own: one owner for `src/store.mjs` (holds), `src/index.mjs` as a generated file, and `fines` exposed to the API.
+- Opus cost twice as much to plan and gave no better result. Its bigger lanes (search+api) were the slowest, so the run took longer.
+- Wall times are slower than the summary table. Sessions read the spec from the repo, and another fanout run was using the machine at the same time.
+- One run each, so this is a signal, not a rule: Sonnet is enough to plan a vague goal of this size.
+
+## Real project: four theme pages (v0.16)
+
+A client's WordPress theme: move About, Contact, the quote cart and search results to the new design. `fanout run "<one paragraph>" --model sonnet --no-merge`, with PHP lint over SSH as the test. 25 October 2026.
+
+| Run | Planner | Sessions | Wall time | Cost | Conflicts / fixes | Result |
+|---|---|---|---|---|---|---|
+| 1 (v0.15) | $0.23 | 4 × $0.18–0.34 | 4m 42s | $1.18 | 0 / 0 | passed, but **wrong**: the planner left the shared switch-on change uncommitted, so no lane had it |
+| 2 (v0.16) | $0.17 | 4 × $0.15–0.41 | 7m 08s | $1.16 | 0 / 0 | passed; contract committed by fanout, all four lanes built on it |
+
+- Run 1 found a real gap: the planner prompt says to commit the contracts, but nothing checked. Since v0.16, `fanout run` commits whatever the planner leaves (the tree was clean before planning).
+- Without being told, the planner gave each page its own `inc/f-<page>.php` and `f-<page>.css`, with the shared file loading each part only if it exists. So no two lanes touched one file.
+- The cart lane removed 323 lines (inline styles moved to its CSS file) and kept every form field name and id. A static lint can't show how a page looks, so the branches still need a look on staging before merging.
+
 ## What this does and doesn't show
 
 - **It shows** that on overlapping work, fanout kept `main` free of conflicts and breakage, with no integration step afterwards, at about the same Claude cost: $0.50–$0.92 against $0.59–$0.63.
@@ -142,4 +169,5 @@ node bench/run.mjs both                      # plain parallel and fanout
 node bench/run.mjs all --fixture library --budget 2 --single-budget 5   # the bigger task, scored on hidden tests
 node bench/run.mjs both --dry                # plumbing only, no agents
 node bench/run.mjs both --codex-lane receipt # run the receipt lane in Codex
+node bench/run.mjs fanout --fixture library --vague --planner-model opus   # one-line goal: the planner picks the split
 ```

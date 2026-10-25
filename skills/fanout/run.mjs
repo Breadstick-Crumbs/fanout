@@ -263,7 +263,18 @@ export async function cli(argv) {
   const agents = [], fixes = {}, phases = {}, t0 = Date.now();
   let testRuns = 0, phaseStart = t0, sessions = [];
   const phase = (name) => { const now = Date.now(); phases[name] = Math.round((now - phaseStart) / 1000); phaseStart = now; };
-  const track = (role, session, r) => { agents.push({ role, session, ...r }); return r; };
+  // .fanout/live.json: where the run is, for `fanout status` in another terminal. Cost is known per
+  // finished agent run (Claude reports it at the end), so a running session shows its time so far.
+  const live = { pid: process.pid, startedAt: new Date().toISOString(), phase: "plan", sessions: {} };
+  const writeLive = () => { try { writeFileSync(join(root, ".fanout", "live.json"), JSON.stringify(live)); } catch { /* status is best effort */ } };
+  const setLive = (name, fields) => { live.sessions[name] = { ...live.sessions[name], ...fields }; writeLive(); };
+  writeLive();
+  const track = (role, session, r) => {
+    agents.push({ role, session, ...r });
+    const cur = live.sessions[session ?? "(planner)"] ?? {};
+    setLive(session ?? "(planner)", { costUsd: cur.costUsd === null || r.costUsd == null ? null : (cur.costUsd ?? 0) + r.costUsd, tokens: (cur.tokens ?? 0) + r.inTokens + r.outTokens });
+    return r;
+  };
   const totals = () => {
     const known = agents.filter((a) => a.costUsd != null);
     return { costUsd: known.reduce((a, x) => a + x.costUsd, 0), costUnknown: known.length < agents.length,
@@ -271,6 +282,7 @@ export async function cli(argv) {
   };
   // Every path that got past the preconditions ends here, so each run leaves one line in .fanout/log.jsonl.
   const finish = (code, result) => {
+    live.phase = "finished"; live.result = result; live.pid = null; writeLive();
     appendLog(root, { kind: "run", sessions: sessions.length, seconds: Math.round((Date.now() - t0) / 1000), phases, testRuns, ...totals(), result,
       agents: agents.map((a) => ({ role: a.role, session: a.session, agent: a.agent.split(" ")[0], seconds: a.seconds, costUsd: a.costUsd, tokens: a.inTokens + a.outTokens, error: a.error })) });
     return code;
@@ -287,6 +299,15 @@ export async function cli(argv) {
     }
   }
   if (!existsSync(planPath)) { console.error("fanout run: no plan was written."); return finish(1, "no plan"); }
+  // The planner is told to commit the contracts, but doesn't always (seen on a real project: the shared
+  // change was written and left uncommitted, so every lane branched without it and rehearse tested code
+  // that never switched the new pages on). The tree was clean before planning, so anything left is its.
+  const leftover = git(root, "status", "--porcelain").out.split("\n").filter((l) => l && !l.slice(3).startsWith(".fanout/"));
+  if (leftover.length) {
+    git(root, "add", "-A"); git(root, "reset", "-q", "--", ".fanout");
+    git(root, "commit", "-qm", "fanout: contracts");
+    log(`committed ${leftover.length} file(s) the planner left uncommitted as "fanout: contracts"`);
+  }
   const text = readFileSync(planPath, "utf8"), regen = parseRegen(text), test = planSetting(text, "test");
   sessions = parsePlan(text);
   phase("plan");
@@ -323,20 +344,24 @@ export async function cli(argv) {
   // can genuinely have nothing to do. If no session changed anything, though, the run stops rather than
   // report success (that is how a blocked agent shows up: it ends cleanly and edits nothing).
   const runLane = async (s) => {
-    if (ahead(s) > 0) { log(`${s.name}: already has commits, not started again`); return { sessionId: null, seconds: 0, skipped: true }; }
+    if (ahead(s) > 0) { log(`${s.name}: already has commits, not started again`); setLive(s.name, { state: "skipped" }); return { sessionId: null, seconds: 0, skipped: true }; }
     let r;
     for (let attempt = 0; attempt < 2; attempt++) {
+      setLive(s.name, { state: attempt ? "retrying" : "working", since: Date.now() });
       r = track("lane", s.name, await runAgent({ agent: agentFor(s), cwd: wt[s.name], prompt: brief(s, sessions, regen, test, "", root), model: modelFor(s), budget }));
       if (!r.error) {
         const { reverted } = commitLane(wt[s.name], sessions, s, regen, `fanout: ${s.name}`);
         r.noChanges = ahead(s) === 0;
+        setLive(s.name, { state: r.noChanges ? "no changes" : "done", since: null });
         log(`${s.name}: done in ${r.seconds}s${r.fellBack ? ", ran with your user settings (a project-only start failed)" : ""}${reverted.length ? `, reverted out-of-lane: ${reverted.join(", ")}` : ""}${r.noChanges ? ", made no changes" : ""}`);
         return r;
       }
       log(`${s.name}: agent failed (${r.error})${attempt ? "" : ", trying once more"}`);
     }
+    setLive(s.name, { state: "failed", since: null });
     return { ...r, failed: true };
   };
+  live.phase = "sessions"; writeLive();
   const lanes = await staggered(sessions, runLane);
   const failed = sessions.find((s, i) => lanes[i].failed);
   if (failed) {
@@ -352,6 +377,7 @@ export async function cli(argv) {
   phase("sessions");
 
   // 4. Rehearse, and send each break back to the lane that caused it
+  live.phase = "rehearse"; writeLive();
   for (;;) {
     const r = rehearse(order, { cwd: root, base, test, regen });
     testRuns += r.testRuns;
@@ -372,12 +398,14 @@ export async function cli(argv) {
       return finish(1, `stopped: ${name} still breaks`);
     }
     const report = `Your branch was merged with the others in plan order and it broke:\n${r.log.join("\n")}\n\nFix it within the files you may change.`;
+    setLive(name, { state: `fixing (${fixes[name]})`, since: Date.now() });
     // Resume the lane's own session with just the break report; if that fails, send the full brief again.
     const fix = await runAgent({ agent: agentFor(s), cwd: wt[name], model: modelFor(s), budget, resume: session[name], prompt: report,
       fallbackPrompt: brief(s, sessions, regen, test, `\n${report}`, root) });
     session[name] = fix.sessionId ?? session[name];
     track("fix", name, fix);
     commitLane(wt[name], sessions, s, regen, `fanout: fix ${name}`);
+    setLive(name, { state: "fixed", since: null });
   }
 
   // 5. Merge
@@ -386,6 +414,7 @@ export async function cli(argv) {
     const t = totals();
     return `${agents.length} agent runs, ${t.fixes} fixes, $${t.costUsd.toFixed(2)}${t.costUnknown ? " + unknown" : ""} agent cost, ${Math.round(t.tokens / 1000)}k tokens, ${Math.round((Date.now() - t0) / 1000)}s`;
   };
+  live.phase = "merge"; writeLive();
   if (flag("--no-merge")) { log(`ready to merge in order ${order.join(" -> ")} (${stats()})`); return finish(0, "ready to merge"); }
   for (const name of order) {
     const m = git(root, "merge", "--no-ff", "--no-edit", "-m", `fanout: merge ${name}`, `fanout/${name}`);

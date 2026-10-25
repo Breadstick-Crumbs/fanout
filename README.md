@@ -60,7 +60,7 @@ codex plugin marketplace add Breadstick-Crumbs/fanout
 codex plugin add fanout@fanout
 ```
 
-That gives Codex the fanout skill. In Codex, out-of-lane work is caught when it's committed (by fanout's git hook, and by `fanout run`, which reverts it), not at the moment of the edit: in our tests, `codex exec` didn't run plugin hooks even after trusting fanout's in `/hooks`. In Claude Code, edits are blocked as they happen.
+That gives Codex the fanout skill. In Codex, out-of-lane work is caught when it's committed (by fanout's git hook, and by `fanout run`, which reverts it), not at the moment of the edit. Two reasons: Codex 0.164 lists plugin hooks as removed, and it skips any hook you haven't trusted in `/hooks`. Also, Codex often writes files through the shell (`Set-Content`, `cat >`) rather than `apply_patch`, so an edit hook would miss those writes anyway. In Claude Code, edits are blocked as they happen.
 
 **Any other agent**
 
@@ -159,7 +159,7 @@ node skills/fanout/fanout.mjs check              # is the plan safe? prints the 
 node skills/fanout/fanout.mjs verify             # in a session's folder: anything outside its lane?
 node skills/fanout/fanout.mjs rehearse           # merge every branch on a scratch copy, test once
 node skills/fanout/fanout.mjs install-git-hook   # enforce the plan on every commit
-node skills/fanout/fanout.mjs status             # each session: branch, commits, files, anything flagged
+node skills/fanout/fanout.mjs status             # each session: branch, commits, files, anything flagged; during a run, its agent state and cost
 node skills/fanout/fanout.mjs log                # past runs and rehearsals: time, cost, fixes, result
 ```
 
@@ -181,6 +181,8 @@ Same four overlapping tasks, four parallel agents, with and without fanout ([ful
 | Claude cost per run | $0.59–$0.63 | $0.50–$0.92 |
 
 Breaks still happened with fanout, but `rehearse` caught them before `main` and the agent that caused each one fixed it. One pair of runs mixed Claude and Codex, with the same result. It's a small benchmark. Rerun it with `node bench/run.mjs both`.
+
+On a real WordPress theme (four pages moved to a new design, one session each, Sonnet), `fanout run` went from a one-paragraph goal to four tested, merge-ready branches in about 7 minutes for $1.16. There were no conflicts and no fixes, and the quote form's fields came through unchanged.
 
 ## When to use it
 

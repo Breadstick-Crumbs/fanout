@@ -1,0 +1,232 @@
+[
+  {
+    "condition": "fanout",
+    "agents": [
+      {
+        "role": "coordinator",
+        "lane": "-",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 260,
+        "costUsd": 0.10338169999999999,
+        "inTokens": 131817,
+        "outTokens": 4211,
+        "error": null,
+        "sessionId": "5268405a-1517-4e97-ba10-4a6a349d3974",
+        "turns": 13,
+        "modelSeconds": 105,
+        "tools": {
+          "Bash": [
+            "cat TASKS.md package.json scripts/gen-index.mjs src/*.mjs test/*.mjs; head -c 600 data/sample.mjs",
+            "mkdir -p .fanout && cat > .fanout/plan.md <<'E'\ntest: npm test\nregen: src/index.mjs via npm run gen\n\n## search\nowns: src/search.mjs, test/search.test.mjs\ntask: Implement search(store, query) per TASKS.md search section.\ndone: search tests pass and npm test is green.\nexposes: src/search.mjs\n\n## fines\nowns: src/fines.mjs, test/fines.test.mjs\ntask: Implement finesFor, memberBalance, payFine per TASKS.md fines section (store.payments already exists on main).\ndone: fines tests pass and npm test is green.\nexposes: src/fines.mjs\nuses: src/store.mjs\n\n## holds\nowns: src/store.mjs, src/holds.mjs, test/holds.test.mjs, test/store.test.mjs\ntask: Implement holds (placeHold, cancelHold, holdsFor), the availableCopies change and the checkout hold-queue logic; createStore already starts payments and holds on main.\ndone: holds tests pass and npm test is green.\nexposes: src/store.mjs\n\n## csv-reports\nowns: src/csv.mjs, src/reports.mjs, test/csv.test.mjs, test/reports.test.mjs\ntask: Implement exportBooks/importBooks and overdueReport/popularBooks/memberActivity per TASKS.md.\ndone: csv and reports tests pass and npm test is green.\nuses: src/store.mjs\n\n## api\nowns: src/api.mjs, test/api.test.mjs\ntask: Implement createServer(store) with the HTTP routes per TASKS.md api section.\ndone: api tests pass and npm test is green.\nuses: src/search.mjs, src/fines.mjs, src/store.mjs\nE\nnode \"D:\\fanout\\skills\\fanout\\fanout.mjs\" check",
+            "ls .fanout; node \"D:\\fanout\\skills\\fanout\\fanout.mjs\" check",
+            "node \"D:\\fanout\\skills\\fanout\\fanout.mjs\" check",
+            "sed -i 's|    nextId: seed.nextId ?? 1000,|    payments: (seed.payments ?? []).map((p) => ({ ...p })),\\n    holds: (seed.holds ?? []).map((h) => ({ ...h })),\\n    nextId: seed.nextId ?? 1000,|' src/store.mjs\ncat > src/search.mjs <<'E'\n// STUB (fanout contract): real implementation comes from the search session.\nexport function search(store, query = {}) {\n  const { page = 1 } = query;\n  return { items: [], total: 0, page, pages: 0 };\n}\nE\ncat > src/fines.mjs <<'E'\n// STUB (fanout contract): real implementation comes from the fines session.\nexport function finesFor(store, memberId, asOf) {\n  return [];\n}\n\nexport function memberBalance(store, memberId, asOf) {\n  return 0;\n}\n\nexport function payFine(store, memberId, amount, date) {\n  store.payments.push({ memberId, amount, date });\n  return memberBalance(store, memberId, date);\n}\nE\nnpm run gen >/dev/null && npm test 2>&1 | grep -E \"^# (pass|fail)\"; cat src/index.mjs; git add -A && git commit -qm \"fanout: contracts\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\" && git status --short",
+            "node \"D:\\fanout\\skills\\fanout\\fanout.mjs\" check",
+            "npm run gen && npm test 2>&1 | grep -E \"^# (pass|fail)\"",
+            "git add -A && git commit -qm \"fanout: contracts\" -m \"Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\" && git status --short && git log --oneline | head -2 && node \"D:\\fanout\\skills\\fanout\\fanout.mjs\" check"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\repo\\.fanout\\plan.md",
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\repo\\src\\search.mjs",
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\repo\\src\\fines.mjs"
+          ],
+          "Edit": [
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\repo\\src\\store.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "search",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 122,
+        "costUsd": 0.0994678,
+        "inTokens": 129009,
+        "outTokens": 3742,
+        "error": null,
+        "sessionId": "9e1a7b8b-f240-4a9c-b57a-557b61358c03",
+        "turns": 13,
+        "modelSeconds": 31,
+        "tools": {
+          "Grep": [
+            "(?i)search"
+          ],
+          "Bash": [
+            "cat src/search.mjs test/search.test.mjs; ls src test",
+            "cat src/store.mjs; head -30 data/sample.mjs; head -15 test/store.test.mjs",
+            "cat > src/search.mjs <<'EOF'\nimport { availableCopies } from \"./store.mjs\";\n\nconst byTitle = (a, b) => a.title.toLowerCase().localeCompare(b.title.toLowerCase());\n\nexport function search(store, query = {}) {\n  const { q, author, tag, yearFrom, yearTo, available, sort = \"title\", page = 1, pageSize = 10 } = query;\n  const words = (q ?? \"\").toLowerCase().split(/\\s+/).filter(Boolean);\n  const wantAuthor = author?.toLowerCase();\n  const matches = store.books.filter((b) => {\n    const hay = `${b.title} ${b.author}`.toLowerCase();\n    if (!words.every((w) => hay.includes(w))) return false;\n    if (wantAuthor !== undefined && b.author.toLowerCase() !== wantAuthor) return false;\n    if (tag !== undefined && !b.tags.includes(tag)) return false;\n    if (yearFrom !== undefined && b.year < yearFrom) return false;\n    if (yearTo !== undefined && b.year > yearTo) return false;\n    if (available === true && availableCopies(store, b.id) <= 0) return false;\n    return true;\n  });\n  matches.sort(sort === \"year\" ? (a, b) => b.year - a.year || byTitle(a, b) : byTitle);\n  const total = matches.length;\n  const start = (page - 1) * pageSize;\n  return { items: matches.slice(start, start + pageSize), total, page, pages: Math.ceil(total / pageSize) };\n}\nEOF\ncat > test/search.test.mjs <<'EOF'\nimport { test } from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { createStore, search } from \"../src/index.mjs\";\nimport { sample } from \"../data/sample.mjs\";\n\nconst ids = (r) => r.items.map((b) => b.id);\n\ntest(\"text, author, tag\", () => {\n  const s = createStore(sample);\n  assert.deepEqual(ids(search(s, { q: \"martin CODE\" })), [\"b2\"]);\n  assert.deepEqual(ids(search(s, { author: \"frank herbert\" })), [\"b3\"]);\n  assert.deepEqual(ids(search(s, { tag: \"cyberpunk\" })), [\"b4\", \"b7\"]);\n});\n\ntest(\"years, available, sort\", () => {\n  const s = createStore(sample);\n  assert.deepEqual(ids(search(s, { yearFrom: 1994, yearTo: 1999 })), [\"b8\", \"b1\", \"b6\"].sort((a, b) => 0) && [\"b8\", \"b1\", \"b6\"]);\n  assert.ok(!ids(search(s, { available: true })).includes(\"b2\"));\n  assert.deepEqual(ids(search(s, { sort: \"year\", yearFrom: 1990 })), [\"b2\", \"b1\", \"b6\", \"b8\", \"b7\"]);\n});\n\ntest(\"paging\", () => {\n  const s = createStore(sample);\n  const r = search(s, { pageSize: 3, page: 3 });\n  assert.equal(r.total, 8);\n  assert.equal(r.pages, 3);\n  assert.equal(r.items.length, 2);\n});\nEOF\nnpm test 2>&1 | tail -30",
+            "npm test 2>&1 | tail -30",
+            "npm test 2>&1 | grep -E \"^# (pass|fail)|not ok\"",
+            "npm test 2>&1 | grep -B3 -A25 \"not ok 2\"",
+            "npm test 2>&1 | grep -E \"^# (pass|fail)|not ok\""
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\search\\src\\search.mjs",
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\search\\test\\search.test.mjs"
+          ],
+          "Edit": [
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\search\\test\\search.test.mjs",
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\search\\test\\search.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "fines",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 86,
+        "costUsd": 0.07814760000000001,
+        "inTokens": 75311,
+        "outTokens": 3166,
+        "error": null,
+        "sessionId": "a43680bc-9115-400d-a0f2-5cb90eec5009",
+        "turns": 8,
+        "modelSeconds": 22,
+        "tools": {
+          "Grep": [
+            "(?i)fine"
+          ],
+          "Bash": [
+            "cat src/fines.mjs test/fines.test.mjs; ls src test",
+            "cat src/dates.mjs; head -15 test/store.test.mjs; cat package.json",
+            "cat > src/fines.mjs <<'EOF'\nimport { daysBetween } from \"./dates.mjs\";\n\nconst GRACE_DAYS = 2;\nconst CENTS_PER_DAY = 25;\nconst CAP_CENTS = 1000;\n\nexport function finesFor(store, memberId, asOf) {\n  return store.loans\n    .filter((l) => l.memberId === memberId)\n    .map((l) => {\n      const daysLate = daysBetween(l.due, l.returned ?? asOf) - GRACE_DAYS;\n      return { loanId: l.id, bookId: l.bookId, daysLate, amount: Math.min(daysLate * CENTS_PER_DAY, CAP_CENTS) / 100 };\n    })\n    .filter((f) => f.daysLate > 0)\n    .sort((a, b) => (a.loanId < b.loanId ? -1 : a.loanId > b.loanId ? 1 : 0));\n}\n\nexport function memberBalance(store, memberId, asOf) {\n  const fines = finesFor(store, memberId, asOf).reduce((s, f) => s + Math.round(f.amount * 100), 0);\n  const paid = store.payments.filter((p) => p.memberId === memberId).reduce((s, p) => s + Math.round(p.amount * 100), 0);\n  return (fines - paid) / 100;\n}\n\nexport function payFine(store, memberId, amount, date) {\n  store.payments.push({ memberId, amount, date });\n  return memberBalance(store, memberId, date);\n}\nEOF\ncat > test/fines.test.mjs <<'EOF'\nimport { test } from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { createStore, finesFor, memberBalance, payFine } from \"../src/index.mjs\";\n\nconst mk = () =>\n  createStore({\n    loans: [\n      { id: \"l2\", bookId: \"b1\", memberId: \"m1\", out: \"2026-01-01\", due: \"2026-01-15\", returned: \"2026-01-20\" },\n      { id: \"l1\", bookId: \"b2\", memberId: \"m1\", out: \"2026-01-01\", due: \"2026-01-15\", returned: \"2026-01-17\" },\n      { id: \"l3\", bookId: \"b3\", memberId: \"m1\", out: \"2026-01-01\", due: \"2026-01-15\", returned: null },\n      { id: \"l4\", bookId: \"b3\", memberId: \"m2\", out: \"2026-01-01\", due: \"2026-01-15\", returned: \"2026-03-01\" },\n    ],\n  });\n\ntest(\"finesFor applies grace, cap and ordering\", () => {\n  assert.deepEqual(finesFor(mk(), \"m1\", \"2026-01-30\"), [\n    { loanId: \"l2\", bookId: \"b1\", daysLate: 3, amount: 0.75 },\n    { loanId: \"l3\", bookId: \"b3\", daysLate: 13, amount: 3.25 },\n  ]);\n  assert.equal(finesFor(mk(), \"m2\", \"2026-03-01\")[0].amount, 10);\n});\n\ntest(\"balance and payFine\", () => {\n  const s = mk();\n  assert.equal(memberBalance(s, \"m1\", \"2026-01-30\"), 4);\n  assert.equal(payFine(s, \"m1\", 1.5, \"2026-01-30\"), 2.5);\n  assert.equal(s.payments.length, 1);\n});\nEOF\nnpm test 2>&1 | tail -15",
+            "npm test 2>&1 | tail -15"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\fines\\src\\fines.mjs",
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\fines\\test\\fines.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "holds",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 94,
+        "costUsd": 0.0859727,
+        "inTokens": 74327,
+        "outTokens": 4362,
+        "error": null,
+        "sessionId": "645f19e9-9816-4f26-b56f-ab84e8d6cf25",
+        "turns": 11,
+        "modelSeconds": 30,
+        "tools": {
+          "Grep": [
+            "(?i)hold"
+          ],
+          "Read": [
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\holds\\src\\store.mjs"
+          ],
+          "Bash": [
+            "ls src test; cat src/holds.mjs test/holds.test.mjs",
+            "head -20 test/store.test.mjs; cat package.json; head -20 src/index.mjs",
+            "cat > src/holds.mjs <<'EOF'\n// Hold queue operations. Holds live in store.holds, in placement order.\nimport { getBook, getMember } from \"./store.mjs\";\n\nexport function placeHold(store, bookId, memberId, date) {\n  if (!getBook(store, bookId)) throw new Error(\"no such book\");\n  if (!getMember(store, memberId)) throw new Error(\"no such member\");\n  if (store.holds.some((h) => h.bookId === bookId && h.memberId === memberId)) throw new Error(\"already holding\");\n  const hold = { id: `h${store.nextId++}`, bookId, memberId, date };\n  store.holds.push(hold);\n  return hold;\n}\n\nexport function cancelHold(store, holdId) {\n  const i = store.holds.findIndex((h) => h.id === holdId);\n  if (i >= 0) store.holds.splice(i, 1);\n}\n\nexport const holdsFor = (store, bookId) => store.holds.filter((h) => h.bookId === bookId);\nEOF\npython - <<'EOF'\np='src/store.mjs'\ns=open(p).read()\ns=s.replace('''  return book ? book.copies - openLoans(store, bookId).length : 0;\n}''','''  if (!book) return 0;\n  const holds = store.holds.filter((h) => h.bookId === bookId).length;\n  return Math.max(0, book.copies - openLoans(store, bookId).length - holds);\n}''')\ns=s.replace('''  if (availableCopies(store, bookId) <= 0) throw new Error(\"no copies available\");\n''','''  const queue = store.holds.filter((h) => h.bookId === bookId);\n  const pos = queue.findIndex((h) => h.memberId === memberId);\n  const free = getBook(store, bookId).copies - openLoans(store, bookId).length;\n  if (pos >= 0 && pos + 1 <= free) store.holds.splice(store.holds.indexOf(queue[pos]), 1);\n  else if (availableCopies(store, bookId) <= 0) throw new Error(\"no copies available\");\n''')\nopen(p,'w').write(s)\nEOF\ncat > test/holds.test.mjs <<'EOF'\nimport { test } from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { createStore, addBook, addMember, checkout, checkin, availableCopies } from \"../src/store.mjs\";\nimport { placeHold, cancelHold, holdsFor } from \"../src/holds.mjs\";\n\nfunction setup() {\n  const s = createStore();\n  const b = addBook(s, { title: \"T\", author: \"A\", year: 2000, copies: 1 });\n  const m = [addMember(s, { name: \"a\" }), addMember(s, { name: \"b\" }), addMember(s, { name: \"c\" })];\n  return { s, b, m };\n}\n\ntest(\"place, list, cancel, errors\", () => {\n  const { s, b, m } = setup();\n  const h1 = placeHold(s, b.id, m[0].id, \"2026-01-01\");\n  const h2 = placeHold(s, b.id, m[1].id, \"2026-01-02\");\n  assert.deepEqual(holdsFor(s, b.id), [h1, h2]);\n  assert.throws(() => placeHold(s, b.id, m[0].id, \"2026-01-03\"));\n  assert.throws(() => placeHold(s, \"nope\", m[0].id, \"2026-01-03\"));\n  assert.throws(() => placeHold(s, b.id, \"nope\", \"2026-01-03\"));\n  cancelHold(s, h1.id);\n  assert.deepEqual(holdsFor(s, b.id), [h2]);\n});\n\ntest(\"hold queue gates checkout\", () => {\n  const { s, b, m } = setup();\n  const l = checkout(s, b.id, m[2].id, \"2026-01-01\");\n  placeHold(s, b.id, m[0].id, \"2026-01-02\");\n  placeHold(s, b.id, m[1].id, \"2026-01-03\");\n  checkin(s, l.id, \"2026-01-04\");\n  assert.equal(availableCopies(s, b.id), 0);\n  assert.throws(() => checkout(s, b.id, m[2].id, \"2026-01-05\"), /no copies available/);\n  assert.throws(() => checkout(s, b.id, m[1].id, \"2026-01-05\"), /no copies available/);\n  checkout(s, b.id, m[0].id, \"2026-01-05\");\n  assert.deepEqual(holdsFor(s, b.id).map((h) => h.memberId), [m[1].id]);\n});\nEOF\nnpm test 2>&1 | tail -15",
+            "npm test 2>&1 | tail -15"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\holds\\src\\holds.mjs",
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\holds\\test\\holds.test.mjs"
+          ],
+          "Edit": [
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\holds\\src\\store.mjs",
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\holds\\src\\store.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "csv-reports",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 96,
+        "costUsd": 0.1107224,
+        "inTokens": 99216,
+        "outTokens": 5523,
+        "error": null,
+        "sessionId": "5e68b2fd-38ab-4f70-8b85-ba43008374b7",
+        "turns": 14,
+        "modelSeconds": 43,
+        "tools": {
+          "Bash": [
+            "cat TASKS.md; ls src test; cat src/csv.mjs src/reports.mjs; cat test/csv.test.mjs test/reports.test.mjs; cat package.json",
+            "npm test 2>&1 | tail -40",
+            "npm test 2>&1",
+            "powershell -NoProfile -Command \"npm test 2>&1\""
+          ],
+          "Read": [
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\csv-reports\\TASKS.md",
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\csv-reports\\src\\dates.mjs",
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\csv-reports\\package.json",
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\csv-reports\\test\\store.test.mjs"
+          ],
+          "Glob": [
+            "**/*.{mjs,json}"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\csv-reports\\src\\csv.mjs",
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\csv-reports\\src\\reports.mjs",
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\csv-reports\\test\\csv.test.mjs",
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\csv-reports\\test\\reports.test.mjs"
+          ]
+        }
+      },
+      {
+        "role": "lane",
+        "lane": "api",
+        "kind": "claude",
+        "agent": "claude",
+        "seconds": 85,
+        "costUsd": 0.0828992,
+        "inTokens": 102020,
+        "outTokens": 3947,
+        "error": null,
+        "sessionId": "353c5eeb-9ec5-4b4e-89da-97c81ae6e11f",
+        "turns": 13,
+        "modelSeconds": 36,
+        "tools": {
+          "Grep": [
+            "(?i)api"
+          ],
+          "Bash": [
+            "cd <tmp>/fanout-bench-fanout-DYl2T6/api && ls . src test && cat src/api.mjs test/api.test.mjs package.json",
+            "cd <tmp>/fanout-bench-fanout-DYl2T6/api && npm test 2>&1 | tail -30",
+            "cd <tmp>/fanout-bench-fanout-DYl2T6/api && npm test 2>&1",
+            "cd <tmp>/fanout-bench-fanout-DYl2T6/api && powershell -NoProfile -Command \"npm test 2>&1 | Out-String\"",
+            "cd <tmp>/fanout-bench-fanout-DYl2T6/api && node --test \"test/*.test.mjs\" 2>&1"
+          ],
+          "Read": [
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\api\\TASKS.md",
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\api\\test\\store.test.mjs",
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\api\\package.json"
+          ],
+          "Glob": [
+            "**/*.{mjs,json}"
+          ],
+          "Write": [
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\api\\src\\api.mjs",
+            "<tmp>\\fanout-bench-fanout-DYl2T6\\api\\test\\api.test.mjs"
+          ]
+        }
+      }
+    ],
+    "conflicts": [],
+    "brokeAfter": [],
+    "repairCommits": 0,
+    "rehearsals": [
+      "OK after api (all 5 merged)\nAll branches merge and pass together."
+    ],
+    "blockedFiles": [],
+    "plan": "test: npm test\nregen: src/index.mjs via npm run gen\n\n## search\nowns: src/search.mjs, test/search.test.mjs\ntask: Implement search(store, query) per TASKS.md search section.\ndone: search tests pass and npm test is green.\nexposes: src/search.mjs\n\n## fines\nowns: src/fines.mjs, test/fines.test.mjs\ntask: Implement finesFor, memberBalance, payFine per TASKS.md fines section (store.payments already exists on main).\ndone: fines tests pass and npm test is green.\nexposes: src/fines.mjs\nuses: src/store.mjs\n\n## holds\nowns: src/store.mjs, src/holds.mjs, test/holds.test.mjs, test/store.test.mjs\ntask: Implement holds (placeHold, cancelHold, holdsFor), the availableCopies change and the checkout hold-queue logic; createStore already starts payments and holds on main.\ndone: holds tests pass and npm test is green.\nexposes: src/store.mjs\n\n## csv-reports\nowns: src/csv.mjs, src/reports.mjs, test/csv.test.mjs, test/reports.test.mjs\ntask: Implement exportBooks/importBooks and overdueReport/popularBooks/memberActivity per TASKS.md.\ndone: csv and reports tests pass and npm test is green.\nuses: src/store.mjs\n\n## api\nowns: src/api.mjs, test/api.test.mjs\ntask: Implement createServer(store) with the HTTP routes per TASKS.md api section.\ndone: api tests pass and npm test is green.\nuses: src/search.mjs, src/fines.mjs, src/store.mjs\n",
+    "finalTestsPass": true,
+    "seconds": 431,
+    "acceptance": {
+      "pass": 21,
+      "total": 21,
+      "failed": []
+    }
+  }
+]

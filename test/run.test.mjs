@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runAgent, brief, plannerPrompt, staggered } from "../skills/fanout/run.mjs";
@@ -19,6 +19,7 @@ appendFileSync(${JSON.stringify(logFile)}, JSON.stringify({ args, stdin }) + "\\
 const who = stdin.match(/session "(\\w+)"/)?.[1];
 if (who && process.env.FAKE_FAIL_SESSION === who) { console.log(JSON.stringify({ is_error: true, result: "crashed", num_turns: 3 })); process.exit(1); }
 if (who && process.env.FAKE_WRITE && process.env.FAKE_NOWRITE !== who) writeFileSync(who + ".txt", "x");
+if (process.env.FAKE_PLAN && stdin.startsWith("Plan a parallel fan-out")) { writeFileSync(".fanout/plan.md", process.env.FAKE_PLAN); writeFileSync("contract.txt", "shared"); }
 const resuming = args.includes("--resume") || args.includes("resume");
 if (resuming && process.env.FAKE_FAIL_RESUME) { console.log(JSON.stringify({ is_error: true, result: "no such session" })); process.exit(1); }
 if (process.env.FAKE_FAIL_LEAN && args.includes("--setting-sources")) { console.log(JSON.stringify({ is_error: true, result: "auth failed", num_turns: Number(process.env.FAKE_FAIL_LEAN) - 1 || undefined })); process.exit(1); }
@@ -279,4 +280,33 @@ test("running again after a stop reuses branches and skips finished sessions", (
   assert.equal(callsFor("a"), 0);
   assert.equal(callsFor("b"), 1);
   assert.match(r.stdout, /a: already has commits/);
+});
+
+test("status shows each session's agent state and cost from the run's live.json", () => {
+  useFake();
+  const repo = mkRepo(PLAN_AB);
+  assert.equal(runCli(repo, { FAKE_FAIL_SESSION: "b" }).status, 1);
+  const live = JSON.parse(readFileSync(join(repo, ".fanout/live.json"), "utf8"));
+  assert.equal(live.phase, "finished");
+  assert.equal(live.sessions.a.state, "done");
+  assert.equal(live.sessions.a.costUsd, 0.5);
+  assert.equal(live.sessions.b.state, "failed");
+  const st = spawnSync(process.execPath, [join(import.meta.dirname, "../skills/fanout/fanout.mjs"), "status"], { cwd: repo, encoding: "utf8" });
+  assert.match(st.stdout, /agent\s+cost/);
+  assert.match(st.stdout, /^a .*done\s+\$0\.50$/m);
+  assert.match(st.stdout, /^b .*failed\s+\$0\.00$/m);
+  assert.doesNotMatch(st.stdout, /run in progress/);
+});
+
+test("contracts the planner leaves uncommitted are committed before the lanes branch", () => {
+  useFake();
+  const repo = mkRepo(PLAN_A);
+  rmSync(join(repo, ".fanout/plan.md")); // no plan yet: the (fake) planner writes it, plus a contract it doesn't commit
+  const r = spawnSync(process.execPath, [join(import.meta.dirname, "../skills/fanout/fanout.mjs"), "run", "add a", "--yes", "--no-merge"],
+    { cwd: repo, encoding: "utf8", env: { ...process.env, FANOUT_STAGGER_MS: "0", FAKE_PLAN: PLAN_A } });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /committed 1 file\(s\) the planner left uncommitted/);
+  const g = (...a) => execFileSync("git", a, { cwd: repo, encoding: "utf8" }).trim();
+  assert.equal(g("log", "-1", "--format=%s", "main"), "fanout: contracts");
+  assert.equal(g("show", "fanout/a:contract.txt"), "shared"); // the lane branched with it
 });

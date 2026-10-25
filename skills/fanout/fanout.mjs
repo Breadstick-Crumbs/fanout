@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // fanout: plan parallel sessions, check for overlap, verify branches, guard edits.
 //   fanout check  [plan.md]                         plan defaults to .fanout/plan.md in the main checkout
-//   fanout verify [--session name] [--base main]    session defaults to the fanout/<name> branch
-//   fanout rehearse [plan.md] [--base main] [--test cmd]   merge every branch in order on a scratch worktree, test once (bisect on failure)
+//   fanout verify [--session name] [--base <branch>]    session defaults to the fanout/<name> branch
+//   fanout rehearse [plan.md] [--base <branch>] [--test cmd]   merge every branch in order on a scratch worktree, test once (bisect on failure)
 //   fanout guard                                    PreToolUse hook (installed by the plugin)
 //   fanout install-git-hook [--force]               same rules as a git pre-commit hook, for agents outside Claude Code
 //   fanout run ["goal"] [--yes] [--agent claude|codex|"<cmd>"]   do the whole fan-out: plan, agents, rehearse, fix, merge (see run.mjs)
-//   fanout status [--base main]                     one table: each session's branch, commits, files, worktree, verify flags, last run and rehearse
+//   fanout status [--base <branch>]                     one table: each session's branch, commits, files, worktree, verify flags, agent state and cost (fanout run), last run and rehearse
 //   fanout log [--last 20]                          past runs and rehearsals from .fanout/log.jsonl: time, cost, fixes, test runs
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, chmodSync, existsSync, realpathSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -179,6 +179,14 @@ export function mainRoot(cwd) {
   try { return resolve(git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd).trim(), ".."); }
   catch { return cwd; }
 }
+// The branch the main checkout is on (master, trunk, ...), else main if the repo has it.
+function defaultBase(cwd) {
+  try {
+    const b = git(["branch", "--show-current"], mainRoot(cwd)).trim();
+    if (b && !b.startsWith(BRANCH_PREFIX)) return b;
+  } catch { /* detached or not a repo */ }
+  return "main";
+}
 const defaultPlan = (cwd) => resolve(mainRoot(cwd), ".fanout", "plan.md");
 
 // Merges the branches in plan order on a throwaway worktree, then rebuilds generated files and runs the
@@ -265,7 +273,6 @@ function showLog(cwd, limit = 20) {
   try { lines = readFileSync(join(mainRoot(cwd), ".fanout", "log.jsonl"), "utf8").split("\n").filter(Boolean); } catch { /* none yet */ }
   if (!lines.length) { console.log("No runs logged yet."); return 0; }
   const recs = lines.slice(-limit).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-  const mins = (s) => (s == null ? "" : s < 90 ? `${Math.round(s)}s` : `${(s / 60).toFixed(1)}m`);
   console.log("when              kind      sessions  time    fixes  test runs  cost     result");
   for (const r of recs) {
     const cost = r.costUsd == null ? "" : `$${r.costUsd.toFixed(2)}${r.costUnknown ? "+?" : ""}`;
@@ -281,6 +288,7 @@ function showStatus(cwd, base) {
   try { text = readFileSync(join(root, ".fanout", "plan.md"), "utf8"); } catch { console.log("No plan"); return 0; }
   const sessions = parsePlan(text), regen = parseRegen(text);
   if (!sessions.length) { console.log("No plan"); return 0; }
+  const live = readLive(root);
   const rows = [["session", "branch", "ahead", "files", "worktree", "verify"]];
   for (const s of sessions) {
     const branch = BRANCH_PREFIX + s.name, lane = existsSync(join(root, ".fanout", "lanes", s.name)) ? "yes" : "no";
@@ -297,15 +305,41 @@ function showStatus(cwd, base) {
       rows.push([s.name, branch, ahead, String(changed.length), lane, flags.join(", ") || "ok"]);
     } catch { rows.push([s.name, branch, "?", "?", lane, `no base ${base}`]); }
   }
+  if (live) {
+    rows[0].push("agent", "cost");
+    for (const r of rows.slice(1)) r.push(...liveCells(live.sessions[r[0]], live.running));
+    if (live.sessions["(planner)"]) rows.push(["(planner)", "-", "-", "-", "-", "-", ...liveCells({ state: "done", ...live.sessions["(planner)"] }, false)]);
+  }
   const w = rows[0].map((_, i) => Math.max(...rows.map((r) => r[i].length)));
   rows.forEach((r) => console.log(r.map((c, i) => c.padEnd(w[i])).join("  ").trimEnd()));
   let recs = [];
   try { recs = readFileSync(join(root, ".fanout", "log.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean); } catch { /* none yet */ }
+  if (live?.running) {
+    const cost = Object.values(live.sessions).reduce((a, x) => (a == null || x.costUsd === null ? null : a + (x.costUsd ?? 0)), 0);
+    console.log(`run in progress: ${live.phase}, ${mins((Date.now() - Date.parse(live.startedAt)) / 1000)} so far, ${cost == null ? "cost unknown" : `$${cost.toFixed(2)}`} for finished agent runs`);
+  }
   for (const kind of ["run", "rehearse"]) {
     const r = recs.findLast((x) => x.kind === kind);
     console.log(`last ${kind}: ${r ? `${r.at.slice(0, 16).replace("T", " ")}  ${r.result ?? ""}` : "none"}`);
   }
   return 0;
+}
+
+const mins = (s) => (s == null ? "" : s < 90 ? `${Math.round(s)}s` : `${(s / 60).toFixed(1)}m`);
+// .fanout/live.json, written by `fanout run` as it goes. `running` is false once the run finished or its
+// process is gone (killed, crashed), so a stale file never reads as a run in progress.
+function readLive(root) {
+  let live;
+  try { live = JSON.parse(readFileSync(join(root, ".fanout", "live.json"), "utf8")); } catch { return null; }
+  let alive = false;
+  if (live.pid) try { process.kill(live.pid, 0); alive = true; } catch (e) { alive = e.code === "EPERM"; }
+  return { ...live, running: alive };
+}
+function liveCells(x, running) {
+  if (!x) return ["-", "-"];
+  let state = x.state ?? "-";
+  if (x.since) state = running ? `${state} ${mins((Date.now() - x.since) / 1000)}` : `${state}, stopped`;
+  return [state, x.costUsd === null ? "?" : x.costUsd == null ? "-" : `$${x.costUsd.toFixed(2)}`];
 }
 const explicitPlan = (argv) => (argv[1] && !argv[1].startsWith("--") ? argv[1] : null);
 
@@ -316,9 +350,9 @@ function main(argv) {
   const cwd = resolve(arg(argv, "--cwd", process.cwd()));
   if (cmd === "precommit") return precommit(cwd);
   if (cmd === "install-git-hook") return installHook(cwd, argv.includes("--force"));
-  if (cmd === "status") return showStatus(cwd, arg(argv, "--base", "main"));
+  if (cmd === "status") return showStatus(cwd, arg(argv, "--base") ?? defaultBase(cwd));
   if (cmd === "log") return showLog(cwd, Number(arg(argv, "--last", "20")));
-  if (!["check", "verify", "rehearse"].includes(cmd)) { console.error("usage: fanout check [plan.md] | verify [--session name] [--base main] | rehearse [--base main] [--test cmd] | run [\"goal\"] [--yes] | status [--base main] | log [--last 20] | install-git-hook [--force] | guard"); return 2; }
+  if (!["check", "verify", "rehearse"].includes(cmd)) { console.error("usage: fanout check [plan.md] | verify [--session name] [--base <branch>] | rehearse [--base <branch>] [--test cmd] | run [\"goal\"] [--yes] | status [--base <branch>] | log [--last 20] | install-git-hook [--force] | guard"); return 2; }
   const planPath = explicitPlan(argv) ?? defaultPlan(cwd);
   let text;
   try { text = readFileSync(planPath, "utf8"); } catch { console.error(`No plan at ${planPath}`); return 2; }
@@ -334,7 +368,7 @@ function main(argv) {
     const { problems, order } = check(sessions, cwd, regen);
     if (problems.length) { problems.forEach((p) => console.log(p)); console.log("Fix the plan first (fanout check)."); return 1; }
     const t0 = Date.now();
-    const { ok, log, testRuns } = rehearse(order, { cwd, base: arg(argv, "--base", "main"), test: arg(argv, "--test") ?? planSetting(text, "test"), regen });
+    const { ok, log, testRuns } = rehearse(order, { cwd, base: arg(argv, "--base") ?? defaultBase(cwd), test: arg(argv, "--test") ?? planSetting(text, "test"), regen });
     log.forEach((l) => console.log(l));
     appendLog(cwd, { kind: "rehearse", sessions: order.length, seconds: Math.round((Date.now() - t0) / 1000), testRuns,
       result: ok ? "pass" : (log.find((l) => /^(BROKE|CONFLICT|REGEN FAILED|FLAKY|BASE FAILS)/.test(l)) ?? "fail").split(":")[0] });
@@ -343,7 +377,7 @@ function main(argv) {
   const name = arg(argv, "--session") ?? currentSession(cwd);
   const s = sessions.find((x) => x.name === name);
   if (!s) { console.error(`No session "${name}" in plan. Pass --session or run from a fanout/<name> branch.`); return 2; }
-  const base = arg(argv, "--base", "main"), head = arg(argv, "--head", "HEAD");
+  const base = arg(argv, "--base") ?? defaultBase(cwd), head = arg(argv, "--head", "HEAD");
   const changed = git(["diff", "--name-only", `${base}...${head}`], cwd).split("\n").filter(Boolean);
   const contracts = contractChanges(sessions, changed);
   const frozen = contracts.filter((f) => contractOwner(sessions, f).name !== name), evolved = contracts.filter((f) => !frozen.includes(f));
