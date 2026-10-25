@@ -256,12 +256,15 @@ export function dependencies(sessions) {
 // sessions took 2-3x as long as Claude ones (165-201s on low effort), so they go where nothing waits on
 // them; the Claude sessions on the chain the others build on ran at full speed with at most three of them
 // (six Claude sessions at once ran at about half speed). Above three, the sessions with the most sessions
-// built on them stay in Claude. A session's own agent: wins.
+// built on them stay in Claude. Claude slots left over go to the other sessions in plan order: on a
+// four-session sheet plan only one session had others building on it, and one Claude + three Codex took
+// 5m 04s against 3m 59s for four Claude sessions. A session's own agent: wins (agent: claude takes a slot).
 export const MIX_CLAUDE_MAX = 3;
 export function mixAgents(sessions, maxClaude = MIX_CLAUDE_MAX) {
-  const deps = dependencies(sessions);
+  const deps = dependencies(sessions), free = sessions.filter((s) => !s.agent);
   const dependents = (s) => sessions.filter((x) => deps[x.name].includes(s.name)).length;
-  const claude = sessions.filter((s) => dependents(s) > 0).sort((a, b) => dependents(b) - dependents(a)).slice(0, maxClaude).map((s) => s.name);
+  const ranked = [...free.filter((s) => dependents(s) > 0).sort((a, b) => dependents(b) - dependents(a)), ...free.filter((s) => dependents(s) === 0)];
+  const claude = ranked.slice(0, Math.max(0, maxClaude - sessions.filter((s) => s.agent === "claude").length)).map((s) => s.name);
   return Object.fromEntries(sessions.map((s) => [s.name, s.agent || (claude.includes(s.name) ? "claude" : "codex")]));
 }
 
@@ -517,7 +520,7 @@ export async function cli(argv) {
   const agentFor = (s) => s.agent || mix?.[s.name] || defaultAgent;
   if (signInStop(sessions.map(agentFor))) return finish(1, "not signed in");
   console.log(`\n${text.trim()}\n\nMerge order: ${order.join(" -> ")}`);
-  if (mix) console.log(`Agents (--mix: Claude for sessions others build on, at most ${MIX_CLAUDE_MAX}; Codex for the rest): ${sessions.map((s) => `${s.name} ${agentFor(s)}`).join(", ")}`);
+  if (mix) console.log(`Agents (--mix: ${MIX_CLAUDE_MAX} sessions in Claude, those others build on first; Codex for the rest): ${sessions.map((s) => `${s.name} ${agentFor(s)}`).join(", ")}`);
   if (!flag("--yes")) {
     if (!process.stdin.isTTY) { console.log("\nRun again with --yes to start these sessions."); return agents.length ? finish(0, "planned") : 0; }
     const rl = createInterface({ input: process.stdin, output: process.stdout });

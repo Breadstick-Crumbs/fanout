@@ -378,20 +378,23 @@ test("a signed-out CLI stops the run before any agent starts", () => {
   assert.equal(runCli(mkRepo(PLAN_AB), { FAKE_SIGNED_OUT: "codex" }).status, 0);
 });
 
-test("--mix: Claude for sessions others build on (at most 3), Codex for the rest, shown before approval", () => {
+test("--mix: 3 sessions in Claude, those others build on first, then the rest in plan order; Codex for the others", () => {
   const [core, mid, top, side] = parsePlan("## core\nowns: core.txt\nexposes: core.txt\n## mid\nowns: mid.txt\nexposes: mid.txt\nuses: core.txt\n## top\nowns: top.txt\nuses: mid.txt\n## side\nowns: side.txt\nagent: claude\n");
   assert.deepEqual(mixAgents([core, mid, top, side]), { core: "claude", mid: "claude", top: "codex", side: "claude" });
   // A chain of five: the four built on compete for three Claude slots, most dependents first.
   const chain = parsePlan([1, 2, 3, 4, 5].map((i) => `## s${i}\nowns: s${i}.txt\n${i < 5 ? `exposes: s${i}.txt\n` : ""}${i > 1 ? `uses: s${i - 1}.txt\n` : ""}`).join("\n"));
   assert.deepEqual(mixAgents(chain), { s1: "claude", s2: "claude", s3: "claude", s4: "codex", s5: "codex" });
+  // Three sessions or fewer all fit in Claude.
+  assert.deepEqual(mixAgents([core, mid, top]), { core: "claude", mid: "claude", top: "claude" });
   useFake();
-  const plan = "## core\nowns: core.txt\nexposes: core.txt\ntask: core\n\n## ui\nowns: ui.txt\nuses: core.txt\ntask: ui\n\n## docs\nowns: docs.txt\ntask: docs\n";
+  // core is built on, so it gets a Claude slot first although it comes third; docs and notes fill the other two.
+  const plan = "## docs\nowns: docs.txt\ntask: docs\n\n## notes\nowns: notes.txt\ntask: notes\n\n## core\nowns: core.txt\nexposes: core.txt\ntask: core\n\n## ui\nowns: ui.txt\nuses: core.txt\ntask: ui\n";
   const r = spawnSync(process.execPath, [join(import.meta.dirname, "../skills/fanout/fanout.mjs"), "run", "--yes", "--no-merge", "--mix"],
     { cwd: mkRepo(plan, { "core.txt": "stub" }), encoding: "utf8", env: { ...process.env, FANOUT_STAGGER_MS: "0" } });
   assert.equal(r.status, 0, r.stdout + r.stderr);
-  assert.match(r.stdout, /Agents \(--mix.*\): core claude, ui codex, docs codex/);
+  assert.match(r.stdout, /Agents \(--mix.*\): docs claude, notes claude, core claude, ui codex/);
   const kinds = Object.fromEntries(calls().map((c) => [c.stdin.match(/session "(\w+)"/)?.[1], c.args[0] === "exec" ? "codex" : "claude"]));
-  assert.deepEqual(kinds, { core: "claude", ui: "codex", docs: "codex" });
+  assert.deepEqual(kinds, { docs: "claude", notes: "claude", core: "claude", ui: "codex" });
 });
 
 // b builds on a; the test fails once both are in, until b's file says "fixed".

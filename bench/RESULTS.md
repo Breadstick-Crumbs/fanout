@@ -376,6 +376,18 @@ Sheet task, drafted plan (four sessions: formula, recalc-table, numfmt, csv-stru
 - **`--mix` with the four-session draft puts only formula in Claude:** nothing builds on recalc-table, numfmt or csv-structure. The three Codex sessions (low effort, now the default) took 229–268s, so the run took 5m 04s, about as long as the six-session 3 Claude + 3 Codex run (5m 09s), for $0.28 of Claude spend: 40% of the four-Claude median. The early test ran on a Codex session and passed.
 - **So:** `--mix` is for saving Claude spend and quota, at about a minute more than the four-Claude median on this task; for speed, run four Claude sessions. One run each.
 
+**`--mix` filling the free Claude slots (v0.22.1).** Three sessions now go to Claude: those others build on first, then the rest in plan order. On the four-session draft that's formula, recalc-table and numfmt in Claude, csv-structure in Codex. One run ([23:24](results/2026-10-25-23-24.md)):
+
+| Setup | Wall time | Claude cost | Hidden tests | Slowest session |
+|---|---|---|---|---|
+| 1 Claude + 3 Codex (v0.22.0, 23:07) | 5m 04s | $0.28 | 34/34 | recalc-table (Codex) 268s |
+| 3 Claude + 1 Codex (v0.22.1, 23:24) | 4m 47s | $0.58 | **30/34** | csv-structure (Codex) 235s |
+| 4 Claude sessions (median of 3, v0.21) | 3m 59s | $0.72 | 33–34/34 | - |
+
+- **Only 17s faster:** the one Codex session (235s) was still the slowest, so the run waited on it just as before. With Codex at 2–3× Claude's time, any Codex session sets the wall time unless its part is small.
+- **The four lost hidden tests weren't Codex's:** all four were recalc's (every formula came out `#ERROR!`). The recalc-table session, in Claude, passed the formula text with its leading `=` to `parseFormula`, which the spec says takes the text without it. That line is in formula's section of the goal, and the contract stub fanout pasted into recalc-table's brief had only the signature. recalc-table's own short tests checked only plain values, so its early test and rehearse both passed. Earlier runs lost one hidden test at most; this is a contract gap, not a mix effect. One way to close it: have the contracts agent copy each function's documented behaviour from the spec into the stub as a comment.
+- **So for speed, `--mix` doesn't help on this task:** it saves Claude spend ($0.28–0.58 against $0.72) and costs about a minute. One run per setup.
+
 ## What this does and doesn't show
 
 - **It shows** that on overlapping work, fanout kept `main` free of conflicts and breakage, with no integration step afterwards, at about the same Claude cost: $0.50–$0.92 against $0.59–$0.63.
