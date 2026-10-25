@@ -73,3 +73,13 @@ test("draft: flags a name a session uses from a file another session owns, not o
   const d = draftPlan({ goal, root });
   assert.deepEqual(d.flags, [{ session: "fines", name: "createStore", file: "src/store.mjs", owner: "holds" }]);
 });
+
+test("draft: a glob of generated files and a test command from the goal; PHP functions are flagged too", () => {
+  const root = repoWith({ "theme/inc/header.php": "<?php\nfunction sgt_header() {}\n", "theme/inc/about.php": "<?php\n", "theme/css/about.css": "", "theme/css/about-rtl.css": "" });
+  const goal = "The copies `theme/css/*-rtl.css` are generated: run `bash tools/rtl.sh`.\nTest with `bash tools/check.sh`.\n\n## header\nChange `theme/inc/header.php`: add a switch.\n\n## about\nChange `theme/inc/about.php` and `theme/css/about.css`, using `sgt_header()`; leave `theme/css/about-rtl.css` to the generator.\n";
+  const d = draftPlan({ goal, root });
+  assert.equal(planSetting(d.text, "test"), "bash tools/check.sh");
+  assert.deepEqual(parseRegen(d.text), [{ paths: ["theme/css/*-rtl.css"], cmd: "bash tools/rtl.sh" }]);
+  assert.deepEqual(parsePlan(d.text).find((s) => s.name === "about").owns, ["theme/inc/about.php", "theme/css/about.css"]);
+  assert.deepEqual(d.flags, [{ session: "about", name: "sgt_header", file: "theme/inc/header.php", owner: "header" }]);
+});

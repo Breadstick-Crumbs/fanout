@@ -13,6 +13,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join, basename, dirname, extname } from "node:path";
+import { matches } from "./fanout.mjs";
 
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 const ticks = (s) => [...s.matchAll(/`([^`\n]+)`/g)].map((m) => m[1]);
@@ -29,19 +30,23 @@ export function draftPlan({ goal, root, maxSessions = 4 }) {
   const files = new Set(spawnSync("git", ["ls-files"], { cwd: root, encoding: "utf8" }).stdout.split("\n").filter(Boolean));
   const isPath = (t) => /^[\w.\-/]+\.[A-Za-z][A-Za-z0-9]*$/.test(t) && (t.includes("/") || files.has(t));
 
-  // Generated files: a sentence before the first heading that says "generated" and names a path and a command.
+  // Generated files: a sentence before the first heading that says "generated" and names a path (a glob is
+  // fine: `css/f-*-rtl.css`) and a command. The test command: a sentence that says "test" and names a command.
   const regen = [];
+  let goalTest = null;
   for (const sen of sentences(preamble)) {
-    if (!/generated/i.test(sen)) continue;
-    const t = ticks(sen), paths = t.filter(isPath), cmd = t.find((x) => /\s/.test(x));
-    if (paths.length && cmd) regen.push({ paths, cmd });
+    const t = ticks(sen), cmd = t.find((x) => /\s/.test(x));
+    if (/generated/i.test(sen)) {
+      const paths = t.filter((x) => isPath(x) || (/^[\w.\-/*]+\.[A-Za-z][A-Za-z0-9]*$/.test(x) && x.includes("*") && x.includes("/")));
+      if (paths.length && cmd) regen.push({ paths, cmd });
+    } else if (/\btests?\b/i.test(sen) && cmd && !goalTest) goalTest = cmd;
   }
-  const generated = new Set(regen.flatMap((r) => r.paths));
+  const isGenerated = (p) => regen.some((r) => r.paths.some((g) => matches(g, p)));
 
   // Who owns each mentioned file.
   const mentions = new Map();
   for (const s of sections) {
-    s.paths = [...new Set(ticks(s.text).filter(isPath))].filter((p) => !generated.has(p));
+    s.paths = [...new Set(ticks(s.text).filter(isPath))].filter((p) => !isGenerated(p));
     for (const p of s.paths) (mentions.get(p) ?? mentions.set(p, []).get(p)).push(s);
   }
   const owner = new Map();
@@ -69,10 +74,11 @@ export function draftPlan({ goal, root, maxSessions = 4 }) {
     s.task = sentences(s.text)[0].replace(/(\s+with)?[:.]?$/, "").slice(0, 160);
   }
   // With node's test runner, each session can check its own test files on the merged code.
-  let test = null, nodeTest = false;
+  // A test command the goal names wins over package.json's.
+  let test = goalTest, nodeTest = false;
   try {
     const t = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).scripts?.test;
-    if (t) { test = "npm test"; nodeTest = /^node\s+--test\b/.test(t); }
+    if (t && !test) { test = "npm test"; nodeTest = /^node\s+--test\b/.test(t); }
   } catch { /* no package.json */ }
 
   // Merge down to maxSessions: the pair with the least spec text, a pair with a dependency counting as less.
@@ -101,13 +107,16 @@ export function draftPlan({ goal, root, maxSessions = 4 }) {
   // defines, when the session doesn't build on that file: the goal may need it changed without naming the
   // file (library benchmark: fines needs `createStore` to start with `payments: []`, and holds owns
   // src/store.mjs). Only these need an agent to look; a draft with none skips the review.
+  // JS/TS exports, and PHP functions (global, so every top-level one counts: a WordPress theme's shared code).
   const defs = new Map();
   for (const f of files) {
-    if (!/\.(m?[jt]sx?|cjs)$/.test(f) || generated.has(f)) continue;
+    const php = f.endsWith(".php");
+    if ((!php && !/\.(m?[jt]sx?|cjs)$/.test(f)) || isGenerated(f)) continue;
     let src = "";
     try { src = readFileSync(join(root, f), "utf8"); } catch { continue; }
-    const names = [...src.matchAll(/^export\s+(?:default\s+)?(?:async\s+)?(?:function\*?|const|let|var|class)\s+([A-Za-z_$][\w$]*)/gm)].map((m) => m[1]);
-    for (const m of src.matchAll(/^export\s*\{([^}]*)\}/gm)) names.push(...m[1].split(",").map((x) => x.trim().split(/\s+as\s+/).pop()).filter(Boolean));
+    const names = php ? [...src.matchAll(/^function\s+&?\s*([A-Za-z_]\w*)\s*\(/gm)].map((m) => m[1])
+      : [...src.matchAll(/^export\s+(?:default\s+)?(?:async\s+)?(?:function\*?|const|let|var|class)\s+([A-Za-z_$][\w$]*)/gm)].map((m) => m[1]);
+    if (!php) for (const m of src.matchAll(/^export\s*\{([^}]*)\}/gm)) names.push(...m[1].split(",").map((x) => x.trim().split(/\s+as\s+/).pop()).filter(Boolean));
     for (const n of names) (defs.get(n) ?? defs.set(n, new Set()).get(n)).add(f);
   }
   const flags = [];
