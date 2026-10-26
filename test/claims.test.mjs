@@ -17,6 +17,7 @@ if (process.argv[2] === "auth") { console.log(JSON.stringify({ loggedIn: true })
 const p = readFileSync(0, "utf8");
 appendFileSync(${JSON.stringify(judgeLog)}, JSON.stringify({ args: process.argv.slice(2), p }) + "\\n");
 if (process.env.FAKE_JUDGE_FAIL) { console.log(JSON.stringify({ is_error: true, result: "Not logged in" })); process.exit(1); }
+if (process.env.FAKE_JUDGE_DELAY_MS) { const end = Date.now() + Number(process.env.FAKE_JUDGE_DELAY_MS); while (Date.now() < end); }
 const task = p.match(/^New task: (.*)$/m)[1], w = process.env.FAKE_SAME_IF;
 const sessions = [...p.matchAll(/^- ([\\w.-]+): (.*)$/gm)].map(([, name, t]) => ({ name, reason: "r", same: !!w && task.includes(w) && t.includes(w) }));
 console.log(JSON.stringify({ result: JSON.stringify({ sessions }), total_cost_usd: 0.01 }));
@@ -477,4 +478,29 @@ test("fanout log lists every claim decision and notice in real use, and what the
   assert.match(log2, /The after-each-tool-call hook: 2 call\(s\), \d+ms on average/);
   assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: r2, encoding: "utf8" }), "", "nothing in anyone's status");
   void a; void b2;
+});
+
+test("a claim is visible while its check runs: a session claiming the same work meanwhile yields, and the first session's other edits wait for the check", async () => {
+  const { root, a, b } = repo();
+  fan(root, ["claim", "other", "write the docs"]); // something for a's check to compare with, so it calls the (slow) judge
+  const guardAsync = (cwd, file, request, extra) => new Promise((done) => {
+    const p = spawn(process.execPath, [FANOUT, "guard"], { cwd, env: env(extra) });
+    let err = ""; p.stderr.on("data", (d) => (err += d)); p.on("close", (status) => done({ status, err }));
+    p.stdin.end(JSON.stringify({ cwd, transcript_path: transcript(request), tool_input: { file_path: join(cwd, file) } }));
+  });
+  const slow = { FAKE_SAME_IF: "dark", FAKE_JUDGE_DELAY_MS: "6000" };
+  const first = guardAsync(a, "settings.js", "add a dark mode toggle to the settings page", slow);
+  for (let i = 0; i < 60 && !readState(root).claims.a; i++) await new Promise((r) => setTimeout(r, 100)); // a's claim is written, its check still running
+  assert.equal(readState(root).claims.a.checking, true);
+  const second = guardAsync(a, "styles.css", "add a dark mode toggle to the settings page", slow); // a's other edit, at the same moment
+  const dup = guardT(b, "theme.css", "users want a dark theme they can switch on", { FAKE_SAME_IF: "dark" });
+  assert.equal(dup.status, 2, "b sees a's claim, though a's check isn't done, and yields to it");
+  assert.match(dup.stderr, /same work as another session's:\n {2}a \(branch a\)/);
+  const [r1, r2] = await Promise.all([first, second]);
+  assert.equal(r1.status, 0, r1.err);
+  assert.equal(r2.status, 0, "a's other edit waited for the check, then went ahead");
+  const c = readState(root).claims;
+  assert.equal(c.a.checking, undefined);
+  assert.equal(c.a.refusedAs, undefined, "a, the older claim, isn't refused because of b");
+  assert.deepEqual(c.b.refusedAs, ["a"]);
 });

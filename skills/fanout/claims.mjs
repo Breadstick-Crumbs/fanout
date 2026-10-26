@@ -461,17 +461,37 @@ export function recheckClaim(cwd, mine, live, via = "cli") {
 // Claude Code sessions, on their first edit: the claim is made for them, with the user's request as the task,
 // and checked against the others like any claim. A session doing work another already claimed is stopped,
 // and stays stopped (refusedAs) until it claims something else or says how its work differs.
+// The claim is written before the check, marked checking: the model call takes seconds (38s once, in the demo),
+// and a session whose first edit came meanwhile didn't see this one and claimed the same work too. Now it sees it,
+// and of two claims for the same work only the newer yields. Another hook of this session (agents often edit two
+// files at once) waits for the check rather than going ahead (waitChecked); one of them got through that way.
+export const claimsAt = (a, b) => Date.parse(a.at) < Date.parse(b.at) || (a.at === b.at && a.name < b.name); // a is older
 export function autoClaim(cwd, branch, task, base, live, via = "edit") {
   const others = live.filter((c) => c.branch !== branch);
-  const o = taskOverlap(task, others, cwd);
   const name = slugName(branch), now = new Date().toISOString();
   const claim = { name, task: task.slice(0, 300), branch, path: git(cwd, ["rev-parse", "--show-toplevel"]).out.trim(), files: [], exposes: [], edits: [],
-    start: git(cwd, ["rev-parse", "HEAD"]).out.trim(), at: now, updated: now, auto: true, comparedWith: others.map((c) => c.name), // tried once, whatever the outcome
-    ...(o.same.length ? { refusedAs: o.same.map((c) => c.name), why: o.why } : {}) };
-  writeState(cwd, (claims) => { if (claims[name]?.branch === branch) return false; claims[name] = claim; }, `fanout: claim ${name} (first edit)`);
-  logEvent(cwd, { kind: o.same.length ? "refused" : "claim", via, session: name, branch, task: claim.task, by: o.by, costUsd: o.costUsd ?? null,
-    ...(o.same.length ? { as: o.same.map((c) => c.name), asTasks: o.same.map((c) => c.task), why: o.why } : {}) });
+    start: git(cwd, ["rev-parse", "HEAD"]).out.trim(), at: now, updated: now, auto: true, comparedWith: others.map((c) => c.name), checking: true }; // tried once, whatever the outcome
+  let existing = null;
+  writeState(cwd, (claims) => { if (claims[name]?.branch === branch) { existing = claims[name]; return false; } claims[name] = claim; }, `fanout: claim ${name} (first edit)`);
+  if (existing) return waitChecked(cwd, existing);
+  const o = taskOverlap(task, others, cwd);
+  const same = o.same.filter((c) => claimsAt(c, claim)); // a newer one yields to this, not the other way round
+  delete claim.checking;
+  if (same.length) { claim.refusedAs = same.map((c) => c.name); claim.why = o.why; }
+  writeState(cwd, (claims) => { const c = claims[name]; if (!c || c.branch !== branch) return false; delete c.checking; if (same.length) { c.refusedAs = claim.refusedAs; c.why = o.why; } }, `fanout: checked ${name}`);
+  logEvent(cwd, { kind: same.length ? "refused" : "claim", via, session: name, branch, task: claim.task, by: o.by, costUsd: o.costUsd ?? null,
+    ...(same.length ? { as: same.map((c) => c.name), asTasks: same.map((c) => c.task), why: o.why } : {}) });
   return claim;
+}
+// This session's claim, once its check is done (at most 2 minutes: the check's own timeout).
+export function waitChecked(cwd, claim, timeoutMs = 120000) {
+  const end = Date.now() + timeoutMs;
+  let c = claim;
+  while (c?.checking && Date.now() < end) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+    c = readState(cwd).claims[claim.name] ?? null;
+  }
+  return c ?? claim;
 }
 export const refusalText = (c, live, script) => {
   const same = live.filter((x) => (c.refusedAs ?? []).includes(x.name));

@@ -11,6 +11,14 @@ fanout is a safety layer for parallel coding agents (Claude Code, Codex, or both
 
 It keeps parallel work from colliding. It isn't mainly a speed-up: on most jobs one agent is about as fast (see [When to use it](#when-to-use-it)).
 
+<p align="center"><img src="assets/demo.svg" alt="fanout demo: night-theme is told dark-mode already has the same work and builds nothing; receipt is told another session changed formatPrice and builds on the new version" width="100%"></p>
+
+Real Claude Code sessions with nothing about fanout in their tasks, recorded by `fanout demo`. Two sessions get the same work in other words: the second is told at start that the first has it, and builds nothing. Meanwhile another session commits a change to `formatPrice`, which the receipt session uses; receipt is told, with the diff, and the merged code works. Run it yourself (about two minutes, $0.10 on your Claude account):
+
+```bash
+npx github:Breadstick-Crumbs/fanout demo
+```
+
 ## Quick start
 
 **1. Install the plugin and keep working as you do.** In Claude Code:
@@ -172,7 +180,7 @@ How sessions you open yourself (any agent, any worktree) keep out of each other'
 **In Claude Code, nothing to run:**
 - **At start,** a session is told what the other sessions are doing.
 - **On its first edit,** its task is claimed for it: what you asked it to do, taken from the conversation.
-- **The same work is refused.** A new claim is compared with every live one by a Sonnet call (about $0.012, once per session). If it's the same work, whatever the wording ("add a dark mode toggle" and "users want a night theme they can turn on"), the session is stopped and says which session already has it. Work in the same area isn't the same work ("add tax to checkout" and "add discount codes to checkout"). On 40 labelled pairs written by a separate agent and never used to tune it, the check got all 40 right; matching words got 20 ([results](bench/RESULTS.md#claims-telling-the-same-task-from-different-work-v023)).
+- **The same work is refused.** A new claim is compared with every live one by a Sonnet call (about $0.012, once per session; the first edit waits for it, about 15 seconds, longer when many sessions are busy). The claim is visible to other sessions while it's being checked, and of two claims for the same work the newer one yields, so two sessions that start together don't both go ahead. If it's the same work, whatever the wording ("add a dark mode toggle" and "users want a night theme they can turn on"), the session is stopped and says which session already has it. Work in the same area isn't the same work ("add tax to checkout" and "add discount codes to checkout"). On 40 labelled pairs written by a separate agent and never used to tune it, the check got all 40 right; matching words got 20 ([results](bench/RESULTS.md#claims-telling-the-same-task-from-different-work-v023)).
 - **Shared files aren't blocked.** When another session is also changing a file (`package.json`, a shared stylesheet), the agent is told who, the first time, and carries on. A file someone claimed by name (`fanout claim <name> "<task>" <files>`) is locked for everyone else.
 - **Told when another session's commit changes your code.** When another session (or `main`) commits a change to a file this session has read or edited, the session gets the diff and is asked to build against the new version. In a test where ignoring the change meant a certain break, sessions told this way adapted 3 times out of 3; with no notice the merged code failed every time ([results](bench/RESULTS.md#notices-between-sessions-v026)). `FANOUT_NOTICES=off` or `git config fanout.notices false` turns notices off.
 - **Edits through the shell count too.** Sessions that edit with shell commands (the desktop app's auto mode does) are claimed and checked after each command, not only through Edit and Write.
@@ -190,6 +198,7 @@ How sessions you open yourself (any agent, any worktree) keep out of each other'
 fanout                    # every session: what it's doing, what it changed, overlaps
 fanout start "<task>"     # claim this session's task (agents without hooks)
 fanout inbox              # changes other sessions committed since you last looked (agents without hooks)
+fanout demo               # claims and notices with real sessions in a throwaway repo (~2 min, ~$0.10)
 fanout done               # test this branch merged with the others' work
 fanout claims             # every claim; fanout release <name> ends one early
 fanout log                # the last 7 days: each refusal and notice, to check by hand (--days 30)

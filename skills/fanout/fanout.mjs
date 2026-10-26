@@ -14,7 +14,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { resolve, relative, isAbsolute, join, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { claimsActive, claimsOn, branchOf, liveClaims, claimedByOther, editedByOthers, writeState, autoClaim, refusalText, taskFromTranscript, recheckClaim, selfCheckText,
-  notices, repoInfo, logEvent, readEvents, claimCmd, startCmd, showClaims, releaseCmd, initCmd } from "./claims.mjs";
+  notices, repoInfo, logEvent, readEvents, waitChecked, claimCmd, startCmd, showClaims, releaseCmd, initCmd } from "./claims.mjs";
 
 const SESSION_KEYS = ["owns", "after", "exposes", "uses", "done", "task", "check", "agent", "model"];
 const PLAN_KEYS = ["test", "regen"];
@@ -526,6 +526,7 @@ function main(argv) {
   if (cmd === "session-start") return sessionStart();
   if (cmd === "notice") return noticeHook();
   if (cmd === "run") return import("./run.mjs").then((m) => m.cli(argv.slice(1)));
+  if (cmd === "demo") return import("./demo.mjs").then((m) => m.demo(argv.slice(1)));
   const cwd = resolve(arg(argv, "--cwd", process.cwd()));
   if (cmd === "precommit") return precommit(cwd);
   if (cmd === "install-git-hook") return installHook(cwd, argv.includes("--force"));
@@ -547,6 +548,7 @@ function main(argv) {
   start "<task>" [files...]               claim this session's task (refused if another session has the same work)
   done                                    test this branch merged with the other sessions' work
   inbox                                   changes other sessions committed since you last looked (agents without hooks)
+  demo [--yes] [--record f.svg]           claims and notices with real Claude Code sessions in a throwaway repo (~2 min, ~$0.10)
   run ["goal" | --goal-file f] [--yes]   split a job across agents: plan, agents, rehearse, fix, merge (fanout run --help)
   overlap [--base <branch>] [--all]       same as no command
   init                                    claims on for good in this repo (they also switch on by themselves with 2+ active sessions)
@@ -677,6 +679,7 @@ It shows what the other sessions are doing; if one already has your work, don't 
 (A person committing by hand, not an agent: git commit --no-verify skips this check.)`, notes: [] };
   const notes = [];
   if (!mine) mine = autoClaim(root, branch, transcript ? taskFromTranscript(transcript) : "", base, live, via);
+  else if (mine.checking) mine = waitChecked(root, mine);
   else if (!mine.refusedAs) {
     // An older claim this one hasn't been compared with: one made at the same moment as it (recheckClaim).
     const rc = recheckClaim(root, mine, live, via);
@@ -707,6 +710,7 @@ function sessionStart() {
   const text = `fanout: other sessions are working in this repo right now:\n${others.slice(0, 12).map((c) => `- ${c.name} (branch ${c.branch}): ${c.task || "no task given"}${c.files?.length ? ` [claimed files: ${c.files.join(", ")}]` : ""}`).join("\n")}\n`
     + `Don't do their work. Your task is claimed for you on your first edit, and refused if another session already has the same work.`;
   console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text } }));
+  logEvent(root, { kind: "told", session: branch, others: others.slice(0, 12).map((c) => c.name), otherTasks: others.slice(0, 12).map((c) => c.task) });
   return 0;
 }
 
