@@ -388,6 +388,31 @@ Sheet task, drafted plan (four sessions: formula, recalc-table, numfmt, csv-stru
 - **The four lost hidden tests weren't Codex's:** all four were recalc's (every formula came out `#ERROR!`). The recalc-table session, in Claude, passed the formula text with its leading `=` to `parseFormula`, which the spec says takes the text without it. That line is in formula's section of the goal, and the contract stub fanout pasted into recalc-table's brief had only the signature. recalc-table's own short tests checked only plain values, so its early test and rehearse both passed. Earlier runs lost one hidden test at most; this is a contract gap, not a mix effect. One way to close it: have the contracts agent copy each function's documented behaviour from the spec into the stub as a comment.
 - **So for speed, `--mix` doesn't help on this task:** it saves Claude spend ($0.28–0.58 against $0.72) and costs about a minute. One run per setup.
 
+### Claims: telling the same task from different work (v0.23)
+
+`fanout claim` checks a new task against every live claim and refuses it when another session is doing the same work. Measured with `node bench/task-overlap.mjs` on two sets of 40 labelled task pairs (20 same, 20 different), each written by a separate agent that didn't know how they'd be judged: [task-pairs.json](task-pairs.json), and [task-pairs-heldout.json](task-pairs-heldout.json), which was written after the judge's prompt was fixed and used unchanged. Each new task is compared with four live claims at once, the right one among three from other pairs. One run per row:
+
+| Check | First set | Held-out set | Cost per claim |
+|---|---|---|---|
+| Shared words (best threshold) | 17/40 | 20/40 | free |
+| Haiku, first prompt (decide, then explain) | 30/40: 18 of 20 duplicates caught, 8 false alarms | - | $0.0005 |
+| Haiku, reason before deciding | 36/40, no false alarms | 33/40: 13 of 20 caught, no false alarms | $0.0007 |
+| Sonnet, reason before deciding | **40/40** | **40/40** | $0.012 |
+
+- **Word overlap is no better than chance:** duplicates are often written in different words ("dark mode toggle" against "a night theme"), and different work often shares them ("add tax to checkout" against "add discount codes to checkout").
+- **Asking for the reason first removed the false alarms.** With the first prompt, five of Haiku's eight false alarms came with a reason that called the tasks different.
+- **Haiku misses symptom-against-fix duplicates** ("password reset links still work after a password change" against "invalidate reset tokens on password change"). Sonnet caught all of them, so the check runs on Sonnet: about $0.012 once per session.
+- **The prompt was tuned on the first set**, so its 40/40 there flatters it; the held-out 40/40 is the fair number. 80 pairs, one run each.
+
+**With real agents:** three headless Sonnet sessions in one repo with claims on, each told to follow the `fanout init` instructions in `CLAUDE.md`. A had "add a dark mode toggle to the settings page", B "users have asked for a night theme they can turn on themselves", C "add a CSV export to the reports page"; B and C started once A had claimed.
+
+| Run | A | B (same work, other words) | C (different work) |
+|---|---|---|---|
+| B follows the instructions | claimed, built it (35s, $0.04) | listed the claims, saw dark mode, stopped with no changes (19s, $0.01) | claimed, built it (60s, $0.03) |
+| B told to skip the list and claim at once | claimed, built it (45s, $0.04) | its claim was refused as the same work as A's; stopped with no changes (33s, $0.02) | - |
+
+One run each. Both ways B didn't duplicate A's work, and C wasn't held up.
+
 ## What this does and doesn't show
 
 - **It shows** that on overlapping work, fanout kept `main` free of conflicts and breakage, with no integration step afterwards, at about the same Claude cost: $0.50–$0.92 against $0.59–$0.63.

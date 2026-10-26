@@ -1,6 +1,6 @@
 # Design: claims, shared state and messages
 
-Status: draft for review (2026-10-26). Nothing here is built yet.
+Status: step 1 (claims, with the task check) built in v0.23; the rest is a draft for review.
 
 ## Goal
 
@@ -27,8 +27,8 @@ fanout claims                  # every live claim: session, task, files, branch,
 fanout release currency        # or: fanout release currency --to receipt (hand over)
 ```
 
-- **Files are enforced, tasks are advisory.** The edit guard (Claude Code) and the git pre-commit hook (any agent) refuse an edit or commit of a file another live claim owns, and say who has it. Duplicate *tasks* can't be checked exactly, so `fanout claim` lists existing claims whose task shares words with the new one and asks the agent to look before going on.
-- **Claim as you go.** In a repo where claims are on (`fanout init`), the guard claims an unclaimed file for a session the first time that session edits it. So a session that never ran `fanout claim` still gets its files recorded, and a second session that reaches for one of them is stopped and told. This is the plan, built incrementally instead of up front.
+- **Files and tasks are both enforced.** The edit guard (Claude Code) and the git pre-commit hook (any agent) refuse an edit or commit of a file another live claim covers, and say who has it. A new task is compared with every live one by a Sonnet call and refused when it's the same work (`--distinct "<how it differs>"` overrides). Validated before it was relied on (bench/RESULTS.md, "Claims"): on 40 held-out labelled pairs Sonnet got 40/40, Haiku 33/40, shared words 20/40.
+- **Claim before the first edit, then as you go.** In a repo where claims are on (`fanout init`), a session with no claim is stopped at its first edit (guard) or commit (hook) and told to claim its task, so no session gets past the task check. After that, each new file it edits is added to its claim. This is the plan, built incrementally instead of up front.
 - **A session is its checkout.** The claimant is the worktree's branch (as today: the guard finds the session from the edited file's checkout), plus an optional label. Not only `fanout/*` branches: any branch in a repo where claims are on.
 - **Claims end on their own:** when the branch merges into the base, when its worktree is removed, or after 24 hours with no commits (the same rule `overlap` uses). `fanout release` ends one by hand.
 - **Contracts stay as they are:** a claim can `expose` files, which are then frozen for everyone else, as in the plan today.
@@ -84,7 +84,7 @@ Unknown, and breaks are rare (about 3 in 10 four-session sheet runs), so it need
 
 ## Build order
 
-1. Claims on `refs/fanout/state`: `claim`, `claims`, `release`, guard and git hook enforcement, claim-on-first-edit, expiry. `overlap` and `status` show claims. Fake-agent tests with two worktrees.
+1. (Done, v0.23.) Claims on `refs/fanout/state`: `init`, `claim`, `claims`, `release`; the task check; guard and git hook enforcement; claim before the first edit, files added as edited; expiry. `overlap` and `status` show claims. Fake-agent tests (test/claims.test.mjs) and two real three-session runs.
 2. `fanout run` writes its plan as claims (one code path for the plan and the claims).
 3. Notices, written by fanout, delivered by the `PostToolUse` hook (Claude Code) and `fanout inbox` (others).
 4. The notices experiment above, before anything else on messaging.
@@ -92,6 +92,6 @@ Unknown, and breaks are rare (about 3 in 10 four-session sheet runs), so it need
 
 ## Open questions
 
-- Should claim-on-first-edit be on by default once claims are on, or should every session claim explicitly? (Default on is less friction; explicit is more predictable.)
+- Two sessions in the same checkout (both on the main branch, say) count as one session, since a claim belongs to a branch. Claude Code's hook input carries a session id that could tell them apart; the CLI commands an agent runs don't yet.
 - A claim that blocks a legitimate edit: is "ask the owner, or `fanout release`" enough, or should a session be able to take over a stale claim itself?
 - How much of `fanout run` stays once claims exist: the drafted plan and the merge order still need it, the session launching may not.

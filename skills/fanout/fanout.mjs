@@ -13,6 +13,7 @@ import { readFileSync, writeFileSync, appendFileSync, mkdirSync, chmodSync, exis
 import { execFileSync, spawnSync } from "node:child_process";
 import { resolve, relative, isAbsolute, join, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
+import { claimsOn, branchOf, liveClaims, claimedByOther, writeState, claimCmd, showClaims, releaseCmd, initCmd } from "./claims.mjs";
 
 const SESSION_KEYS = ["owns", "after", "exposes", "uses", "done", "task", "check", "agent", "model"];
 const PLAN_KEYS = ["test", "regen"];
@@ -334,6 +335,9 @@ function showLog(cwd, limit = 20) {
 function showStatus(cwd, base) {
   const root = mainRoot(cwd);
   let text;
+  // Claims first: they cover sessions fanout didn't start, so they show with or without a plan.
+  const claims = liveClaims(root, base);
+  if (claims.length) { console.log("claims:"); for (const c of claims) console.log(`  ${c.name}  ${c.branch}  ${c.task || "(no task)"}  ${(c.files ?? []).length} file(s)`); }
   try { text = readFileSync(join(root, ".fanout", "plan.md"), "utf8"); } catch { console.log("No plan"); return 0; }
   const sessions = parsePlan(text), regen = parseRegen(text);
   if (!sessions.length) { console.log("No plan"); return 0; }
@@ -438,9 +442,16 @@ export function checkoutOverlap(cwd, base, { activeHours = 24 } = {}) {
 function showOverlap(cwd, base, all) {
   const { checkouts, pairs, idle } = checkoutOverlap(cwd, base, { activeHours: all ? null : 24 });
   const skipped = idle ? ` (${idle} older checkout(s) with no recent work skipped; --all shows them)` : "";
-  if (!checkouts.length) { console.log(`No active checkout has changes against ${base}${skipped}.`); return 0; }
+  const claims = liveClaims(cwd, base), on = claimsOn(cwd);
+  const claimOf = (branch) => claims.filter((c) => c.branch === branch).map((c) => `claimed: ${c.name}, ${c.task || "no task"}`).join("; ") || (on ? "no claim" : "");
+  if (!checkouts.length) {
+    console.log(`No active checkout has changes against ${base}${skipped}.`);
+    for (const c of claims) console.log(`${c.branch}: claimed ${c.name}, ${c.task || "no task"} (no changes yet)`);
+    return 0;
+  }
   if (skipped) console.log(skipped.trim().slice(1, -1));
-  for (const c of checkouts) console.log(`${c.name}: ${c.files.length} file(s) changed${c.dirty.length ? ` (${c.dirty.length} uncommitted)` : ""}${c.behind ? `, ${c.behind} commit(s) behind ${base}` : ""}  ${c.path}`);
+  for (const c of checkouts) { const k = claimOf(c.name); console.log(`${c.name}: ${c.files.length} file(s) changed${c.dirty.length ? ` (${c.dirty.length} uncommitted)` : ""}${c.behind ? `, ${c.behind} commit(s) behind ${base}` : ""}${k ? ` [${k}]` : ""}  ${c.path}`); }
+  for (const c of claims.filter((c) => !checkouts.some((k) => k.name === c.branch))) console.log(`${c.branch}: claimed ${c.name}, ${c.task || "no task"} (no changes yet)`);
   if (!pairs.length) { console.log("No overlaps: no file is changed in more than one checkout."); return 0; }
   const list = (fs) => fs.slice(0, 5).join(", ") + (fs.length > 5 ? ` +${fs.length - 5} more` : "");
   for (const p of pairs) {
@@ -464,11 +475,20 @@ function main(argv) {
   if (cmd === "status") return showStatus(cwd, arg(argv, "--base") ?? defaultBase(cwd));
   if (cmd === "overlap") return showOverlap(cwd, arg(argv, "--base") ?? repoDefaultBranch(cwd), argv.includes("--all"));
   if (cmd === "log") return showLog(cwd, Number(arg(argv, "--last", "20")));
+  const SCRIPT = norm(fileURLToPath(import.meta.url));
+  if (cmd === "claim") return claimCmd(cwd, argv.slice(1), arg(argv, "--base") ?? defaultBase(cwd), SCRIPT);
+  if (cmd === "claims") return showClaims(cwd, arg(argv, "--base") ?? defaultBase(cwd), argv.includes("--all"));
+  if (cmd === "release") return releaseCmd(cwd, argv.slice(1));
+  if (cmd === "init") return initCmd(cwd, SCRIPT, installHook, argv);
   if (!["check", "verify", "rehearse"].includes(cmd)) {
     const help = cmd === "--help" || cmd === "-h" || cmd === "help";
     (help ? console.log : console.error)(`usage: fanout <command>
   run ["goal" | --goal-file f] [--yes]   the whole fan-out: plan, agents, rehearse, fix, merge (fanout run --help)
   overlap [--base <branch>] [--all]       no plan needed: which checkouts change the same files, would they conflict
+  init                                    turn on claims for this repo: sessions claim their task and files before editing
+  claim <name> "<task>" [files...]        claim a task (refused if another session is doing the same work)
+  claims [--all]                          what every session has claimed
+  release <name> [--to <branch>]          end a claim, or hand it over
   check [plan.md]                         is the plan safe? prints the merge order
   verify [--session name] [--base <b>]    anything outside a session's lane?
   rehearse [--base <branch>] [--test cmd] merge every branch on a scratch copy, test once
@@ -550,23 +570,51 @@ function guard() {
     const abs = isAbsolute(t) ? t : resolve(cwd, t);
     let dir = dirname(abs);
     while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
-    const ctx = loadSession(dir);
-    if (!ctx) return null;
-    let root = dir;
-    try { root = git(["rev-parse", "--show-toplevel"], dir).trim(); } catch { /* not a repo */ }
+    let root;
+    try { root = git(["rev-parse", "--show-toplevel"], dir).trim(); } catch { return null; } // not a repo
     const rel = norm(relative(root, abs));
     if (rel.startsWith("..")) return null; // outside the repo: not our business
-    return blockReason(ctx.sessions, ctx.s, ctx.regen, rel);
+    // A fanout run's lane follows its plan; any other checkout follows the claims, where they're on.
+    const ctx = loadSession(dir);
+    if (ctx) return blockReason(ctx.sessions, ctx.s, ctx.regen, rel);
+    return claimsOn(root) ? claimReason(root, [rel]) : null;
   }).filter(Boolean);
   why.forEach((w) => console.error("fanout: " + w));
   return why.length ? 2 : 0;
 }
 
-// git pre-commit hook: the same rules on staged files, so agents outside Claude Code are held to the plan too.
+// With claims on: why this checkout's session may not change these files, or null. A file another session's
+// live claim covers is refused; a session with no claim must claim its task first (that is what lets a
+// second session asking for the same work be told); a new file is added to the session's latest claim.
+// Ignored files (build output, node_modules) and fanout's own folder are left alone.
+export function claimReason(root, rels) {
+  const files = rels.filter((f) => !f.startsWith(".fanout/") && spawnSync("git", ["check-ignore", "-q", "--", f], { cwd: root }).status !== 0);
+  const branch = branchOf(root);
+  if (!files.length || !branch) return null;
+  const live = liveClaims(root, defaultBase(root)), script = norm(fileURLToPath(import.meta.url));
+  const taken = files.map((f) => [f, claimedByOther(live, branch, f)]).filter(([, c]) => c);
+  if (taken.length) return taken.map(([f, c]) => `${f} is claimed by session "${c.name}" (branch ${c.branch}: ${c.task || "no task given"}). Leave it to that session: work on something else, or coordinate with it. If that session is finished or abandoned: node "${script}" release ${c.name}`).join("\n");
+  const mine = live.filter((c) => c.branch === branch).sort((a, b) => Date.parse(b.updated ?? b.at) - Date.parse(a.updated ?? a.at));
+  if (!mine.length) return `claims are on in this repo, and this session (branch ${branch}) hasn't claimed its task yet. First see what the others are doing: node "${script}" claims\nThen claim yours: node "${script}" claim <short-name> "<what you're doing>" [files you'll change]`;
+  const add = files.filter((f) => !mine.some((c) => [...(c.files ?? []), ...(c.exposes ?? [])].some((g) => matches(g, f))));
+  if (add.length) writeState(root, (claims) => {
+    const c = claims[mine[0].name];
+    if (!c) return false;
+    c.files = [...new Set([...(c.files ?? []), ...add])]; c.updated = new Date().toISOString();
+  }, `fanout: ${mine[0].name} edits ${add.join(", ")}`);
+  return null;
+}
+
+// git pre-commit hook: the same rules on staged files, so agents outside Claude Code are held to the plan
+// (on a fanout/* lane) or the claims (elsewhere, when they're on) too.
 function precommit(cwd) {
   const ctx = loadSession(cwd);
-  if (!ctx) return 0;
   const staged = git(["diff", "--cached", "--name-only"], cwd).split("\n").filter(Boolean);
+  if (!ctx) {
+    const why = claimsOn(cwd) ? claimReason(cwd, staged) : null;
+    if (why) why.split("\n").forEach((w) => console.error("fanout: " + w));
+    return why ? 1 : 0;
+  }
   const why = staged.map((f) => blockReason(ctx.sessions, ctx.s, ctx.regen, f)).filter(Boolean);
   why.forEach((w) => console.error("fanout: " + w));
   return why.length ? 1 : 0;
@@ -585,13 +633,13 @@ function installHook(cwd, force) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `#!/bin/sh
 ${HOOK_MARK}
-case "$(git branch --show-current)" in fanout/*) ;; *) exit 0 ;; esac
+case "$(git branch --show-current)" in fanout/*) ;; *) [ "$(git config --get fanout.claims)" = true ] || exit 0 ;; esac
 script='${script}'
 [ -f "$script" ] || { echo "fanout: $script is gone (plugin updated?). Run: node <new fanout.mjs> install-git-hook" >&2; exit 1; }
 exec node "$script" precommit
 `);
   chmodSync(path, 0o755);
-  console.log(`Installed ${path}. Commits on fanout/* branches now follow the plan, whatever agent makes them.`);
+  console.log(`Installed ${path}. Commits on fanout/* branches now follow the plan, and with claims on (fanout init) every other branch follows the claims, whatever agent makes them.`);
   return 0;
 }
 

@@ -1,0 +1,242 @@
+[
+ {
+  "a": "add --verbose flag to the `status` CLI command",
+  "b": "add --json output flag to the `status` CLI command",
+  "same": false,
+  "note": "different flags"
+ },
+ {
+  "a": "add unit tests for the invoice total function",
+  "b": "cover `calculateTotal` in `invoice.js` with tests including rounding and empty cart",
+  "same": true,
+  "note": "same tests"
+ },
+ {
+  "a": "dedupe rows in the nightly ETL job by customer_id",
+  "b": "`etl/load_customers.py` inserts duplicate customers on rerun; make the load idempotent",
+  "same": true,
+  "note": "symptom vs fix"
+ },
+ {
+  "a": "add tax calculation to checkout",
+  "b": "add discount codes to checkout",
+  "same": false,
+  "note": "separate checkout features"
+ },
+ {
+  "a": "add CSV export button to the reports table",
+  "b": "let users download report data as a spreadsheet file from `ReportsTable.vue`",
+  "same": true,
+  "note": "same"
+ },
+ {
+  "a": "add i18n support with extraction of strings to `locales/`",
+  "b": "add right-to-left layout styles for Arabic",
+  "same": false,
+  "note": "related but separate"
+ },
+ {
+  "a": "add CSV export button to the reports table",
+  "b": "add column sorting to the reports table",
+  "same": false,
+  "note": "export vs sort"
+ },
+ {
+  "a": "add OpenAPI docs for the public REST API",
+  "b": "add API versioning with a /v2 prefix",
+  "same": false,
+  "note": "docs vs versioning"
+ },
+ {
+  "a": "add push notification permission prompt to iOS onboarding",
+  "b": "fix crash on iOS onboarding when the user skips the last step",
+  "same": false,
+  "note": "feature vs unrelated bug"
+ },
+ {
+  "a": "write README section on installation",
+  "b": "write README section on contributing and running tests",
+  "same": false,
+  "note": "different docs sections"
+ },
+ {
+  "a": "users get stuck bouncing between /login and /dashboard when session cookie is expired",
+  "b": "in `middleware/auth.ts` stop redirecting to /login when already on /login",
+  "same": true,
+  "note": "symptom vs fix"
+ },
+ {
+  "a": "fix login redirect loop after OAuth callback",
+  "b": "add login rate limiting to `auth/login.py`",
+  "same": false,
+  "note": "bug fix vs new throttling feature"
+ },
+ {
+  "a": "paginate the /api/orders endpoint",
+  "b": "orders list returns 50k rows and times out; add limit and cursor params in `api/orders.py`",
+  "same": true,
+  "note": "symptom vs fix"
+ },
+ {
+  "a": "fix flaky test in `test_scheduler.py` caused by sleep timing",
+  "b": "`test_scheduler` fails intermittently on CI; replace real sleeps with a fake clock",
+  "same": true,
+  "note": "same"
+ },
+ {
+  "a": "add filtering by status to the /api/orders endpoint",
+  "b": "paginate the /api/orders endpoint",
+  "same": false,
+  "note": "filter vs pagination"
+ },
+ {
+  "a": "refactor `UserService` to use dependency injection",
+  "b": "add caching to `UserService.getUser`",
+  "same": false,
+  "note": "refactor vs caching"
+ },
+ {
+  "a": "make the WordPress theme header sticky on scroll",
+  "b": "`header.php` and `style.css`: header should stay fixed at top while scrolling",
+  "same": true,
+  "note": "same"
+ },
+ {
+  "a": "add retry with backoff to the nightly ETL extract step",
+  "b": "dedupe rows in the nightly ETL job by customer_id",
+  "same": false,
+  "note": "different ETL concerns"
+ },
+ {
+  "a": "speed up the product search by adding a DB index on `products.name`",
+  "b": "search queries on products are slow; optimize with an index migration",
+  "same": true,
+  "note": "same"
+ },
+ {
+  "a": "fix flaky test in `test_scheduler.py`",
+  "b": "add integration tests for the scheduler's cron parser",
+  "same": false,
+  "note": "different test work"
+ },
+ {
+  "a": "rename `getUser` to `fetchUser` across the codebase",
+  "b": "refactor API client so user lookups use fetchUser naming",
+  "same": true,
+  "note": "same rename"
+ },
+ {
+  "a": "fix crash on Android when rotating the camera screen",
+  "b": "handle configuration change in `CameraActivity.kt` so orientation change does not destroy the preview",
+  "same": true,
+  "note": "symptom vs fix"
+ },
+ {
+  "a": "implement password reset via email link",
+  "b": "implement change-password in account settings for logged-in users",
+  "same": false,
+  "note": "different flows"
+ },
+ {
+  "a": "implement password reset via email link",
+  "b": "users who forget their password need a reset flow: email token, new password form `auth/reset.py`",
+  "same": true,
+  "note": "same"
+ },
+ {
+  "a": "speed up the product search by adding a DB index on `products.name`",
+  "b": "add fuzzy matching to product search so typos still find results",
+  "same": false,
+  "note": "perf vs relevance"
+ },
+ {
+  "a": "upgrade React from 17 to 18",
+  "b": "upgrade webpack from 4 to 5",
+  "same": false,
+  "note": "different dependency upgrades"
+ },
+ {
+  "a": "add Dockerfile for the API server and a compose file for local dev",
+  "b": "containerize the backend so it runs with docker compose up",
+  "same": true,
+  "note": "same"
+ },
+ {
+  "a": "migrate CI from Travis to GitHub Actions",
+  "b": "replace `.travis.yml` with a workflow in `.github/workflows/ci.yml`",
+  "same": true,
+  "note": "same migration"
+ },
+ {
+  "a": "add caching of node_modules to the GitHub Actions workflow",
+  "b": "add a lint job to the GitHub Actions workflow `.github/workflows/ci.yml`",
+  "same": false,
+  "note": "different CI changes"
+ },
+ {
+  "a": "make the WordPress theme header sticky on scroll",
+  "b": "add a mega menu to the WordPress theme header",
+  "same": false,
+  "note": "different header features"
+ },
+ {
+  "a": "add a logout button to the navbar and clear the session on click",
+  "b": "navbar needs sign-out; call `/api/logout` and wipe tokens from localStorage",
+  "same": true,
+  "note": "same"
+ },
+ {
+  "a": "upgrade React from 17 to 18 and switch to createRoot",
+  "b": "bump react and react-dom to v18 in `package.json`, update `index.js` render call",
+  "same": true,
+  "note": "same upgrade"
+ },
+ {
+  "a": "add dark mode toggle to the settings page",
+  "b": "support a night theme the user can switch on in preferences `src/settings/Theme.tsx`",
+  "same": true,
+  "note": "same feature, different wording"
+ },
+ {
+  "a": "add --json output flag to the `status` CLI command",
+  "b": "make `fanout status` print machine-readable output for scripts",
+  "same": true,
+  "note": "same feature"
+ },
+ {
+  "a": "add i18n support with a language switcher; translate the UI to Spanish",
+  "b": "localize the app: extract strings to `locales/` and ship an es translation including the language picker",
+  "same": true,
+  "note": "overlap, same"
+ },
+ {
+  "a": "add Dockerfile for the API server",
+  "b": "add Kubernetes manifests and a Helm chart for the API server",
+  "same": false,
+  "note": "image vs deployment"
+ },
+ {
+  "a": "write README section on installation",
+  "b": "document how to install the package and its prerequisites in `README.md`",
+  "same": true,
+  "note": "same docs"
+ },
+ {
+  "a": "add OpenAPI docs for the public REST API",
+  "b": "generate swagger spec and serve it at /docs",
+  "same": true,
+  "note": "same"
+ },
+ {
+  "a": "add avatar upload to the user profile page",
+  "b": "add bio and location fields to the user profile page",
+  "same": false,
+  "note": "different profile features"
+ },
+ {
+  "a": "add unit tests for the invoice total function",
+  "b": "add unit tests for the invoice PDF renderer",
+  "same": false,
+  "note": "different units"
+ }
+]

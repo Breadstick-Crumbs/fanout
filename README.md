@@ -39,6 +39,14 @@ fanout drafts the plan from the sections (no AI call), shows it, and asks once. 
 
 Inside Claude Code you can skip the command: install the plugin (below) and ask *"split this into parallel sessions"*.
 
+**3. Or let sessions you start yourself keep out of each other's way.** No plan up front:
+
+```bash
+npx github:Breadstick-Crumbs/fanout init
+```
+
+From then on each session in the repo claims its task before its first edit. A task that's the same work as another session's is refused, even in other words, and files another session has claimed can't be changed. See [Claims](#claims).
+
 ## The problem
 
 Running agents in parallel is easy. Merging their work is not:
@@ -149,6 +157,24 @@ done: no hard-coded currency left
 
 **Writing the goal as sections.** With one `## name` section per part and the files in backticks, `fanout run` drafts the plan without AI. A file goes to the section that adds or changes it; other sections that mention it build against it. Text above the first section can set the plan-wide lines: a sentence saying files are generated, naming them (a glob like `css/*-rtl.css` works) and a command in backticks, becomes a `regen:` line, and a sentence naming a test command (``Test with `bash tools/check.sh`.``) becomes the `test:` line; without one, `npm test` is used when `package.json` has a test script. The draft can only see the files the goal names, so it flags any name a section uses from a file another session owns (JavaScript exports, PHP functions), and an agent checks just those and writes the shared interfaces. With no flags and nothing shared, no planning agent runs at all. Each session gets its own sections in full, plus the lines from other sections that describe the functions it builds on.
 
+## Claims
+
+For sessions fanout didn't start: the ones you open yourself, in any agent, in any worktree. `fanout init` turns them on for a repo (and installs the git hook). Then:
+
+```bash
+fanout claims                                     # what every session is doing
+fanout claim currency "format prices in the user's currency" src/money.mjs
+fanout release currency                           # end it early (it also ends when the branch merges)
+```
+
+- **The same task isn't done twice.** A new claim is compared with every live one by a Sonnet call (about $0.012, once per session) and refused if it's the same work, whatever the wording: "add a dark mode toggle" and "users want a night theme they can turn on" are the same; "add tax to checkout" and "add discount codes to checkout" aren't. On 40 labelled pairs written by a separate agent and never used to tune it, it got all 40 right; word matching got 20 ([results](bench/RESULTS.md#claims-telling-the-same-task-from-different-work-v023)). `--distinct "<how it differs>"` overrides a refusal.
+- **A session must claim before it edits.** In Claude Code the edit guard stops the first edit of a session with no claim and tells it how to claim; for every agent, the git hook refuses the commit. So a session can't skip the check.
+- **Files are claimed as they're edited.** A file another session's claim covers can't be changed; a new file a session edits is added to its claim.
+- **Claims end on their own:** when the branch merges, its worktree is removed, or after a day with no commits.
+- **Every session sees them at once.** They live on a git ref (`refs/fanout/state`), not in anyone's files, and every worktree shares it.
+
+`fanout init` prints a short block for `AGENTS.md` / `CLAUDE.md` so agents know the rules before the hooks have to stop them. With it, real Sonnet sessions checked the claims, and the one given work already claimed stopped without changing anything.
+
 ## What it catches
 
 | Problem | What fanout does |
@@ -176,6 +202,8 @@ Your agent runs these. You can too (`npx github:Breadstick-Crumbs/fanout <comman
 ```bash
 fanout run ["goal" | --goal-file f]   # the whole fan-out: plan, agents, rehearse, fix, merge (fanout run --help)
 fanout overlap            # no plan needed: which checkouts are changing the same files, and would they conflict?
+fanout init               # turn on claims for this repo
+fanout claim / claims / release   # claim a task and its files, see every claim, end one
 fanout check              # is the plan safe? prints the merge order
 fanout verify             # in a session's folder: anything outside its lane?
 fanout rehearse           # merge every branch on a scratch copy, test once
@@ -225,6 +253,7 @@ Even when you don't split the work, `rehearse` and the edit guard cost nothing t
 | Finds branches that merge cleanly but break together | After merging | After merging | Before `main` |
 | Sends the break back to the agent that caused it | No, you fix it | No, you fix it | Yes |
 | Spots sessions you didn't plan editing the same files | No | No | `fanout overlap` |
+| Stops two sessions doing the same task | No | No | Claims |
 
 fanout runs before your CI, not instead of it.
 
@@ -277,6 +306,7 @@ Environment variables:
 | `FANOUT_USER_SETTINGS=1` | Start Claude session agents with your user settings. By default they load only the project's (faster and cheaper: no personal hooks, plugins or global `CLAUDE.md`), and fall back to yours if a start fails. |
 | `FANOUT_CODEX_EFFORT` | Codex sessions' reasoning effort: `low` by default (2–3× faster than Codex's default on our benchmark, same score), or `minimal`, `medium`, `high`, `default`. |
 | `FANOUT_CODEX_TIER=fast` | Codex's Fast tier: about a fifth quicker in our test, using more of your Codex quota. |
+| `FANOUT_CLAIM_JUDGE=off` | Don't check new claims for the same work (no model call; the claim goes ahead with the others listed). `FANOUT_CLAIM_JUDGE_MODEL` picks another model (default `sonnet`; `haiku` is cheaper but missed a third of the held-out duplicates). |
 | `FANOUT_TRACE_DIR` | Save each Claude agent's full event stream there, to see where its time went. |
 
 ## Development

@@ -1,0 +1,242 @@
+[
+ {
+  "a": "Add 3-D Secure challenge flow for card payments",
+  "b": "Add Apple Pay as a payment method at checkout",
+  "same": false,
+  "note": "same payment flow, different features"
+ },
+ {
+  "a": "Refactor auth middleware to use a single token-verification helper",
+  "b": "Deduplicate the JWT parsing code copy-pasted across `api/handlers/*.go`",
+  "same": true,
+  "note": "one refactor described two ways"
+ },
+ {
+  "a": "Add a dark mode toggle to the docs site header",
+  "b": "Add a version switcher dropdown to the docs site header",
+  "same": false,
+  "note": "same component, different features"
+ },
+ {
+  "a": "Rename `UserRecord` to `Account` across the Rust service",
+  "b": "Nobody knows what a UserRecord is; call it Account everywhere, structs, modules and SQL mappings",
+  "same": true,
+  "note": "same rename, casual vs precise wording"
+ },
+ {
+  "a": "Cache `getExchangeRates()` so checkout doesn't hit the FX API on every request",
+  "b": "Checkout page is slow, profiling shows ~800ms per load fetching currency rates",
+  "same": true,
+  "note": "fix vs perf symptom"
+ },
+ {
+  "a": "Add the `POST /refunds` endpoint to the payments service",
+  "b": "Show refund status on the customer's order history screen",
+  "same": false,
+  "note": "backend vs UI steps of refunds"
+ },
+ {
+  "a": "Turborepo remote cache never hits in CI",
+  "b": "Pin env and node version inputs in `turbo.json` so CI task hashes are stable",
+  "same": true,
+  "note": "symptom vs fix"
+ },
+ {
+  "a": "Make the Go API server shut down gracefully on SIGTERM",
+  "b": "In-flight HTTP requests get dropped during Kubernetes rolling deploys",
+  "same": true,
+  "note": "fix vs symptom"
+ },
+ {
+  "a": "Enemies get stuck on wall corners, fix navmesh pathing",
+  "b": "Enemies never spot the player behind glass, fix the line-of-sight raycast",
+  "same": false,
+  "note": "two bugs in enemy AI"
+ },
+ {
+  "a": "Formula parser: support absolute references like $A$1",
+  "b": "Shift relative cell references when a formula is copied to another cell",
+  "same": false,
+  "note": "related reference features, each delivers something distinct"
+ },
+ {
+  "a": "Add CSV export for the orders table in the admin panel",
+  "b": "Add CSV import for bulk-creating products in the admin panel",
+  "same": false,
+  "note": "same area and format, opposite directions"
+ },
+ {
+  "a": "Users get logged out of the mobile app randomly after about 15 minutes",
+  "b": "Implement silent refresh-token rotation in the Android `AuthInterceptor`",
+  "same": true,
+  "note": "symptom vs fix"
+ },
+ {
+  "a": "Implement OAuth login with Google and GitHub",
+  "b": "Add the GitHub OAuth callback route and token exchange",
+  "same": true,
+  "note": "broad task contains the narrow one"
+ },
+ {
+  "a": "Add a `--since <tag>` flag to `scripts/changelog.sh`",
+  "b": "Make `scripts/changelog.sh` group commits by conventional-commit type",
+  "same": false,
+  "note": "same script, different features"
+ },
+ {
+  "a": "Rate-limit login attempts per IP in the auth service",
+  "b": "Lock a user account after 5 consecutive failed password attempts",
+  "same": false,
+  "note": "both brute-force defenses, different mechanisms"
+ },
+ {
+  "a": "Fix tooltip not appearing on disabled buttons in the design system",
+  "b": "Fix tooltip flickering when the cursor is near the viewport edge",
+  "same": false,
+  "note": "two bugs in one component"
+ },
+ {
+  "a": "Docs site search returns nothing for multi-word queries",
+  "b": "Tokenize search input on whitespace before querying the Lunr index in `docs/search.js`",
+  "same": true,
+  "note": "symptom vs fix"
+ },
+ {
+  "a": "Early stopping kicks in after exactly `patience` epochs no matter what",
+  "b": "Initialize `best_val_loss` to infinity instead of 0 in `callbacks/early_stop.py`",
+  "same": true,
+  "note": "symptom vs root-cause fix"
+ },
+ {
+  "a": "Spreadsheet grid: keep the header row frozen while scrolling",
+  "b": "Spreadsheet grid: let users resize columns by dragging the header border",
+  "same": false,
+  "note": "same header component, different features"
+ },
+ {
+  "a": "Issue #412: Prices show $0.00 for items that have a sale price but no regular price",
+  "b": "Fall back to `sale_price` when `regular_price` is null in the `ProductPrice` component",
+  "same": true,
+  "note": "pasted issue title vs fix"
+ },
+ {
+  "a": "Player jump feels floaty, increase gravity while falling",
+  "b": "Add coyote time so players can still jump just after leaving a ledge",
+  "same": false,
+  "note": "same jump code, different features"
+ },
+ {
+  "a": "Add an index migration on `cart_items(cart_id)` to speed up cart lookups",
+  "b": "Fix the cart total not updating when item quantity changes",
+  "same": false,
+  "note": "same table/area, unrelated work"
+ },
+ {
+  "a": "Add linear learning-rate warmup to the scheduler in `train.py`",
+  "b": "Add cosine decay after the peak learning rate in `train.py`",
+  "same": false,
+  "note": "same scheduler, different phases"
+ },
+ {
+  "a": "Support the Android 14 predictive back gesture",
+  "b": "Replace `onBackPressed` overrides with `OnBackPressedCallback` and set `enableOnBackInvokedCallback`",
+  "same": true,
+  "note": "feature vs its implementation"
+ },
+ {
+  "a": "Players can walk through the east wall in level 3 of the dungeon",
+  "b": "Fix tilemap collider generation skipping tiles on chunk boundaries in `world/collision.rs`",
+  "same": true,
+  "note": "symptom vs fix of one collision bug"
+ },
+ {
+  "a": "Add pnpm workspace support to the release script",
+  "b": "Add pnpm workspace support to the dependency graph visualizer",
+  "same": false,
+  "note": "same phrasing, different tools"
+ },
+ {
+  "a": "Add `discount_codes` table migration with expiry and usage-limit columns",
+  "b": "Build the promo code entry field and validation message on the checkout page",
+  "same": false,
+  "note": "sequential steps of one feature: DB vs UI"
+ },
+ {
+  "a": "Add DistributedDataParallel multi-GPU support to the training script",
+  "b": "Add gradient accumulation to simulate larger batch sizes on a single GPU",
+  "same": false,
+  "note": "both about batch scale, different features"
+ },
+ {
+  "a": "Add retry with exponential backoff to the Stripe webhook handler",
+  "b": "Verify Stripe webhook signatures before processing events in `webhooks/stripe.ts`",
+  "same": false,
+  "note": "same file, different deliverables"
+ },
+ {
+  "a": "Android app crashes when rotating the phone on the checkout screen",
+  "b": "Move checkout fragment state into a ViewModel so it survives configuration changes",
+  "same": true,
+  "note": "crash symptom vs state-loss fix"
+ },
+ {
+  "a": "write docs for the new cli flags",
+  "b": "Document `--dry-run` and `--parallel` in the README options section",
+  "same": true,
+  "note": "vague vs specific; those are the new flags"
+ },
+ {
+  "a": "Training loss goes NaN after ~2k steps when using fp16 on A100s",
+  "b": "Add GradScaler loss scaling to the mixed-precision loop in `train.py`",
+  "same": true,
+  "note": "symptom vs fix"
+ },
+ {
+  "a": "Password reset links still work after the user has changed their password",
+  "b": "Invalidate outstanding reset tokens on password change in `auth/reset.py`",
+  "same": true,
+  "note": "security bug vs fix"
+ },
+ {
+  "a": "Add Prometheus latency histograms to the Rust gateway",
+  "b": "Add structured JSON request logging to the Rust gateway",
+  "same": false,
+  "note": "both observability, different outputs"
+ },
+ {
+  "a": "Migrate the monorepo test suites from Jest to Vitest",
+  "b": "Switch `packages/ui` tests over to Vitest",
+  "same": true,
+  "note": "broad migration contains the narrow one"
+ },
+ {
+  "a": "Extract the inventory UI into its own scene and script",
+  "b": "Split up `Player.gd`, the inventory code doesn't belong in the player controller",
+  "same": true,
+  "note": "same refactor, named by target vs by source file"
+ },
+ {
+  "a": "Replace the hand-rolled retry loops in `crates/sync` with the `backoff` crate",
+  "b": "Standardize retry behaviour in the sync crate, there are four slightly different loops",
+  "same": true,
+  "note": "one refactor, how vs why"
+ },
+ {
+  "a": "shellcheck flags unquoted variables in `scripts/deploy.sh`",
+  "b": "Deploy script breaks when the checkout path contains spaces",
+  "same": true,
+  "note": "lint warning vs behaviour of the same quoting bug"
+ },
+ {
+  "a": "Write the backup script that tars `/var/lib/app` nightly to S3",
+  "b": "Write the restore script that pulls a backup tarball and restarts the service",
+  "same": false,
+  "note": "paired scripts, different work"
+ },
+ {
+  "a": "Fix off-by-one in `SUM` range evaluation when the last row is empty",
+  "b": "Fix `SUM` returning #VALUE! when the range contains text cells",
+  "same": false,
+  "note": "two bugs in one function"
+ }
+]
