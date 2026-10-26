@@ -21,7 +21,7 @@
 // session claimed by name, warn about one another session is also editing, and record each file a session
 // edits. Every new task is checked against the live ones for the same work (taskOverlap) before it's accepted.
 import { spawnSync } from "node:child_process";
-import { existsSync, statSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, statSync, readdirSync, readFileSync, writeFileSync, rmSync, appendFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { matches } from "./fanout.mjs";
@@ -110,6 +110,19 @@ export function taskFromTranscript(path) {
 }
 export const slugName = (s) => String(s).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
 export const branchOf = (cwd) => git(cwd, ["branch", "--show-current"]).out.trim() || null;
+
+// Every claim decision and notice, one JSON line each, so real use can be checked afterwards (fanout log): was a
+// refusal right, did a notice help. In the repository's git dir, so nothing shows in anyone's status. Never throws:
+// inside Codex's sandbox it isn't writable.
+export function logEvent(cwd, rec, common = null) {
+  try {
+    const c = common ?? git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).out.trim();
+    if (c) appendFileSync(join(c, "fanout-events.jsonl"), JSON.stringify({ at: new Date().toISOString(), ...rec }) + "\n");
+  } catch { /* logging never gets in the way */ }
+}
+export function readEvents(common) {
+  try { return readFileSync(join(common, "fanout-events.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean); } catch { return []; }
+}
 
 // { head, claims: { name: claim } } as stored on the ref (expired ones included).
 export function readState(cwd) {
@@ -339,6 +352,7 @@ export function notices(root, gitDir, branch, base, { read, edited = [], common 
     const hits = all ? files : files.filter((f) => mine.has(f)), fresh = hits.filter((f) => !told.files.includes(f) || sinceTold.includes(f));
     st.told[c.branch] = { tip, files: [...new Set([...told.files.filter((f) => !sinceTold.includes(f)), ...hits])] };
     if (!fresh.length) continue;
+    logEvent(root, { kind: "notice", via: all ? "inbox" : "hook", session: branch, from: c.branch, files: fresh, ...(all ? { yours: fresh.filter((f) => mine.has(f)) } : {}) }, common);
     const diff = git(root, ["diff", from, tip, "--", ...fresh]).out.split("\n");
     const shown = diff.slice(0, NOTICE_DIFF_LINES).join("\n") + (diff.length > NOTICE_DIFF_LINES ? `\n... (${diff.length - NOTICE_DIFF_LINES} more lines: git diff ${from.slice(0, 9)} ${c.branch} -- ${fresh.join(" ")})` : "");
     const who = c.base ? `New commits on ${c.branch} (work merged since this session started)` : `Session "${c.name}" (branch ${c.branch}${c.task ? `: ${c.task.slice(0, 120)}` : ""}) committed`;
@@ -373,13 +387,15 @@ export function claimCmd(cwd, argv, base, script) {
   // The same claim again (AGENTS.md asks for it just before the first edit): compare it with any older claim it
   // hasn't met yet, which is how two sessions that started at the same moment find each other.
   if (!distinct && mine && mine.task === task && !mine.refusedAs) {
-    const rc = recheckClaim(cwd, mine, live);
+    const rc = recheckClaim(cwd, mine, live, "cli");
+    if (rc.refused.length) logEvent(cwd, { kind: "refused", via: "recheck", session: name, branch, task, as: rc.refused.map((c) => c.name), asTasks: rc.refused.map((c) => c.task), why: rc.why });
     if (rc.refused.length) { console.error(`fanout claim: this looks like the same work as:\n${rc.refused.map((c) => `  ${c.name} (branch ${c.branch}, claimed earlier): ${c.task}`).join("\n")}${rc.why ? `\n  (${rc.why})` : ""}\nDon't do it twice: tell the user which session already has it.`); return 1; }
     if (rc.unchecked.length) console.log(selfCheckText(rc.unchecked, name, script));
   }
   if (!distinct && !(mine && mine.task === task && !mine.refusedAs)) {
     const o = taskOverlap(task, others, cwd);
     by = o.by;
+    if (o.same.length) logEvent(cwd, { kind: "refused", via: "cli", session: name, branch, task, as: o.same.map((c) => c.name), asTasks: o.same.map((c) => c.task), why: o.why, by: o.by, costUsd: o.costUsd });
     if (o.same.length) {
       console.error(`fanout claim: this looks like the same work as:\n${o.same.map((c) => `  ${c.name} (branch ${c.branch}, ${ago(c.updated ?? c.at)} ago): ${c.task}`).join("\n")}${o.why ? `\n  (${o.why})` : ""}\n`
         + `Don't do it twice: pick other work, or coordinate with that session. If it really is different, run again with --distinct "<how it differs>".`);
@@ -397,6 +413,7 @@ export function claimCmd(cwd, argv, base, script) {
       comparedWith: [...new Set([...(cur?.comparedWith ?? []), ...(by !== "none" ? others.map((c) => c.name) : [])])] };
   }, `fanout: claim ${name}`);
   if (!w.ok) { console.error("fanout claim: couldn't write the claim (the state ref kept changing); try again."); return 1; }
+  logEvent(cwd, { kind: "claim", via: "cli", session: name, branch, task, files, by, ...(distinct ? { distinct } : {}) });
   console.log(`claimed ${name} for ${branch}: ${task}${files.length ? ` (${files.join(", ")})` : ""}`);
   // No model to ask (a sandbox without network, no CLI signed in): the agent running this is one, so it
   // compares the tasks itself, as Claude sessions shown the list did (the duplicate one stopped).
@@ -424,7 +441,7 @@ export function startCmd(cwd, argv, base, script) {
 // checkpoint (an edit, fanout start or done, a commit) a claim is compared once with every older live claim it
 // hasn't been compared with yet; the newer one yields. Each pair is judged at most once (comparedWith).
 // Returns { refused: claims it's the same work as, unchecked: older claims no model could compare, why }.
-export function recheckClaim(cwd, mine, live) {
+export function recheckClaim(cwd, mine, live, via = "cli") {
   const older = live.filter((c) => c.branch !== mine.branch && !c.refusedAs && !(mine.comparedWith ?? []).includes(c.name)
     && (Date.parse(c.at) < Date.parse(mine.at) || (c.at === mine.at && c.name < mine.name)));
   if (!older.length || !mine.task || mine.distinct) return { refused: [], unchecked: [] };
@@ -437,13 +454,14 @@ export function recheckClaim(cwd, mine, live) {
     if (refused.length) { c.refusedAs = refused.map((x) => x.name); c.why = o.why; }
   }, `fanout: recheck ${mine.name}`);
   if (refused.length) { mine.refusedAs = refused.map((x) => x.name); mine.why = o.why; }
+  if (refused.length && via !== "cli") logEvent(cwd, { kind: "refused", via, session: mine.name, branch: mine.branch, task: mine.task, as: refused.map((x) => x.name), asTasks: refused.map((x) => x.task), why: o.why });
   return { refused, unchecked, why: o.why };
 }
 
 // Claude Code sessions, on their first edit: the claim is made for them, with the user's request as the task,
 // and checked against the others like any claim. A session doing work another already claimed is stopped,
 // and stays stopped (refusedAs) until it claims something else or says how its work differs.
-export function autoClaim(cwd, branch, task, base, live) {
+export function autoClaim(cwd, branch, task, base, live, via = "edit") {
   const others = live.filter((c) => c.branch !== branch);
   const o = taskOverlap(task, others, cwd);
   const name = slugName(branch), now = new Date().toISOString();
@@ -451,6 +469,8 @@ export function autoClaim(cwd, branch, task, base, live) {
     start: git(cwd, ["rev-parse", "HEAD"]).out.trim(), at: now, updated: now, auto: true, comparedWith: others.map((c) => c.name), // tried once, whatever the outcome
     ...(o.same.length ? { refusedAs: o.same.map((c) => c.name), why: o.why } : {}) };
   writeState(cwd, (claims) => { if (claims[name]?.branch === branch) return false; claims[name] = claim; }, `fanout: claim ${name} (first edit)`);
+  logEvent(cwd, { kind: o.same.length ? "refused" : "claim", via, session: name, branch, task: claim.task, by: o.by, costUsd: o.costUsd ?? null,
+    ...(o.same.length ? { as: o.same.map((c) => c.name), asTasks: o.same.map((c) => c.task), why: o.why } : {}) });
   return claim;
 }
 export const refusalText = (c, live, script) => {

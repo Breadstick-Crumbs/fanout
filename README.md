@@ -192,6 +192,7 @@ fanout start "<task>"     # claim this session's task (agents without hooks)
 fanout inbox              # changes other sessions committed since you last looked (agents without hooks)
 fanout done               # test this branch merged with the others' work
 fanout claims             # every claim; fanout release <name> ends one early
+fanout log                # the last 7 days: each refusal and notice, to check by hand (--days 30)
 ```
 
 Tried with real Sonnet sessions and nothing about fanout in their instructions: a session given work another already had stopped without changing anything, both when it started after the other (told at start) and when both started at once (stopped at its first edit). Sessions with other work weren't held up ([results](bench/RESULTS.md#claims-telling-the-same-task-from-different-work-v023)).
@@ -231,7 +232,7 @@ fanout verify             # in a session's folder: anything outside its lane?
 fanout rehearse           # merge every branch on a scratch copy, test once
 fanout status             # each session: branch, commits, files, anything flagged; during a run, its agent state and cost
 fanout install-git-hook   # enforce the plan on every commit
-fanout log                # past runs and rehearsals: time, cost, fixes, result
+fanout log                # past runs and rehearsals; the last 7 days of claims, refusals and notices, and the hook's cost
 ```
 
 ## Does it work?

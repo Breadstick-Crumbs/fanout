@@ -457,3 +457,24 @@ test("fanout inbox gives agents without hooks the same notices: every file anoth
   writeFileSync(join(b, "x.txt"), "4"); g(b, "commit", "-qam", "again");
   assert.match(fan(a, ["done"]).stdout, /^\+4$/m);
 });
+
+test("fanout log lists every claim decision and notice in real use, and what the hook cost", () => {
+  const { root, a, b } = repo();
+  const g = (cwd, ...x) => execFileSync("git", x, { cwd, stdio: "ignore" });
+  assert.equal(guardT(a, "settings.js", "add a dark mode toggle to the settings page").status, 0);
+  assert.equal(guardT(b, "theme.css", "users want a dark theme they can switch on", { FAKE_SAME_IF: "dark" }).status, 2);
+  const { root: r2, a: a2, b: b2 } = repo();
+  fan(a2, ["start", "print receipts"]); fan(b2, ["start", "prices in cents"]);
+  noticeT(a2, "Read", "x.txt");
+  writeFileSync(join(b2, "x.txt"), "2"); g(b2, "commit", "-qam", "b");
+  noticeT(a2, "Bash");
+  const log = fan(root, ["log"]).stdout;
+  assert.match(log, /Claims, last 7 days: 1 claimed, 1 refused as the same work/);
+  assert.match(log, /Refused \(check each: was it really the same work\?\):\n {2}\S+ \S+ {2}b \(edit\): users want a dark theme they can switch on\n {4}same as a: add a dark mode toggle to the settings page/);
+  const log2 = fan(r2, ["log"]).stdout;
+  assert.match(log2, /2 claimed, 0 refused/);
+  assert.match(log2, /a told of b's change to x\.txt \[hook\]/);
+  assert.match(log2, /The after-each-tool-call hook: 2 call\(s\), \d+ms on average/);
+  assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: r2, encoding: "utf8" }), "", "nothing in anyone's status");
+  void a; void b2;
+});

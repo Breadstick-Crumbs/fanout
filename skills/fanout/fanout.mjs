@@ -9,12 +9,12 @@
 //   fanout status [--base <branch>]                     one table: each session's branch, commits, files, worktree, verify flags, agent state and cost (fanout run), last run and rehearse
 //   fanout overlap [--base <branch>] [--all]            every active checkout (any worktree, any session) and its changes, files changed in more than one, dry-run merge
 //   fanout log [--last 20]                          past runs and rehearsals from .fanout/log.jsonl: time, cost, fixes, test runs
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync, chmodSync, existsSync, realpathSync } from "node:fs";
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, chmodSync, existsSync, realpathSync, readdirSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { resolve, relative, isAbsolute, join, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { claimsActive, claimsOn, branchOf, liveClaims, claimedByOther, editedByOthers, writeState, autoClaim, refusalText, taskFromTranscript, recheckClaim, selfCheckText,
-  notices, repoInfo, claimCmd, startCmd, showClaims, releaseCmd, initCmd } from "./claims.mjs";
+  notices, repoInfo, logEvent, readEvents, claimCmd, startCmd, showClaims, releaseCmd, initCmd } from "./claims.mjs";
 
 const SESSION_KEYS = ["owns", "after", "exposes", "uses", "done", "task", "check", "agent", "model"];
 const PLAN_KEYS = ["test", "regen"];
@@ -341,16 +341,48 @@ export function appendLog(cwd, rec) {
   } catch { /* logging must never break a run */ }
 }
 
-function showLog(cwd, limit = 20) {
+function showLog(cwd, limit = 20, days = 7) {
   let lines = [];
   try { lines = readFileSync(join(mainRoot(cwd), ".fanout", "log.jsonl"), "utf8").split("\n").filter(Boolean); } catch { /* none yet */ }
-  if (!lines.length) { console.log("No runs logged yet."); return 0; }
   const recs = lines.slice(-limit).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-  console.log("when              kind      sessions  time    fixes  test runs  cost     result");
-  for (const r of recs) {
-    const cost = r.costUsd == null ? "" : `$${r.costUsd.toFixed(2)}${r.costUnknown ? "+?" : ""}`;
-    console.log([r.at.slice(0, 16).replace("T", " "), (r.kind ?? "").padEnd(8), String(r.sessions ?? "").padEnd(8),
-      mins(r.seconds).padEnd(6), String(r.fixes ?? "").padEnd(5), String(r.testRuns ?? "").padEnd(9), cost.padEnd(7), r.result ?? ""].join("  "));
+  if (recs.length) {
+    console.log("when              kind      sessions  time    fixes  test runs  cost     result");
+    for (const r of recs) {
+      const cost = r.costUsd == null ? "" : `$${r.costUsd.toFixed(2)}${r.costUnknown ? "+?" : ""}`;
+      console.log([r.at.slice(0, 16).replace("T", " "), (r.kind ?? "").padEnd(8), String(r.sessions ?? "").padEnd(8),
+        mins(r.seconds).padEnd(6), String(r.fixes ?? "").padEnd(5), String(r.testRuns ?? "").padEnd(9), cost.padEnd(7), r.result ?? ""].join("  "));
+    }
+  } else console.log("No runs logged yet.");
+  return showClaimLog(cwd, days);
+}
+
+// Claims in real use, from the events every claim decision and notice writes (claims.mjs, logEvent), so each
+// refusal and notice can be checked by hand: was it the same work, did the notice matter. Plus what the
+// after-each-tool-call hook cost, summed over every checkout.
+function showClaimLog(cwd, days) {
+  let common;
+  try { common = git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd).trim(); } catch { return 0; }
+  const since = Date.now() - days * 86400000, ev = readEvents(common).filter((e) => Date.parse(e.at) >= since);
+  const times = [common, ...(() => { try { return readdirSync(join(common, "worktrees")).map((d) => join(common, "worktrees", d)); } catch { return []; } })()]
+    .map((d) => { try { return JSON.parse(readFileSync(join(d, "fanout-hook-time.json"), "utf8")); } catch { return null; } }).filter(Boolean);
+  const calls = times.reduce((n, t) => n + t.calls, 0);
+  if (!ev.length && !calls) { console.log(`\nNo claims or notices in the last ${days} days.`); return 0; }
+  const of = (k) => ev.filter((e) => e.kind === k), when = (e) => e.at.slice(0, 16).replace("T", " ");
+  const judged = ev.filter((e) => e.by === "judge"), cost = judged.reduce((n, e) => n + (e.costUsd ?? 0), 0);
+  console.log(`\nClaims, last ${days} days: ${of("claim").length} claimed, ${of("refused").length} refused as the same work, ${of("locked").length} edit(s) of a locked file stopped, ${of("notice").length} notice(s).`);
+  if (judged.length) console.log(`  Same-work checks by a model: ${judged.length}${cost ? `, $${cost.toFixed(3)}` : ""}.`);
+  if (calls) console.log(`  The after-each-tool-call hook: ${calls} call(s), ${Math.round(times.reduce((n, t) => n + t.ms, 0) / calls)}ms on average, ${Math.max(...times.map((t) => t.max))}ms at most (Node's start included).`);
+  if (of("refused").length) {
+    console.log("\nRefused (check each: was it really the same work?):");
+    for (const e of of("refused")) console.log(`  ${when(e)}  ${e.branch} (${e.via}): ${e.task || "(no task)"}\n    same as ${(e.as ?? []).map((n, i) => `${n}: ${e.asTasks?.[i] ?? ""}`).join("; ")}${e.why ? `\n    why: ${e.why}` : ""}`);
+  }
+  if (of("notice").length) {
+    console.log("\nNotices (did the session need them?):");
+    for (const e of of("notice")) console.log(`  ${when(e)}  ${e.session} told of ${e.from}'s change to ${e.files.join(", ")}${e.yours?.length ? ` (it had changed ${e.yours.join(", ")} too)` : ""} [${e.via}]`);
+  }
+  if (of("locked").length) {
+    console.log("\nLocked files:");
+    for (const e of of("locked")) console.log(`  ${when(e)}  ${e.session} stopped changing ${e.file}, claimed by ${e.owner} (${e.via})`);
   }
   return 0;
 }
@@ -499,7 +531,7 @@ function main(argv) {
   if (cmd === "install-git-hook") return installHook(cwd, argv.includes("--force"));
   if (cmd === "status") return showStatus(cwd, arg(argv, "--base") ?? defaultBase(cwd));
   if (cmd === "overlap") return showOverlap(cwd, arg(argv, "--base") ?? repoDefaultBranch(cwd), argv.includes("--all"));
-  if (cmd === "log") return showLog(cwd, Number(arg(argv, "--last", "20")));
+  if (cmd === "log") return showLog(cwd, Number(arg(argv, "--last", "20")), Number(arg(argv, "--days", "7")));
   const SCRIPT = norm(fileURLToPath(import.meta.url));
   if (cmd === "start") return startCmd(cwd, argv.slice(1), arg(argv, "--base") ?? defaultBase(cwd), SCRIPT);
   if (cmd === "done") return doneCmd(cwd, argv);
@@ -628,13 +660,14 @@ function guard() {
 // session claimed by name is refused; one another session is also editing is allowed with a note, the
 // first time. Each file is recorded in the session's edits. Ignored files (build output, node_modules) and
 // fanout's own folder are left alone.
-export function claimReason(root, rels, { transcript, requireClaim = false } = {}) {
+export function claimReason(root, rels, { transcript, requireClaim = false, via = "edit" } = {}) {
   const files = rels.filter((f) => !f.startsWith(".fanout/") && spawnSync("git", ["check-ignore", "-q", "--", f], { cwd: root }).status !== 0);
   const branch = branchOf(root);
   if (!files.length || !branch) return { block: null, notes: [] };
   const base = defaultBase(root), live = liveClaims(root, base), script = norm(fileURLToPath(import.meta.url));
   // Locks first: the most useful thing to say, claimed or not.
   const taken = files.map((f) => [f, claimedByOther(live, branch, f)]).filter(([, c]) => c);
+  if (taken.length) taken.forEach(([f, c]) => logEvent(root, { kind: "locked", via, session: branch, file: f, owner: c.name }));
   if (taken.length) return { block: taken.map(([f, c]) => `${f} is claimed by session "${c.name}" (branch ${c.branch}: ${c.task || "no task given"}). Leave it to that session: work on something else, or coordinate with it. If that session is finished or abandoned: node "${script}" release ${c.name}`).join("\n"), notes: [] };
   let mine = live.filter((c) => c.branch === branch).sort((a, b) => Date.parse(b.updated ?? b.at) - Date.parse(a.updated ?? a.at))[0];
   // A commit from an agent without hooks, in a repo set up with fanout init: AGENTS.md told it to run fanout start
@@ -643,10 +676,10 @@ export function claimReason(root, rels, { transcript, requireClaim = false } = {
 It shows what the other sessions are doing; if one already has your work, don't commit it.
 (A person committing by hand, not an agent: git commit --no-verify skips this check.)`, notes: [] };
   const notes = [];
-  if (!mine) mine = autoClaim(root, branch, transcript ? taskFromTranscript(transcript) : "", base, live);
+  if (!mine) mine = autoClaim(root, branch, transcript ? taskFromTranscript(transcript) : "", base, live, via);
   else if (!mine.refusedAs) {
     // An older claim this one hasn't been compared with: one made at the same moment as it (recheckClaim).
-    const rc = recheckClaim(root, mine, live);
+    const rc = recheckClaim(root, mine, live, via);
     if (rc.unchecked.length) notes.push(selfCheckText(rc.unchecked, mine.name, script).trim());
   }
   if (mine.refusedAs?.length) return { block: refusalText(mine, live, script), notes: [] };
@@ -698,7 +731,7 @@ function noticeHook() {
   if (/^(Bash|PowerShell)$/.test(tool)) {
     const r = shellEdits(root, gitDir, base);
     if (r.length) {
-      const c = claimReason(root, r, { transcript: input.transcript_path ?? input.transcriptPath });
+      const c = claimReason(root, r, { transcript: input.transcript_path ?? input.transcriptPath, via: "shell" });
       block = c.block; extra.push(...c.notes); edited.push(...r);
     }
   }
@@ -707,6 +740,13 @@ function noticeHook() {
   // As feedback the agent must answer, not as added context: with real Sonnet sessions, a notice sent as context
   // reached the session 4 times and was ignored every time; sent this way it was acted on 3 times out of 3.
   else if (text) console.log(JSON.stringify({ decision: "block", reason: text }));
+  // What the hook costs per tool call, Node's start included, for fanout log: kept per checkout in its git dir.
+  try {
+    const f = join(gitDir, "fanout-hook-time.json");
+    let t = { calls: 0, ms: 0, max: 0 }; try { t = JSON.parse(readFileSync(f, "utf8")); } catch { /* first call */ }
+    const ms = Math.round(process.uptime() * 1000);
+    writeFileSync(f, JSON.stringify({ calls: t.calls + 1, ms: t.ms + ms, max: Math.max(t.max, ms) }));
+  } catch { /* read-only */ }
   return 0;
 }
 
@@ -757,7 +797,7 @@ function doneCmd(cwd, argv) {
   try { if (!test && JSON.parse(readFileSync(join(root, "package.json"), "utf8")).scripts?.test) test = "npm test"; } catch { /* no package.json */ }
   // First: is this the same work as an older claim it hasn't been compared with (they started at once)?
   const live = liveClaims(root, base), mine = live.filter((c) => c.branch === branch).sort((a, b) => Date.parse(b.updated ?? b.at) - Date.parse(a.updated ?? a.at))[0], script = norm(fileURLToPath(import.meta.url));
-  if (mine && !mine.refusedAs) { const rc = recheckClaim(root, mine, live); if (rc.unchecked.length) console.log(selfCheckText(rc.unchecked, mine.name, script).trim()); }
+  if (mine && !mine.refusedAs) { const rc = recheckClaim(root, mine, live, "done"); if (rc.unchecked.length) console.log(selfCheckText(rc.unchecked, mine.name, script).trim()); }
   if (mine?.refusedAs) { console.error(`fanout done: ${refusalText(mine, live, script)}`); return 1; }
   const ahead = (b) => Number(spawnSync("git", ["rev-list", "--count", `${base}..${b}`], { cwd: root, encoding: "utf8" }).stdout) || 0;
   const others = [...new Set(liveClaims(root, base).filter((c) => c.branch !== branch && c.branch !== base && ahead(c.branch)).sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).map((c) => c.branch))];
@@ -779,7 +819,7 @@ function precommit(cwd) {
   const staged = git(["diff", "--cached", "--name-only"], cwd).split("\n").filter(Boolean);
   if (!ctx) {
     if (!claimsActive(cwd)) return 0;
-    const { block, notes } = claimReason(cwd, staged, { requireClaim: claimsOn(cwd) });
+    const { block, notes } = claimReason(cwd, staged, { requireClaim: claimsOn(cwd), via: "commit" });
     notes.forEach((n) => console.error(n));
     const news = block ? null : inboxText(cwd);
     if (news) console.error(news);
