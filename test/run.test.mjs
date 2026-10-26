@@ -8,6 +8,9 @@ import { parsePlan } from "../skills/fanout/fanout.mjs";
 import { scrub } from "../bench/scrub.mjs";
 import { execFileSync, spawnSync } from "node:child_process";
 
+// Claims' same-work check calls a real CLI; no test here may reach one.
+process.env.FANOUT_CLAIM_JUDGE = "off";
+
 // A fake claude/codex: logs its args and stdin as one JSON line, then answers like the real CLI would.
 const dir = mkdtempSync(join(tmpdir(), "fanout-run-"));
 const logFile = join(dir, "calls.jsonl");

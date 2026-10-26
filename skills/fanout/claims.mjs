@@ -20,8 +20,9 @@
 // session claimed by name, warn about one another session is also editing, and record each file a session
 // edits. Every new task is checked against the live ones for the same work (taskOverlap) before it's accepted.
 import { spawnSync } from "node:child_process";
-import { existsSync, statSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, statSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { matches } from "./fanout.mjs";
 
 export const REF = "refs/fanout/state";
@@ -176,21 +177,77 @@ For each existing session, first say what each task delivers, then decide. Reply
 {"sessions": [{"name": "<session>", "reason": "<what each delivers, one sentence>", "same": true|false}]}`;
 }
 
-const claudeBin = () => process.env.FANOUT_CLAUDE_BIN || "claude";
-// One cheap model call (Haiku, no tools, project settings only). Returns { same: [names], why, costUsd } or
-// null when it can't run (no CLI, signed out, unreadable answer): the caller then goes by words alone.
-export function judge(task, others, cwd) {
-  if (process.env.FANOUT_CLAIM_JUDGE === "off" || !others.length) return null;
-  const model = process.env.FANOUT_CLAIM_JUDGE_MODEL || "sonnet";
-  const r = spawnSync(`${claudeBin()} -p --model ${model} --tools "" --setting-sources project,local --strict-mcp-config --output-format json`,
-    { cwd, shell: true, encoding: "utf8", input: judgePrompt(task, others), timeout: 120000 });
-  try {
+const bin = (name) => process.env[`FANOUT_${name.toUpperCase()}_BIN`] || name;
+// Which CLI runs the check: FANOUT_CLAIM_JUDGE_AGENT (claude|codex), else Claude when it's signed in, else
+// Codex when it is, so a Codex-only setup gets the check too. null when neither is.
+export function judgeAgent(cwd) {
+  const want = process.env.FANOUT_CLAIM_JUDGE_AGENT;
+  if (want === "claude" || want === "codex") return want;
+  const claude = spawnSync(`${bin("claude")} auth status`, { cwd, shell: true, encoding: "utf8", timeout: 30000 });
+  try { if (JSON.parse((claude.stdout ?? "").slice(claude.stdout.indexOf("{"))).loggedIn === true) return "claude"; } catch { /* not there */ }
+  if (process.env.ANTHROPIC_API_KEY) return "claude";
+  if (spawnSync(`${bin("codex")} login status`, { cwd, shell: true, encoding: "utf8", timeout: 30000 }).status === 0) return "codex";
+  return null;
+}
+
+// The judge's answer text from one model call, no tools: Claude (Sonnet by default, project settings only),
+// or Codex (its own default model, low reasoning effort, read-only sandbox, nothing saved), whose last message
+// is written to a file (-o). FANOUT_CLAIM_JUDGE_MODEL picks the model for either.
+function askModel(agent, prompt, cwd) {
+  const model = process.env.FANOUT_CLAIM_JUDGE_MODEL;
+  if (agent === "claude") {
+    const r = spawnSync(`${bin("claude")} -p --model ${model || "sonnet"} --tools "" --setting-sources project,local --strict-mcp-config --output-format json`,
+      { cwd, shell: true, encoding: "utf8", input: prompt, timeout: 120000 });
     const out = r.stdout ?? "", j = JSON.parse(out.slice(out.indexOf("{")));
-    if (j.is_error) return null;
-    const text = String(j.result ?? ""), a = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
-    const names = new Set(others.map((c) => c.name)), hits = (a.sessions ?? []).filter((s) => s.same === true && names.has(s.name));
-    return { same: hits.map((s) => s.name), why: hits.map((s) => s.reason).join(" ") || String((a.sessions ?? [])[0]?.reason ?? ""), costUsd: j.total_cost_usd ?? null };
-  } catch { return null; }
+    return j.is_error ? null : { text: String(j.result ?? ""), costUsd: j.total_cost_usd ?? null };
+  }
+  const file = join(tmpdir(), `fanout-judge-${process.pid}-${Date.now()}.txt`);
+  const effort = process.env.FANOUT_CLAIM_JUDGE_EFFORT || "low";
+  const cmd = `${bin("codex")} exec --json --ephemeral -s read-only --skip-git-repo-check${model ? ` -m ${model}` : ""} -c model_reasoning_effort=${effort} -o "${file}"`;
+  // Watched, not just waited on: when the account is rate-limited Codex keeps reconnecting after a 429 (seen on
+  // the benchmark after a day of heavy use: calls ran into the timeout), so the first such event ends the call.
+  // Answers took 12-22s; rate-limited, Codex often goes quiet without printing the 429 at all. So one 45s try,
+  // and silence past that counts as unavailable too: the agent then compares the tasks itself.
+  const r = spawnSync(process.execPath, ["-e", CODEX_WATCH, cmd], { cwd, encoding: "utf8", input: prompt, timeout: 45000 });
+  if (r.status === 3 || r.error?.code === "ETIMEDOUT" || r.signal) return { rateLimited: true };
+  try { return { text: readFileSync(file, "utf8"), costUsd: null }; } catch { return null; } finally { try { rmSync(file); } catch { /* none */ } }
+}
+// Runs the codex command with stdin passed through; exits 3 at the first rate-limit error event, or after 40s
+// (inside fanout's 45s). It ends Codex's whole process tree itself, since on Windows killing this process
+// would leave codex running.
+const CODEX_WATCH = `const { spawn, spawnSync } = require("node:child_process");
+const p = spawn(process.argv[1], { shell: true, stdio: ["pipe", "pipe", "inherit"] });
+const stop = () => { if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(p.pid), "/T", "/F"], { stdio: "ignore" }); else p.kill(); process.exit(3); };
+setTimeout(stop, 40000).unref();
+process.stdin.pipe(p.stdin);
+let buf = "";
+p.stdout.on("data", (d) => { buf += d; let i; while ((i = buf.indexOf("\\n")) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1);
+  if (/"type":"(error|turn.failed)"/.test(l) && /429|rate.?limit|usage limit|too many requests/i.test(l)) stop(); } });
+p.on("close", (c) => process.exit(c ?? 1));`;
+
+// One model call comparing the task with every live claim. Returns { same: [names], why, agent, costUsd }
+// (costUsd null for Codex: it uses the ChatGPT plan's quota) or null when it can't run (no CLI signed in,
+// unreadable answer): the claim then goes ahead with a warning.
+// Inside a Codex session's sandbox there's no network (CODEX_SANDBOX_NETWORK_DISABLED=1), so no model call can
+// answer: one from fanout start there hung until its timeout. The agent compares the tasks itself instead.
+export const noNetwork = () => process.env.CODEX_SANDBOX_NETWORK_DISABLED === "1";
+export function judge(task, others, cwd) {
+  if (process.env.FANOUT_CLAIM_JUDGE === "off" || !others.length || noNetwork()) return null;
+  const agent = judgeAgent(cwd);
+  if (!agent) return null;
+  // Tried twice: on the held-out pairs 9 of 40 Codex calls hung until the timeout while other Codex
+  // processes were running; alone, six in a row answered in 12-22s.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const r = askModel(agent, judgePrompt(task, others), cwd);
+      if (r?.rateLimited) return null; // rate-limited or silent: another try would wait as long again
+      if (!r) continue;
+      const a = JSON.parse(r.text.slice(r.text.indexOf("{"), r.text.lastIndexOf("}") + 1));
+      const names = new Set(others.map((c) => c.name)), hits = (a.sessions ?? []).filter((s) => s.same === true && names.has(s.name));
+      return { same: hits.map((s) => s.name), why: hits.map((s) => s.reason).join(" ") || String((a.sessions ?? [])[0]?.reason ?? ""), agent, costUsd: r.costUsd };
+    } catch { /* unreadable answer: try again */ }
+  }
+  return null;
 }
 
 // The live claims of other branches doing the same work as `task`. by: "judge", "none" (nothing to compare),
@@ -220,29 +277,46 @@ export function claimCmd(cwd, argv, base, script) {
   const others = live.filter((c) => c.branch !== branch);
   const clash = [...files, ...exposes].flatMap((f) => others.filter((c) => [...(c.files ?? []), ...(c.exposes ?? [])].some((g) => matches(g, f) || matches(f, g))).map((c) => `${f} (claimed by ${c.name} on ${c.branch})`));
   if (clash.length) { console.error(`fanout claim: these are already claimed:\n  ${clash.join("\n  ")}\nLeave them to that session, or ask it to release them.`); return 1; }
+  let by = "none";
+  // The same claim again (AGENTS.md asks for it just before the first edit): compare it with any older claim it
+  // hasn't met yet, which is how two sessions that started at the same moment find each other.
+  if (!distinct && mine && mine.task === task && !mine.refusedAs) {
+    const rc = recheckClaim(cwd, mine, live);
+    if (rc.refused.length) { console.error(`fanout claim: this looks like the same work as:\n${rc.refused.map((c) => `  ${c.name} (branch ${c.branch}, claimed earlier): ${c.task}`).join("\n")}${rc.why ? `\n  (${rc.why})` : ""}\nDon't do it twice: tell the user which session already has it.`); return 1; }
+    if (rc.unchecked.length) console.log(selfCheckText(rc.unchecked, name, script));
+  }
   if (!distinct && !(mine && mine.task === task && !mine.refusedAs)) {
     const o = taskOverlap(task, others, cwd);
+    by = o.by;
     if (o.same.length) {
       console.error(`fanout claim: this looks like the same work as:\n${o.same.map((c) => `  ${c.name} (branch ${c.branch}, ${ago(c.updated ?? c.at)} ago): ${c.task}`).join("\n")}${o.why ? `\n  (${o.why})` : ""}\n`
         + `Don't do it twice: pick other work, or coordinate with that session. If it really is different, run again with --distinct "<how it differs>".`);
       return 1;
     }
-    if (o.by === "unchecked") console.log(`fanout claim: couldn't check for duplicate work (no claude CLI, or it's signed out). Other sessions are doing:\n${others.map((c) => `  ${c.name}: ${c.task || "(no task)"}`).join("\n")}\nMake sure yours isn't one of these.`);
   }
   const start = git(cwd, ["rev-parse", "HEAD"]).out.trim(), now = new Date().toISOString();
   const path = git(cwd, ["rev-parse", "--show-toplevel"]).out.trim();
   const w = writeState(cwd, (claims) => {
     for (const c of Object.values(claims)) if (!isLive(cwd, c, base)) delete claims[c.name]; // prune expired ones
     const cur = claims[name];
-    // A fresh claim clears an earlier refusal (refusedAs) for this session.
+    // A fresh claim clears an earlier refusal (refusedAs) for this session. unchecked: no model compared it.
     claims[name] = { name, task, branch, path, files: [...new Set([...(cur?.files ?? []), ...files])], exposes: [...new Set([...(cur?.exposes ?? []), ...exposes])],
-      edits: cur?.edits ?? [], start: cur?.start ?? start, at: cur?.at ?? now, updated: now, ...(distinct ? { distinct } : {}) };
+      edits: cur?.edits ?? [], start: cur?.start ?? start, at: cur?.at ?? now, updated: now, ...(distinct ? { distinct } : {}), ...(by === "unchecked" ? { unchecked: true } : {}),
+      comparedWith: [...new Set([...(cur?.comparedWith ?? []), ...(by !== "none" ? others.map((c) => c.name) : [])])] };
   }, `fanout: claim ${name}`);
   if (!w.ok) { console.error("fanout claim: couldn't write the claim (the state ref kept changing); try again."); return 1; }
   console.log(`claimed ${name} for ${branch}: ${task}${files.length ? ` (${files.join(", ")})` : ""}`);
-  if (!claimsOn(cwd)) console.log(`Claims aren't enforced in this repo yet: run \`node "${script}" init\` to turn them on.`);
+  // No model to ask (a sandbox without network, no CLI signed in): the agent running this is one, so it
+  // compares the tasks itself, as Claude sessions shown the list did (the duplicate one stopped).
+  if (by === "unchecked") console.log(selfCheckText(others, name, script));
+  if (!claimsActive(cwd)) console.log(`Claims aren't on in this repo (only one session is active); run \`node "${script}" init\` to keep them on.`);
   return 0;
 }
+
+// The list an agent compares its task with when no model can (a sandbox without network, no CLI signed in).
+export const selfCheckText = (others, name, script) => `\nOther sessions are working here right now:\n${others.map((c) => `  ${c.name} (branch ${c.branch}): ${c.task || "(no task)"}`).join("\n")}\n`
+  + `${noNetwork() ? "fanout can't reach a model from this sandbox to compare them with your task" : "fanout couldn't compare them with your task (no claude or codex CLI signed in)"}, so do it yourself now: `
+  + `if your task is the same work as one of these (even in other words, or one containing the other), don't do it. Run node "${script}" release ${name} and tell the user which session already has it.`;
 
 // fanout start "<task>" [files...]: claim this session's task without picking a name (its claim, or one named
 // after its branch). For agents told about fanout in AGENTS.md; Claude Code sessions are claimed on their own.
@@ -253,6 +327,27 @@ export function startCmd(cwd, argv, base, script) {
   return claimCmd(cwd, [mine?.name ?? slugName(branch), ...argv], base, script);
 }
 
+// Sessions that claim at the same moment can't see each other: with two Codex sessions started together, each
+// ran fanout start before the other's claim existed, and both built the same feature. So at each later
+// checkpoint (an edit, fanout start or done, a commit) a claim is compared once with every older live claim it
+// hasn't been compared with yet; the newer one yields. Each pair is judged at most once (comparedWith).
+// Returns { refused: claims it's the same work as, unchecked: older claims no model could compare, why }.
+export function recheckClaim(cwd, mine, live) {
+  const older = live.filter((c) => c.branch !== mine.branch && !c.refusedAs && !(mine.comparedWith ?? []).includes(c.name)
+    && (Date.parse(c.at) < Date.parse(mine.at) || (c.at === mine.at && c.name < mine.name)));
+  if (!older.length || !mine.task || mine.distinct) return { refused: [], unchecked: [] };
+  const o = taskOverlap(mine.task, older, cwd);
+  const refused = o.same, unchecked = o.by === "unchecked" ? older : [];
+  writeState(cwd, (claims) => {
+    const c = claims[mine.name];
+    if (!c || c.branch !== mine.branch) return false;
+    c.comparedWith = [...new Set([...(c.comparedWith ?? []), ...older.map((x) => x.name)])];
+    if (refused.length) { c.refusedAs = refused.map((x) => x.name); c.why = o.why; }
+  }, `fanout: recheck ${mine.name}`);
+  if (refused.length) { mine.refusedAs = refused.map((x) => x.name); mine.why = o.why; }
+  return { refused, unchecked, why: o.why };
+}
+
 // Claude Code sessions, on their first edit: the claim is made for them, with the user's request as the task,
 // and checked against the others like any claim. A session doing work another already claimed is stopped,
 // and stays stopped (refusedAs) until it claims something else or says how its work differs.
@@ -261,7 +356,8 @@ export function autoClaim(cwd, branch, task, base, live) {
   const o = taskOverlap(task, others, cwd);
   const name = slugName(branch), now = new Date().toISOString();
   const claim = { name, task: task.slice(0, 300), branch, path: git(cwd, ["rev-parse", "--show-toplevel"]).out.trim(), files: [], exposes: [], edits: [],
-    start: git(cwd, ["rev-parse", "HEAD"]).out.trim(), at: now, updated: now, auto: true, ...(o.same.length ? { refusedAs: o.same.map((c) => c.name), why: o.why } : {}) };
+    start: git(cwd, ["rev-parse", "HEAD"]).out.trim(), at: now, updated: now, auto: true, comparedWith: others.map((c) => c.name), // tried once, whatever the outcome
+    ...(o.same.length ? { refusedAs: o.same.map((c) => c.name), why: o.why } : {}) };
   writeState(cwd, (claims) => { if (claims[name]?.branch === branch) return false; claims[name] = claim; }, `fanout: claim ${name} (first edit)`);
   return claim;
 }
@@ -297,14 +393,16 @@ export function releaseCmd(cwd, argv) {
   return 0;
 }
 
-// The block fanout init puts in AGENTS.md, for agents without fanout's hooks (Codex and others): two commands,
-// with this machine's path to the fanout script.
+// The block fanout init puts in AGENTS.md, for agents without fanout's hooks (Codex and others): two commands.
+// AGENTS.md is committed and shared, so they run fanout through npx, not this machine's path to the script.
 const BLOCK_START = "<!-- fanout -->", BLOCK_END = "<!-- /fanout -->";
-export const agentsBlock = (script) => `${BLOCK_START}
+export const FANOUT_NPX = "npx -y github:Breadstick-Crumbs/fanout";
+export const agentsBlock = () => `${BLOCK_START}
 ## Other sessions may be working here too (fanout)
 
-- Before you change anything, run \`node "${script}" start "<your task in one line>"\`. It shows what the other sessions are doing and claims your task. If it says another session already has that work, don't do it: tell the user which one has it.
-- When you've committed, run \`node "${script}" done\`. It tests your branch merged with the other sessions' work and says if one breaks the other.
+- First, before you read or change any code, run \`${FANOUT_NPX} start "<your task in one line>"\`. It claims your task and shows what the other sessions are doing. If it says another session already has that work, or lists one doing the same thing, don't do it: tell the user which one has it. Commits are refused until you've run it.
+- Run the same command again just before your first edit: a session that started at the same moment as yours shows up then.
+- When you've committed, run \`${FANOUT_NPX} done\`. It tests your branch merged with the other sessions' work and says if one breaks the other.
 ${BLOCK_END}`;
 
 // Turns claims on for good (not only when two sessions are active), installs the git hook, and writes the
@@ -314,7 +412,7 @@ export function initCmd(cwd, script, installHook, argv) {
   const hook = installHook(cwd, argv.includes("--force"));
   const root = git(cwd, ["rev-parse", "--show-toplevel"]).out.trim(), file = join(root, "AGENTS.md");
   let text = ""; try { text = readFileSync(file, "utf8"); } catch { /* new file */ }
-  const block = agentsBlock(script), i = text.indexOf(BLOCK_START), j = text.indexOf(BLOCK_END);
+  const block = agentsBlock(), i = text.indexOf(BLOCK_START), j = text.indexOf(BLOCK_END);
   text = i >= 0 && j > i ? text.slice(0, i) + block + text.slice(j + BLOCK_END.length) : `${text}${text && !text.endsWith("\n") ? "\n" : ""}${text ? "\n" : ""}${block}\n`;
   writeFileSync(file, text);
   console.log(`Claims are on for this repo. Each session's task is claimed before its first edit; work another session already has is refused.`);

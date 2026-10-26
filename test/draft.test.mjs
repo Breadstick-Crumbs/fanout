@@ -7,6 +7,9 @@ import { execFileSync } from "node:child_process";
 import { draftPlan } from "../skills/fanout/draft.mjs";
 import { parsePlan, parseRegen, planSetting } from "../skills/fanout/fanout.mjs";
 
+// Claims' same-work check calls a real CLI; no test here may reach one.
+process.env.FANOUT_CLAIM_JUDGE = "off";
+
 const repoWith = (files) => {
   const root = mkdtempSync(join(tmpdir(), "fanout-draft-"));
   for (const [f, body] of Object.entries(files)) { mkdirSync(join(root, f, ".."), { recursive: true }); writeFileSync(join(root, f), body); }

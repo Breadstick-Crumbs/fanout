@@ -13,7 +13,7 @@ import { readFileSync, writeFileSync, appendFileSync, mkdirSync, chmodSync, exis
 import { execFileSync, spawnSync } from "node:child_process";
 import { resolve, relative, isAbsolute, join, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { claimsActive, branchOf, liveClaims, claimedByOther, editedByOthers, writeState, autoClaim, refusalText, taskFromTranscript,
+import { claimsActive, claimsOn, branchOf, liveClaims, claimedByOther, editedByOthers, writeState, autoClaim, refusalText, taskFromTranscript, recheckClaim, selfCheckText,
   claimCmd, startCmd, showClaims, releaseCmd, initCmd } from "./claims.mjs";
 
 const SESSION_KEYS = ["owns", "after", "exposes", "uses", "done", "task", "check", "agent", "model"];
@@ -568,7 +568,8 @@ function loadSession(cwd) {
 function guard() {
   let input = {};
   try { input = JSON.parse(readFileSync(0, "utf8")); } catch { return 0; }
-  const targets = editTargets(input.tool_input);
+  // Grok Build runs Claude Code hooks but sends camelCase fields (toolInput, transcriptPath): take either.
+  const targets = editTargets(input.tool_input ?? input.toolInput);
   if (!targets.length) return 0;
   const cwd = input.cwd ?? process.cwd(), notes = [];
   // The session comes from the checkout the file is in, not the agent's cwd, so a subagent or
@@ -585,7 +586,7 @@ function guard() {
     const ctx = loadSession(dir);
     if (ctx) return blockReason(ctx.sessions, ctx.s, ctx.regen, rel);
     if (!claimsActive(root)) return null;
-    const r = claimReason(root, [rel], { transcript: input.transcript_path });
+    const r = claimReason(root, [rel], { transcript: input.transcript_path ?? input.transcriptPath });
     notes.push(...r.notes);
     return r.block;
   }).filter(Boolean);
@@ -602,18 +603,29 @@ function guard() {
 // session claimed by name is refused; one another session is also editing is allowed with a note, the
 // first time. Each file is recorded in the session's edits. Ignored files (build output, node_modules) and
 // fanout's own folder are left alone.
-export function claimReason(root, rels, { transcript } = {}) {
+export function claimReason(root, rels, { transcript, requireClaim = false } = {}) {
   const files = rels.filter((f) => !f.startsWith(".fanout/") && spawnSync("git", ["check-ignore", "-q", "--", f], { cwd: root }).status !== 0);
   const branch = branchOf(root);
   if (!files.length || !branch) return { block: null, notes: [] };
   const base = defaultBase(root), live = liveClaims(root, base), script = norm(fileURLToPath(import.meta.url));
-  let mine = live.filter((c) => c.branch === branch).sort((a, b) => Date.parse(b.updated ?? b.at) - Date.parse(a.updated ?? a.at))[0];
-  if (!mine) mine = autoClaim(root, branch, transcript ? taskFromTranscript(transcript) : "", base, live);
-  if (mine.refusedAs?.length) return { block: refusalText(mine, live, script), notes: [] };
+  // Locks first: the most useful thing to say, claimed or not.
   const taken = files.map((f) => [f, claimedByOther(live, branch, f)]).filter(([, c]) => c);
   if (taken.length) return { block: taken.map(([f, c]) => `${f} is claimed by session "${c.name}" (branch ${c.branch}: ${c.task || "no task given"}). Leave it to that session: work on something else, or coordinate with it. If that session is finished or abandoned: node "${script}" release ${c.name}`).join("\n"), notes: [] };
+  let mine = live.filter((c) => c.branch === branch).sort((a, b) => Date.parse(b.updated ?? b.at) - Date.parse(a.updated ?? a.at))[0];
+  // A commit from an agent without hooks, in a repo set up with fanout init: AGENTS.md told it to run fanout start
+  // first, and a Codex session given that skipped it and duplicated another's work, so its commit waits for it.
+  if (!mine && requireClaim) return { block: `this session (branch ${branch}) hasn't claimed its task. Run first: node "${script}" start "<your task in one line>"
+It shows what the other sessions are doing; if one already has your work, don't commit it.`, notes: [] };
+  const notes = [];
+  if (!mine) mine = autoClaim(root, branch, transcript ? taskFromTranscript(transcript) : "", base, live);
+  else if (!mine.refusedAs) {
+    // An older claim this one hasn't been compared with: one made at the same moment as it (recheckClaim).
+    const rc = recheckClaim(root, mine, live);
+    if (rc.unchecked.length) notes.push(selfCheckText(rc.unchecked, mine.name, script).trim());
+  }
+  if (mine.refusedAs?.length) return { block: refusalText(mine, live, script), notes: [] };
   const fresh = files.filter((f) => !(mine.edits ?? []).includes(f));
-  const notes = fresh.flatMap((f) => { const o = editedByOthers(live, branch, f); return o.length ? [`fanout: ${f} is also being changed by ${o.map((c) => `session "${c.name}" (branch ${c.branch}: ${c.task || "no task given"})`).join(" and ")}. Keep your change to it small and compatible with theirs.`] : []; });
+  notes.push(...fresh.flatMap((f) => { const o = editedByOthers(live, branch, f); return o.length ? [`fanout: ${f} is also being changed by ${o.map((c) => `session "${c.name}" (branch ${c.branch}: ${c.task || "no task given"})`).join(" and ")}. Keep your change to it small and compatible with theirs.`] : []; }));
   if (fresh.length) writeState(root, (claims) => {
     const c = claims[mine.name];
     if (!c) return false;
@@ -647,6 +659,10 @@ function doneCmd(cwd, argv) {
   let test = arg(argv, "--test") ?? (spawnSync("git", ["config", "--get", "fanout.test"], { cwd, encoding: "utf8" }).stdout ?? "").trim();
   try { if (!test) test = planSetting(readFileSync(defaultPlan(cwd), "utf8"), "test"); } catch { /* no plan */ }
   try { if (!test && JSON.parse(readFileSync(join(root, "package.json"), "utf8")).scripts?.test) test = "npm test"; } catch { /* no package.json */ }
+  // First: is this the same work as an older claim it hasn't been compared with (they started at once)?
+  const live = liveClaims(root, base), mine = live.filter((c) => c.branch === branch).sort((a, b) => Date.parse(b.updated ?? b.at) - Date.parse(a.updated ?? a.at))[0], script = norm(fileURLToPath(import.meta.url));
+  if (mine && !mine.refusedAs) { const rc = recheckClaim(root, mine, live); if (rc.unchecked.length) console.log(selfCheckText(rc.unchecked, mine.name, script).trim()); }
+  if (mine?.refusedAs) { console.error(`fanout done: ${refusalText(mine, live, script)}`); return 1; }
   const ahead = (b) => Number(spawnSync("git", ["rev-list", "--count", `${base}..${b}`], { cwd: root, encoding: "utf8" }).stdout) || 0;
   const others = [...new Set(liveClaims(root, base).filter((c) => c.branch !== branch && c.branch !== base && ahead(c.branch)).sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).map((c) => c.branch))];
   if (git(["status", "--porcelain", "--untracked-files=no"], cwd).trim()) console.log("fanout done: you have uncommitted changes; only commits are tested. Commit first for a full check.");
@@ -667,7 +683,7 @@ function precommit(cwd) {
   const staged = git(["diff", "--cached", "--name-only"], cwd).split("\n").filter(Boolean);
   if (!ctx) {
     if (!claimsActive(cwd)) return 0;
-    const { block, notes } = claimReason(cwd, staged);
+    const { block, notes } = claimReason(cwd, staged, { requireClaim: claimsOn(cwd) });
     notes.forEach((n) => console.error(n));
     if (block) block.split("\n").forEach((w) => console.error("fanout: " + w));
     return block ? 1 : 0;

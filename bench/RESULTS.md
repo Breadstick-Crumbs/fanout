@@ -422,6 +422,33 @@ One run each. Both ways B didn't duplicate A's work, and C wasn't held up.
 
 One run each.
 
+### Claims on Codex (v0.25)
+
+**The same-work check on Codex** (`codex exec`, your default model, low reasoning effort, read-only, nothing saved), for setups with no Claude account. Same held-out pairs (`--agent codex`), two runs:
+
+| Run | Answered | Right | Calls that didn't answer |
+|---|---|---|---|
+| 1 | 31 of 40 | 31 of 31: all 15 duplicates caught, no false alarms | 9, ran into the 180s timeout |
+| 2 | 21 of 40 | 21 of 21: all 10 caught, no false alarms | 19 |
+
+- **Every answer Codex gave was right** (52 of 52), as good as Sonnet's 40/40.
+- **The calls that didn't answer were rate limiting.** After a day of heavy Codex use, calls came back with `429 Too Many Requests` and Codex kept reconnecting, often without printing anything. Answered calls took 12–22s (one at a time, not rate-limited).
+- **So a Codex check now gets one 45s try.** A 429 event, or silence past 40s, ends it at once (with Codex's process tree), and the agent is shown the other sessions' tasks to compare itself. Claude, when it's signed in, is used first.
+
+**Two real Codex sessions** (`codex exec`, workspace-write sandbox, low effort), told only what `fanout init` writes to `AGENTS.md`. A: dark mode; B: a night theme (the same work). Inside Codex's sandbox there's no network (`CODEX_SANDBOX_NETWORK_DISABLED=1`), so `fanout start` lists the other sessions' tasks there instead of calling a model:
+
+| Run | A | B |
+|---|---|---|
+| Before the fixes, B starts after A claimed | claimed, built it | built it first, ran `fanout start` last; it hung on a model call from the sandbox: **duplicate** |
+| Before the fixes, both start at once | claimed, built it | claimed before A's claim existed, built it: **duplicate** |
+| After, B starts after A claimed | ran `start` first, built it | ran `start` first, read the list, released its claim, stopped with no changes |
+| After, both start at once | ran `start`, then again before its first edit, built it | ran `start`, saw A, released, stopped with no changes |
+
+- **The fixes:** no model call from a sandbox without network (the agent compares instead); `AGENTS.md` says to run `start` before reading any code and again before the first edit; after `fanout init` the git hook refuses commits from a session that never ran `start`; and at every checkpoint a claim is compared once with older claims it hasn't met, so two that started at once find each other (in the last run B's first `start` already saw A, so that step is covered by the fake-agent test, not this run).
+- **Codex couldn't commit from its worktree in any run:** its sandbox won't write the worktree's git index, which lives in the main repository's `.git`. That's Codex's sandbox, not fanout; the commit-time rule only applies where Codex can commit.
+
+One run per row.
+
 ## What this does and doesn't show
 
 - **It shows** that on overlapping work, fanout kept `main` free of conflicts and breakage, with no integration step afterwards, at about the same Claude cost: $0.50–$0.92 against $0.59–$0.63.

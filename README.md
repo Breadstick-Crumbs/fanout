@@ -25,7 +25,7 @@ Nothing to learn or run. When two or more sessions work in one repo (worktrees, 
 - on its first edit, its task (what you asked it) is claimed for it;
 - if another session already has the same work, even in other words, it's stopped and says so instead of doing it twice.
 
-For Codex or any other agent, run `npx github:Breadstick-Crumbs/fanout init` once in the repo. It writes two commands into `AGENTS.md` (`fanout start "<task>"` before changing anything, `fanout done` after committing), and a git hook backs them up. See [Claims](#claims).
+**Codex, with or without Claude:** run `npx github:Breadstick-Crumbs/fanout init` once in the repo. It writes two commands into `AGENTS.md` (`fanout start "<task>"` before changing anything, `fanout done` after committing), and a git hook backs them up. No Claude account needed: the same-work check runs on whichever CLI you're signed in to. The same works for any agent that reads `AGENTS.md` (Grok Build, Muse Code, Gemini CLI, OpenCode, Cursor's CLI, ...). See [Claims](#claims).
 
 **2. See every session at once.** No install needed:
 
@@ -175,7 +175,12 @@ How sessions you open yourself (any agent, any worktree) keep out of each other'
 - **The same work is refused.** A new claim is compared with every live one by a Sonnet call (about $0.012, once per session). If it's the same work, whatever the wording ("add a dark mode toggle" and "users want a night theme they can turn on"), the session is stopped and says which session already has it. Work in the same area isn't the same work ("add tax to checkout" and "add discount codes to checkout"). On 40 labelled pairs written by a separate agent and never used to tune it, the check got all 40 right; matching words got 20 ([results](bench/RESULTS.md#claims-telling-the-same-task-from-different-work-v023)).
 - **Shared files aren't blocked.** When another session is also changing a file (`package.json`, a shared stylesheet), the agent is told who, the first time, and carries on. A file someone claimed by name (`fanout claim <name> "<task>" <files>`) is locked for everyone else.
 
-**For Codex and other agents,** the `AGENTS.md` block asks for two commands: `fanout start "<task>"` before changing anything (shows the others, claims the task, same check) and `fanout done` after committing (tests the branch merged with the other sessions' commits and says whose merge broke it). The git hook refuses commits of locked files whichever agent makes them.
+**For Codex and other agents,** the `AGENTS.md` block asks for two commands: `fanout start "<task>"` before changing anything (shows the others, claims the task, same check; run again just before the first edit, so two sessions that started at once find each other) and `fanout done` after committing (tests the branch merged with the other sessions' commits and says whose merge broke it). After `fanout init` the git hook refuses a commit from a session that never ran `fanout start`, and commits of locked files whichever agent makes them.
+
+- **The check runs on Claude or Codex,** whichever is signed in (Claude first; `FANOUT_CLAIM_JUDGE_AGENT=codex` to choose). Every answer Codex gave on the held-out pairs was right (52 of 52 over two runs); when its account is rate-limited the check gives up after 45s and the agent compares the tasks itself ([results](bench/RESULTS.md#claims-on-codex-v025)).
+- **Inside Codex's sandbox there's no network,** so no model can be asked from there. `fanout start` then lists the other sessions' tasks and the agent compares them itself. Tried with two Codex sessions given the same work: the second read the list, released its claim, and stopped without changing anything.
+- **Codex in a worktree can't commit from its sandbox** (it can't write the worktree's git index, which sits outside the folder). That's Codex's limit, not fanout's. The commit-time rule applies when Codex can commit: in the main checkout, or with the sandbox loosened.
+- **Grok Build** runs Claude Code-style hooks, and fanout's guard accepts its field names, so its edits should be checked as they happen (not tried here: no Grok account).
 
 **What claims are:** a small record per session (its task, branch, locked files and the files it has changed) on a git ref, `refs/fanout/state`. Every worktree of the repo sees a new claim at once, and none of it shows up in anyone's diff. A claim ends when its branch merges, its worktree is removed, or after a day with no activity.
 
@@ -321,7 +326,7 @@ Environment variables:
 | `FANOUT_CODEX_EFFORT` | Codex sessions' reasoning effort: `low` by default (2–3× faster than Codex's default on our benchmark, same score), or `minimal`, `medium`, `high`, `default`. |
 | `FANOUT_CODEX_TIER=fast` | Codex's Fast tier: about a fifth quicker in our test, using more of your Codex quota. |
 | `git config fanout.claims true\|false` | Claims on or off for a repo, whatever the number of active sessions (`fanout init` sets `true`). `git config fanout.test "<cmd>"` sets the test `fanout done` runs (default: the plan's, else `npm test`). |
-| `FANOUT_CLAIM_JUDGE=off` | Don't check new claims for the same work (no model call; the claim goes ahead with the others listed). `FANOUT_CLAIM_JUDGE_MODEL` picks another model (default `sonnet`; `haiku` is cheaper but missed a third of the held-out duplicates). |
+| `FANOUT_CLAIM_JUDGE=off` | Don't check new claims for the same work (no model call; the agent gets the others listed to compare itself). `FANOUT_CLAIM_JUDGE_AGENT=claude\|codex` picks the CLI (default: Claude if signed in, else Codex). `FANOUT_CLAIM_JUDGE_MODEL` picks the model (Claude default `sonnet`, where `haiku` is cheaper but missed a third of the held-out duplicates; Codex default: your Codex model). `FANOUT_CLAIM_JUDGE_EFFORT` sets Codex's reasoning effort for it (default `low`). |
 | `FANOUT_TRACE_DIR` | Save each Claude agent's full event stream there, to see where its time went. |
 
 ## Development

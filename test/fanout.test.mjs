@@ -7,6 +7,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parsePlan, parseRegen, matches, check, verify, editTargets } from "../skills/fanout/fanout.mjs";
 
+// Claims' same-work check calls a real CLI; no test here may reach one.
+process.env.FANOUT_CLAIM_JUDGE = "off";
+
 const script = fileURLToPath(new URL("../skills/fanout/fanout.mjs", import.meta.url));
 const dir = () => mkdtempSync(join(tmpdir(), "fanout-"));
 const run = (args, opts = {}) => spawnSync(process.execPath, [script, ...args], { encoding: "utf8", ...opts });
