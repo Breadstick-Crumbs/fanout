@@ -246,11 +246,13 @@ function askModel(agent, prompt, cwd) {
   try { return { text: readFileSync(file, "utf8"), costUsd: null }; } catch { return null; } finally { try { rmSync(file); } catch { /* none */ } }
 }
 // Runs the codex command with stdin passed through; exits 3 at the first rate-limit error event, or after 40s
-// (inside fanout's 45s). It ends Codex's whole process tree itself, since on Windows killing this process
-// would leave codex running.
+// (inside fanout's 45s). It ends Codex's whole process tree itself: on Windows killing this process would leave
+// codex running, and elsewhere killing only the shell left codex holding the output pipe open, so the check
+// waited the full 45s (seen on Linux CI). So codex runs in its own process group there, and the group is killed.
 const CODEX_WATCH = `const { spawn, spawnSync } = require("node:child_process");
-const p = spawn(process.argv[1], { shell: true, stdio: ["pipe", "pipe", "inherit"] });
-const stop = () => { if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(p.pid), "/T", "/F"], { stdio: "ignore" }); else p.kill(); process.exit(3); };
+const win = process.platform === "win32";
+const p = spawn(process.argv[1], { shell: true, stdio: ["pipe", "pipe", "inherit"], detached: !win });
+const stop = () => { if (win) spawnSync("taskkill", ["/pid", String(p.pid), "/T", "/F"], { stdio: "ignore" }); else try { process.kill(-p.pid, "SIGKILL"); } catch {} process.exit(3); };
 setTimeout(stop, 40000).unref();
 process.stdin.pipe(p.stdin);
 let buf = "";
