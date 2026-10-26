@@ -1,9 +1,9 @@
 # fanout
 
-> fanout runs several coding agents (Claude Code, Codex, or any CLI agent) in parallel on one git repo without merge conflicts. Each agent works on its own branch and git worktree and may only change the files it owns. Shared interfaces are committed first and frozen. Before anything reaches main, fanout merges every branch on a scratch copy and runs the tests once, and sends each break back to the agent that caused it. No dependencies, no config: Node 18+ and git. MIT licensed.
+> fanout keeps several coding agents (Claude Code, Codex, or any CLI agent) on one git repo out of each other's way. For sessions you open yourself, with no setup: a new session is told what the others are doing, its task is claimed on its first edit, the same work described in other words is refused (a model check), and a session is told, with the diff, when another session's commit changes code it uses. For one job split across agents (`fanout run`): each agent works on its own branch and worktree and may only change the files it owns, shared interfaces are frozen, and every branch is merged on a scratch copy and tested before main, with each break sent back to the agent that caused it. No dependencies: Node 18+ and git. MIT licensed.
 
 Use fanout when:
-- you already run several agent sessions or worktrees on one repo and want to know which ones are changing the same files (`fanout overlap`, no plan needed)
+- you already run several agent sessions or worktrees on one repo: claims and notices switch on by themselves with two or more active, and `fanout` shows which ones are changing the same files
 - a job is big enough to split across parallel agents and splits into parts with their own files
 - several agents touch shared code, where a clean git merge can still break the build
 - you run agents headless or in CI, or mix Claude Code and Codex
@@ -18,13 +18,16 @@ For small changes, one agent is faster and cheaper.
 
 ## Commands
 
+- `fanout demo`: claims and notices with real sessions in a throwaway repo (about two minutes, $0.10)
+- `fanout start "<task>"`, `fanout inbox`, `fanout done`: for agents without hooks (written to AGENTS.md by `fanout init`): claim a task, see other sessions' changes, test the branch merged with theirs
+- `fanout claims`, `fanout log`: every claim; the last week's claims, refusals and notices to check by hand
 - `fanout run "<goal>"`: plan, run agents in parallel, rehearse, fix, merge
 - `fanout overlap`: which checkouts are changing the same files, and would they conflict
 - `fanout check`: is the plan safe; prints the merge order
 - `fanout verify`: in a session's folder, anything outside its lane
 - `fanout rehearse`: merge every branch on a scratch copy, test once
 - `fanout install-git-hook`: enforce the plan on every commit, for any agent
-- `fanout status`, `fanout log`: sessions, costs, past runs
+- `fanout status`: sessions, costs, past runs
 
 ## Docs
 

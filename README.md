@@ -19,6 +19,14 @@ Real Claude Code sessions with nothing about fanout in their tasks, recorded by 
 npx github:Breadstick-Crumbs/fanout demo
 ```
 
+**Limits, up front:**
+- Evidence so far comes from the project's own fixtures, a few runs each, and one real project. `fanout log` keeps the record from real use so it can be checked.
+- Tested on Windows and Linux (CI), not yet on macOS.
+- It keeps sessions' work apart, not their environments: ports, databases and secrets are shared.
+- A session's first edit waits about 15 seconds for the same-work check.
+- Two sessions on the same branch count as one session.
+- Codex can't commit from a worktree inside its own sandbox, so the commit-time checks only apply where it can commit.
+
 ## Quick start
 
 **1. Install the plugin and keep working as you do.** In Claude Code:
@@ -246,7 +254,12 @@ fanout log                # past runs and rehearsals; the last 7 days of claims,
 
 ## Does it work?
 
-Same four overlapping tasks, four parallel agents, with and without fanout ([full results](bench/RESULTS.md)):
+**Sessions you open yourself** ([results](bench/RESULTS.md#claims-telling-the-same-task-from-different-work-v023)):
+- **Same work in other words:** on 40 labelled task pairs written by a separate agent and held out from tuning, the check got 40 of 40 right (Sonnet; Codex got every one it answered, 52 of 52 over two runs). Shared words got 20 of 40, no better than chance.
+- **Real sessions given the same work stopped without changing anything:** Sonnet and Codex, started one after the other or at the same moment, with nothing about fanout in their tasks.
+- **Notices:** sessions were built to break unless told of another session's change. When the notice was sent as hook feedback, the session adapted 3 times out of 3. Sent as plain added context, the same notice was ignored 4 times out of 4. With no notice at all, the merged code failed every time ([details](bench/RESULTS.md#notices-between-sessions-v026)).
+
+**Splitting one job with `fanout run`:** the same four overlapping tasks, four parallel agents, with and without fanout ([full results](bench/RESULTS.md)):
 
 | | Without fanout (4 runs) | With fanout (3 runs) |
 |---|---|---|
@@ -297,11 +310,20 @@ Ask your agent to "split this into parallel sessions", or run `fanout run "<goal
 **Do I need to configure anything?**
 No. The plan is the only file, and your agent writes it. The defaults are the ones that did best on the benchmark; the [options](#options) are there if you need them.
 
+**How is this different from Claude Code's agent teams and `claude -w`?**
+Agent teams start teammates from one lead session and coordinate them from there; `claude -w` gives a session its own worktree. fanout is for the sessions you open yourself, whenever you open them, in Claude Code, Codex or anything that reads `AGENTS.md`. It refuses the same work described in other words, tells a session when another one's commit changes code it uses, and tests the branches merged together before `main`. They combine: a `claude -w` session is one more worktree to fanout.
+
 **Does it get in the way of normal work?**
-No. It only acts on branches named `fanout/*`. In your main checkout it commits only its own files (the contracts and regenerated files), so another session's uncommitted work stays out; the checkout has to be clean when a run starts.
+With one session, no: claims stay off and `fanout run` only acts on branches named `fanout/*`. With two or more sessions active in a repo, claims switch on. Each session's first edit waits about 15 seconds for the same-work check, and a hook runs after each tool call: about 0.2s when nothing has changed, on Windows. `git config fanout.claims false` turns claims off for a repo. In your main checkout `fanout run` commits only its own files (the contracts and regenerated files), so another session's uncommitted work stays out; the checkout has to be clean when a run starts.
+
+**What does it run, and what leaves my machine?**
+- **Hooks (Claude Code):** before an edit (the guard), after a tool call (claims for shell edits, and notices), and at session start. Each is `node fanout.mjs <hook>` on your machine, reading git.
+- **Sent to a model:** only for the same-work check, through your own signed-in `claude` CLI (or `codex`). It sends your latest request to the session (up to 600 characters), plus the other live sessions' tasks and the files they claimed. `FANOUT_CLAIM_JUDGE=off` turns the check off; sessions then get the list and compare the tasks themselves.
+- **Nothing else:** no telemetry, no server.
+- **Written:** claims on the git ref `refs/fanout/state`; the event log and per-checkout state in `.git/`; `fanout run`'s plan and lanes in `.fanout/` (git-ignored). The git hook is installed only by `fanout init` or `fanout install-git-hook`.
 
 **Will it burn tokens?**
-fanout's checks don't: they're plain scripts with no AI calls, and a failure report is a few lines, not a full log. Running several agents does cost more than one, so split work only when it's big enough. Planning is the largest single cost of a `fanout run`: a goal written as sections skips most of it, and inside Claude Code your own session plans for free. Sessions on a cheaper model (`--session-model haiku`) cut a run's cost about 4× on our benchmark, but lost a hidden test or two.
+The same-work check costs about $0.012, once per session. Everything else fanout checks is a plain script with no AI call, and a failure report is a few lines, not a full log. Running several agents does cost more than one, so split work only when it's big enough. Planning is the largest single cost of a `fanout run`: a goal written as sections skips most of it, and inside Claude Code your own session plans for free. Sessions on a cheaper model (`--session-model haiku`) cut a run's cost about 4× on our benchmark, but lost a hidden test or two.
 
 **Can I mix Claude Code and Codex?**
 Yes. Sessions are just git branches: give a session `agent: codex` in the plan, or let `fanout run --mix` choose. Codex sessions took 2–3× as long as Claude ones on our benchmark, so mixing saves Claude spend and quota rather than time.
