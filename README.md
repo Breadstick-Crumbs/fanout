@@ -5,53 +5,58 @@
   </picture>
 </p>
 
-<p align="center"><b>Run several coding agents at once. Merge once. Nothing breaks.</b></p>
+<p align="center"><b>Run several Claude Code and Codex sessions on one repo.<br>They don't do the same work twice, and each one hears when another's commit changes its code.</b></p>
 
-fanout is a safety layer for parallel coding agents (Claude Code, Codex, or both). Each agent gets its own git worktree and its own files, shared interfaces are frozen while they work, and all their branches are tested together before anything reaches `main`. No dependencies, no config. Just Node 18+ and git.
-
-It keeps parallel work from colliding. It isn't mainly a speed-up: on most jobs one agent is about as fast (see [When to use it](#when-to-use-it)).
+<p align="center">
+  <a href="https://github.com/Breadstick-Crumbs/fanout/actions/workflows/test.yml"><img src="https://github.com/Breadstick-Crumbs/fanout/actions/workflows/test.yml/badge.svg" alt="tests"></a>
+  <img src="https://img.shields.io/github/package-json/v/Breadstick-Crumbs/fanout?label=version" alt="version">
+  <img src="https://img.shields.io/badge/dependencies-0-brightgreen" alt="no dependencies">
+  <img src="https://img.shields.io/badge/works%20with-Claude%20Code%20%C2%B7%20Codex-8A2BE2" alt="works with Claude Code and Codex">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
+</p>
 
 <p align="center"><img src="assets/demo.svg" alt="fanout demo: night-theme is told dark-mode already has the same work and builds nothing; receipt is told another session changed formatPrice and builds on the new version" width="100%"></p>
+<p align="center"><sub>Recorded with <code>fanout demo</code>: real Claude Code sessions, with nothing about fanout in their tasks.</sub></p>
 
-Real Claude Code sessions with nothing about fanout in their tasks, recorded by `fanout demo`. Two sessions get the same work in other words: the second is told at start that the first has it, and builds nothing. Meanwhile another session commits a change to `formatPrice`, which the receipt session uses; receipt is told, with the diff, and the merged code works. Run it yourself (about two minutes, $0.10 on your Claude account):
+You open a second session to get more done. An hour later, both have built a dark mode, or one renamed a function the other was calling and the merge breaks. fanout sits underneath your sessions and stops that as it happens.
+
+## Highlights
+
+- **The same task, in other words, is done once.** A session about to build what another already has is stopped before its first change, and says which session has it. A model compares the tasks, so "add a dark mode toggle" and "users want a night theme" count as the same work. It got 40 of 40 held-out pairs right.
+- **Each session hears about changes it needs.** When another session commits a change to code yours has read or edited, it gets the diff and builds on the new version.
+- **Nothing to set up.** Install the plugin and keep working. It switches on when two sessions share a repo.
+- **Claude Code, Codex, or both,** plus any agent that reads `AGENTS.md`.
+- **One big job split across agents,** when you want it: `fanout run` gives each agent its own files, freezes shared interfaces, and tests every branch merged together before anything reaches `main`.
+- **No dependencies.** Node 18+ and git.
+
+## Try it
+
+See it work in two minutes, with no install. It makes a throwaway repo and runs three real sessions (about $0.10 on your Claude account):
 
 ```bash
 npx github:Breadstick-Crumbs/fanout demo
 ```
 
-**Limits, up front:**
-- Evidence so far comes from the project's own fixtures, a few runs each, and one real project. `fanout log` keeps the record from real use so it can be checked.
-- Tested on Windows and Linux (CI), not yet on macOS.
-- It keeps sessions' work apart, not their environments: ports, databases and secrets are shared.
-- A session's first edit waits about 15 seconds for the same-work check.
-- Two sessions on the same branch count as one session.
-- Codex can't commit from a worktree inside its own sandbox, so the commit-time checks only apply where it can commit.
-
-## Quick start
-
-**1. Install the plugin and keep working as you do.** In Claude Code:
+Then use it. In Claude Code:
 
 ```
 /plugin marketplace add Breadstick-Crumbs/fanout
 /plugin install fanout@fanout
 ```
 
-Nothing to learn or run. When two or more sessions work in one repo (worktrees, the desktop app's sessions), fanout switches on by itself:
-- a new session is told what the others are doing;
-- on its first edit, its task (what you asked it) is claimed for it;
-- if another session already has the same work, even in other words, it's stopped and says so instead of doing it twice.
+That's all. Open sessions as you do now (worktrees, the desktop app's sessions). A new session is told what the others are doing, its task is claimed on its first edit, and work another session already has is refused.
 
-**Codex, with or without Claude:** run `npx github:Breadstick-Crumbs/fanout init` once in the repo. It writes two commands into `AGENTS.md` (`fanout start "<task>"` before changing anything, `fanout done` after committing), and a git hook backs them up. No Claude account needed: the same-work check runs on whichever CLI you're signed in to. The same works for any agent that reads `AGENTS.md` (Grok Build, Muse Code, Gemini CLI, OpenCode, Cursor's CLI, ...). See [Claims](#claims).
+**Codex, or any agent that reads `AGENTS.md`:** run `npx github:Breadstick-Crumbs/fanout init` once in the repo. No Claude account needed; see [Claims](#claims).
 
-**2. See every session at once.** No install needed:
+**See every session at once:**
 
 ```bash
 npx github:Breadstick-Crumbs/fanout
 ```
 
-It lists every checkout of the repo (worktrees, other agent sessions, your own), what each one is doing and has changed, committed or not, and the files two of them are both changing, with a dry-run merge to show whether they'd really conflict.
+Every checkout of the repo, what each is doing and has changed, and the files two of them are both changing, with a dry-run merge to show whether they'd conflict.
 
-**3. Split one job across agents.** Write the goal as one `##` section per part, naming its files in backticks:
+**Split one job across agents.** Write the goal as one `##` section per part, naming its files in backticks:
 
 ```md
 ## currency
@@ -65,9 +70,7 @@ Add `src/receipt.mjs`, built on `src/money.mjs`: print the items and the total.
 npx github:Breadstick-Crumbs/fanout run --goal-file TASKS.md
 ```
 
-fanout drafts the plan from the sections (no AI call), shows it, and asks once. Then it runs one agent per section in parallel, tests their branches together, sends any break back to the agent that caused it, and merges into your current branch. A one-line goal works too (`run "add coupons and tax"`); an agent then writes the plan.
-
-Inside Claude Code you can skip the command: ask *"split this into parallel sessions"*.
+fanout drafts the plan from the sections (no AI call), shows it, and asks once. Then it runs one agent per section in parallel, tests their branches together, sends any break back to the agent that caused it, and merges into your current branch. Inside Claude Code you can just ask *"split this into parallel sessions"*.
 
 ## The problem
 
@@ -287,6 +290,14 @@ On a bigger job, splitting does pay. On our six-module spreadsheet benchmark (34
 - you run agents headless or in CI, or mix Claude Code and Codex, and nobody is watching each merge.
 
 Even when you don't split the work, `rehearse` and the edit guard cost nothing to run.
+
+**Limits:**
+- Evidence so far comes from the project's own fixtures, a few runs each, and one real project. `fanout log` keeps the record from real use so it can be checked.
+- Tested on Windows and Linux (CI), not yet on macOS.
+- It keeps sessions' work apart, not their environments: ports, databases and secrets are shared.
+- A session's first edit waits about 15 seconds for the same-work check.
+- Two sessions on the same branch count as one session.
+- Codex can't commit from a worktree inside its own sandbox, so the commit-time checks only apply where it can commit.
 
 ## Compared with
 
