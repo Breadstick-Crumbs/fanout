@@ -177,7 +177,7 @@ How sessions you open yourself (any agent, any worktree) keep out of each other'
 - **Told when another session's commit changes your code.** When another session (or `main`) commits a change to a file this session has read or edited, the session gets the diff and is asked to build against the new version. In a test where ignoring the change meant a certain break, sessions told this way adapted 3 times out of 3; with no notice the merged code failed every time ([results](bench/RESULTS.md#notices-between-sessions-v026)). `FANOUT_NOTICES=off` or `git config fanout.notices false` turns notices off.
 - **Edits through the shell count too.** Sessions that edit with shell commands (the desktop app's auto mode does) are claimed and checked after each command, not only through Edit and Write.
 
-**For Codex and other agents,** the `AGENTS.md` block asks for two commands: `fanout start "<task>"` before changing anything (shows the others, claims the task, same check; run again just before the first edit, so two sessions that started at once find each other) and `fanout done` after committing (tests the branch merged with the other sessions' commits and says whose merge broke it). After `fanout init` the git hook refuses a commit from a session that never ran `fanout start`, and commits of locked files whichever agent makes them.
+**For Codex and other agents,** the `AGENTS.md` block asks for three commands: `fanout start "<task>"` before changing anything (shows the others, claims the task, same check; run again just before the first edit, so two sessions that started at once find each other), `fanout inbox` before committing and before finishing (the notices a Claude Code session gets after each tool call: changes other sessions committed since it last looked, with the diff), and `fanout done` after committing (tests the branch merged with the other sessions' commits and says whose merge broke it; it and the git hook print new notices too). After `fanout init` the git hook refuses a commit from a session that never ran `fanout start`, and commits of locked files whichever agent makes them.
 
 - **The check runs on Claude or Codex,** whichever is signed in (Claude first; `FANOUT_CLAIM_JUDGE_AGENT=codex` to choose). Every answer Codex gave on the held-out pairs was right (52 of 52 over two runs); when its account is rate-limited the check gives up after 45s and the agent compares the tasks itself ([results](bench/RESULTS.md#claims-on-codex-v025)).
 - **Inside Codex's sandbox there's no network,** so no model can be asked from there. `fanout start` then lists the other sessions' tasks and the agent compares them itself. Tried with two Codex sessions given the same work: the second read the list, released its claim, and stopped without changing anything.
@@ -189,6 +189,7 @@ How sessions you open yourself (any agent, any worktree) keep out of each other'
 ```bash
 fanout                    # every session: what it's doing, what it changed, overlaps
 fanout start "<task>"     # claim this session's task (agents without hooks)
+fanout inbox              # changes other sessions committed since you last looked (agents without hooks)
 fanout done               # test this branch merged with the others' work
 fanout claims             # every claim; fanout release <name> ends one early
 ```

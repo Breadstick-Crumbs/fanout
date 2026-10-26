@@ -1,6 +1,7 @@
 // Claims: which session is doing what, kept in git so every session of a repo sees them at once.
 //   fanout start "<task>" [files...]              claim this session's task (agents without hooks: AGENTS.md says so)
 //   fanout done                                   test this branch merged with the other sessions' work (fanout.mjs)
+//   fanout inbox                                  changes other sessions committed since this one last looked (notices)
 //   fanout claim <name> "<task>" [files...] [--exposes a,b] [--distinct "how it differs"]   files named here are locked
 //   fanout claims [--all]                         live claims (--all: expired ones too)
 //   fanout release <name> [--to <branch>]         end a claim, or hand it to another branch
@@ -305,13 +306,16 @@ export function taskOverlap(task, others, cwd) {
 // (not on the shared ref: a write per Read would be a write for every session to see).
 const NOTICE_DIFF_LINES = 60;
 // Returns the notice text ("" when there's nothing new). read: a file this tool call read; edited: files it changed.
-export function notices(root, gitDir, branch, base, { read, edited = [], common = gitDir } = {}) {
+// all: every file another session changed is news, not only those this session used (fanout inbox: without hooks
+// fanout can't see what an agent read).
+export function notices(root, gitDir, branch, base, { read, edited = [], common = gitDir, all = false } = {}) {
   const file = join(gitDir, "fanout-notices.json"), stamp = refsStamp(common);
   let st; try { st = JSON.parse(readFileSync(file, "utf8")); } catch { st = { reads: [], changed: {}, told: {} }; }
-  const save = () => writeFileSync(file, JSON.stringify(st));
+  // Inside Codex's sandbox a worktree's git dir isn't writable: the notice then just comes again next time.
+  const save = () => { try { writeFileSync(file, JSON.stringify(st)); } catch { /* read-only */ } };
   const touched = [read, ...edited].filter(Boolean), newRead = read && !st.reads.includes(read);
   if (newRead) st.reads.push(read);
-  if (stamp === st.stamp && !touched.some((f) => Object.values(st.changed).some((c) => c.files.includes(f)))) { if (newRead) save(); return ""; }
+  if (!all && stamp === st.stamp && !touched.some((f) => Object.values(st.changed).some((c) => c.files.includes(f)))) { if (newRead) save(); return ""; }
   st.stamp = stamp;
   const tips = {};
   for (const l of git(root, ["for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads"]).out.split("\n")) { const [b, t] = l.split(" "); if (b && b !== branch) tips[b] = t; }
@@ -332,13 +336,14 @@ export function notices(root, gitDir, branch, base, { read, edited = [], common 
     }
     const { from, files } = changedNow[c.branch], told = st.told[c.branch] ?? { tip: null, files: [] };
     const sinceTold = told.tip && told.tip !== tip ? git(root, ["diff", "--name-only", told.tip, tip]).out.split("\n") : [];
-    const hits = files.filter((f) => mine.has(f)), fresh = hits.filter((f) => !told.files.includes(f) || sinceTold.includes(f));
+    const hits = all ? files : files.filter((f) => mine.has(f)), fresh = hits.filter((f) => !told.files.includes(f) || sinceTold.includes(f));
     st.told[c.branch] = { tip, files: [...new Set([...told.files.filter((f) => !sinceTold.includes(f)), ...hits])] };
     if (!fresh.length) continue;
     const diff = git(root, ["diff", from, tip, "--", ...fresh]).out.split("\n");
     const shown = diff.slice(0, NOTICE_DIFF_LINES).join("\n") + (diff.length > NOTICE_DIFF_LINES ? `\n... (${diff.length - NOTICE_DIFF_LINES} more lines: git diff ${from.slice(0, 9)} ${c.branch} -- ${fresh.join(" ")})` : "");
     const who = c.base ? `New commits on ${c.branch} (work merged since this session started)` : `Session "${c.name}" (branch ${c.branch}${c.task ? `: ${c.task.slice(0, 120)}` : ""}) committed`;
-    out.push(`fanout: ${who} change ${fresh.join(", ")}, which this session has read or edited. Your checkout still has the old version:\n${shown}\n`
+    const yours = fresh.filter((f) => mine.has(f));
+    out.push(`fanout: ${who} change ${fresh.join(", ")}, ${all ? (yours.length ? `and you changed ${yours.join(", ")} too.` : "which your work may use.") : "which this session has read or edited."} Your checkout still has the old version:\n${shown}\n`
       + `If your work depends on this code, build against the new version: bring it in (git merge ${c.branch}) or ask the user, rather than writing code that only works with the old one.`);
   }
   st.changed = changedNow;
@@ -489,6 +494,7 @@ export const agentsBlock = () => `${BLOCK_START}
 
 - First, before you read or change any code, run \`${FANOUT_NPX} start "<your task in one line>"\`. It claims your task and shows what the other sessions are doing. If it says another session already has that work, or lists one doing the same thing, don't do it: tell the user which one has it. Commits are refused until you've run it.
 - Run the same command again just before your first edit: a session that started at the same moment as yours shows up then.
+- Before you commit, and again before you finish, run \`${FANOUT_NPX} inbox\`. It shows changes other sessions have committed since you started, with the diff. If one changes code your work uses, build against the new version (merge their branch, or tell the user) instead of code that only works with the old one.
 - When you've committed, run \`${FANOUT_NPX} done\`. It tests your branch merged with the other sessions' work and says if one breaks the other.
 ${BLOCK_END}`;
 

@@ -503,6 +503,7 @@ function main(argv) {
   const SCRIPT = norm(fileURLToPath(import.meta.url));
   if (cmd === "start") return startCmd(cwd, argv.slice(1), arg(argv, "--base") ?? defaultBase(cwd), SCRIPT);
   if (cmd === "done") return doneCmd(cwd, argv);
+  if (cmd === "inbox") return inboxCmd(cwd);
   if (cmd === "claim") return claimCmd(cwd, argv.slice(1), arg(argv, "--base") ?? defaultBase(cwd), SCRIPT);
   if (cmd === "claims") return showClaims(cwd, arg(argv, "--base") ?? defaultBase(cwd), argv.includes("--all"));
   if (cmd === "release") return releaseCmd(cwd, argv.slice(1));
@@ -513,6 +514,7 @@ function main(argv) {
   (no command)                            every session in this repo, what each has claimed and changed, and overlaps
   start "<task>" [files...]               claim this session's task (refused if another session has the same work)
   done                                    test this branch merged with the other sessions' work
+  inbox                                   changes other sessions committed since you last looked (agents without hooks)
   run ["goal" | --goal-file f] [--yes]   split a job across agents: plan, agents, rehearse, fix, merge (fanout run --help)
   overlap [--base <branch>] [--all]       same as no command
   init                                    claims on for good in this repo (they also switch on by themselves with 2+ active sessions)
@@ -638,7 +640,8 @@ export function claimReason(root, rels, { transcript, requireClaim = false } = {
   // A commit from an agent without hooks, in a repo set up with fanout init: AGENTS.md told it to run fanout start
   // first, and a Codex session given that skipped it and duplicated another's work, so its commit waits for it.
   if (!mine && requireClaim) return { block: `this session (branch ${branch}) hasn't claimed its task. Run first: node "${script}" start "<your task in one line>"
-It shows what the other sessions are doing; if one already has your work, don't commit it.`, notes: [] };
+It shows what the other sessions are doing; if one already has your work, don't commit it.
+(A person committing by hand, not an agent: git commit --no-verify skips this check.)`, notes: [] };
   const notes = [];
   if (!mine) mine = autoClaim(root, branch, transcript ? taskFromTranscript(transcript) : "", base, live);
   else if (!mine.refusedAs) {
@@ -714,20 +717,40 @@ function shellEdits(root, gitDir, base) {
   const file = join(gitDir, "fanout-shell-edits.json");
   let seen = [];
   try { seen = JSON.parse(readFileSync(file, "utf8")); } catch { /* first time */ }
+  const all = changedFiles(root, base), fresh = all.filter((f) => !seen.includes(f));
+  if (fresh.length) try { writeFileSync(file, JSON.stringify([...seen, ...fresh])); } catch { /* read-only */ }
+  return fresh;
+}
+// Every file this checkout has changed: uncommitted (new ones too), and committed on its branch since the base.
+function changedFiles(root, base) {
   const dirty = spawnSync("git", ["status", "--porcelain", "-z", "--untracked-files=all"], { cwd: root, encoding: "utf8" }).stdout ?? "";
   const parts = dirty.split("\0"), files = [];
   for (let i = 0; i < parts.length; i++) { if (parts[i].length < 4) continue; files.push(parts[i].slice(3)); if (/^[RC]/.test(parts[i])) i++; } // a rename's old path follows it
   const committed = spawnSync("git", ["diff", "--name-only", `${base}...HEAD`], { cwd: root, encoding: "utf8" }).stdout ?? "";
   const all = [...new Set([...files, ...committed.split("\n")].map((f) => norm(f.trim())).filter((f) => f && !f.startsWith(".fanout/") && !f.startsWith(".claude/")))];
-  const fresh = all.filter((f) => !seen.includes(f));
-  if (fresh.length) writeFileSync(file, JSON.stringify([...seen, ...fresh]));
-  return fresh;
+  return all;
+}
+
+// For agents without hooks (Codex and others), the notices a Claude Code session gets after each tool call, on
+// demand: fanout inbox, and printed by fanout done and the git hook. null where notices don't apply.
+function inboxText(cwd) {
+  const info = repoInfo(cwd);
+  if (!info?.branch || info.branch.startsWith(BRANCH_PREFIX) || !info.notices || process.env.FANOUT_NOTICES === "off") return null;
+  const base = mainBranch(info.common);
+  return notices(info.root, info.gitDir, info.branch, base, { edited: changedFiles(info.root, base), common: info.common, all: true });
+}
+function inboxCmd(cwd) {
+  const t = inboxText(cwd);
+  console.log(t === null ? "fanout inbox: notices don't apply here (not on a branch, a fanout run lane, or notices are off)." : t || "fanout inbox: nothing new. No other session has committed changes since you last looked.");
+  return 0;
 }
 
 // fanout done: this branch's commits merged with every other session's that has a live claim, on a scratch
 // copy, and the test run once (rehearse, bisecting only on failure). Says whose merge broke it.
 function doneCmd(cwd, argv) {
   const root = mainRoot(cwd), branch = branchOf(cwd), base = arg(argv, "--base") ?? defaultBase(cwd);
+  const news = inboxText(cwd);
+  if (news) console.log(news + "\n");
   if (!branch || branch === base) { console.error(`fanout done: run it in a session's own branch (not ${base}), after committing.`); return 2; }
   let test = arg(argv, "--test") ?? (spawnSync("git", ["config", "--get", "fanout.test"], { cwd, encoding: "utf8" }).stdout ?? "").trim();
   try { if (!test) test = planSetting(readFileSync(defaultPlan(cwd), "utf8"), "test"); } catch { /* no plan */ }
@@ -758,6 +781,8 @@ function precommit(cwd) {
     if (!claimsActive(cwd)) return 0;
     const { block, notes } = claimReason(cwd, staged, { requireClaim: claimsOn(cwd) });
     notes.forEach((n) => console.error(n));
+    const news = block ? null : inboxText(cwd);
+    if (news) console.error(news);
     if (block) block.split("\n").forEach((w) => console.error("fanout: " + w));
     return block ? 1 : 0;
   }

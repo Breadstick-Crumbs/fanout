@@ -226,6 +226,7 @@ test("fanout init writes the two commands into AGENTS.md, replacing its own bloc
   // Through npx: AGENTS.md is shared, so no machine's own path to the script.
   assert.match(text, /`npx -y github:Breadstick-Crumbs\/fanout start "<your task in one line>"`/);
   assert.match(text, /`npx -y github:Breadstick-Crumbs\/fanout done`/);
+  assert.match(text, /`npx -y github:Breadstick-Crumbs\/fanout inbox`/);
   assert.doesNotMatch(text, /fanout\.mjs/);
   assert.equal(execFileSync("git", ["config", "fanout.claims"], { cwd: root, encoding: "utf8" }).trim(), "true");
 });
@@ -433,4 +434,26 @@ test("edits made through the shell are claimed after the fact: the task, a dupli
   assert.match(locked.reason, /money\.txt is claimed by session "money"/);
   assert.equal(bashT(b2, "print receipts for orders").stdout, "", "reported once");
   void r2;
+});
+
+test("fanout inbox gives agents without hooks the same notices: every file another session committed, once; done and the git hook print them too", () => {
+  const { root, a, b } = repo();
+  const g = (cwd, ...x) => execFileSync("git", x, { cwd, stdio: "ignore" });
+  fan(a, ["start", "print receipts"]); fan(b, ["start", "prices in cents"]);
+  writeFileSync(join(a, "receipt.txt"), "r");
+  assert.match(fan(a, ["inbox"]).stdout, /nothing new/);
+  writeFileSync(join(b, "x.txt"), "2"); writeFileSync(join(b, "receipt.txt"), "theirs"); g(b, "add", "-A"); g(b, "commit", "-qm", "b work");
+  const t = fan(a, ["inbox"]).stdout;
+  assert.match(t, /Session "b" \(branch b: prices in cents\) committed change (receipt\.txt, x\.txt|x\.txt, receipt\.txt), and you changed receipt\.txt too/, "every file, not only this session's");
+  assert.match(t, /^\+2$/m);
+  assert.match(fan(a, ["inbox"]).stdout, /nothing new/, "once");
+  // A newer commit shows up when a commits (git hook) and in done.
+  fan(root, ["init"]); // the git hook acts once fanout init has run
+  writeFileSync(join(b, "x.txt"), "3"); g(b, "commit", "-qam", "more");
+  g(a, "add", "-A");
+  const c = spawnSync("git", ["commit", "-qm", "a"], { cwd: a, encoding: "utf8", env: env() });
+  assert.equal(c.status, 0, c.stderr);
+  assert.match(c.stderr, /^\+3$/m);
+  writeFileSync(join(b, "x.txt"), "4"); g(b, "commit", "-qam", "again");
+  assert.match(fan(a, ["done"]).stdout, /^\+4$/m);
 });

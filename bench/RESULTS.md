@@ -465,6 +465,20 @@ A session is now told when another session (or the base branch) commits changes 
 - **Notices only help when the other session commits first.** With no notices, a finished before b committed in 2 of 3 runs, so no notice could have reached it. Claims and `fanout done` cover that order.
 - Small and constructed (one pair of tasks, 11 runs), like the paper's constructed tier: it shows the mechanism works, not how often real sessions need it.
 
+**Agents without hooks: `fanout inbox` (v0.27).** The same receipt task in a real Codex session (`codex exec`, workspace-write sandbox, low effort), told only what `fanout init` writes to `AGENTS.md`, which now asks for `fanout inbox` before committing and before finishing. b was scripted: it claimed its task, then committed the `formatPrice` change 25s in. Codex can't commit from its worktree in its sandbox, so a's files were copied onto main after merging b, then the hidden check ran. One run per row:
+
+| b's claim says | `inbox` in AGENTS.md | Runs | a ran inbox and saw the change | Hidden check passed |
+|---|---|---|---|---|
+| "prices need a currency: formatPrice(cents, currency)" | yes | 2 | 2 | 2 |
+| the same | no | 2 | - | 2 |
+| "rework money formatting in money.js" | yes | 1 | 1 | 1 |
+| the same | no | 1 | - | 0 |
+
+- **With a claim that spells out the change, `fanout start`'s list of the other sessions was enough:** Codex read b's task there and passed the currency without any notice.
+- **With a vague claim, only the inbox carried it:** without it Codex built on the old `formatPrice` and the merged code failed; with it Codex saw the diff, tested against b's version, and passed. One run each, so this shows the mechanism, not a rate.
+- Codex ran `start` and `inbox` four times each in every run that had them: before reading, before the first edit, before committing and before finishing.
+- Without hooks fanout can't see what an agent read, so `inbox` shows every file other sessions committed, with the ones this session also changed named first.
+
 **Why it couldn't have worked on slgtme before:** in the desktop app's auto mode, sessions edit through the shell (Python, heredocs, `cat >>`), and the guard only watched Edit and Write. slgtme had five active checkouts and no claim was ever written. Shell edits now go through the same rules after each shell command (`git status` and the branch's commits): the first change claims the task, and a duplicate task or a locked file is reported back as feedback, telling the agent to undo. The shell-only arm above was claimed this way. The hook costs about 140–250ms per tool call on Windows when nothing has changed (it reads git's files directly rather than calling git), and about 300ms after a shell command.
 
 **A Windows bug the same project found:** `fanout run` ran `check:` and `test:` lines through `cmd.exe`, so a check starting `! grep` failed whatever the code did. On slgtme that stopped a two-session run after two fix rounds that changed nothing ($1.19 and $1.22, $4.26 in all). Plan commands now run in Git's bash on Windows, and a fix round that changes nothing stops the run instead of trying again.
