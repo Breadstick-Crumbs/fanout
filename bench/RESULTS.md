@@ -413,6 +413,15 @@ Sheet task, drafted plan (four sessions: formula, recalc-table, numfmt, csv-stru
 
 One run each. Both ways B didn't duplicate A's work, and C wasn't held up.
 
+**With no setup at all (v0.24).** Same tasks, but nothing about fanout anywhere: no `CLAUDE.md` block, no `fanout init`, no fanout commands in the briefs. Only the plugin's two hooks (session start and edit guard), in a repo with three worktrees, so claims switched on by themselves. Each session's task was claimed on its first edit from the user's request.
+
+| Run | A (dark mode) | B (night theme: same work) | C (CSV export) |
+|---|---|---|---|
+| B starts after A's first edit | claimed on first edit, built it (30s, $0.03) | told at start that session a has dark mode; stopped with no changes (22s, $0.02) | claimed on first edit, built it (50s, $0.02) |
+| A and B start at the same moment | claimed first, built it (33s, $0.03) | neither saw the other at start; B's first edit was checked against A's claim and refused; B changed nothing, didn't try to get round it, and told the user (58s, $0.04) | - |
+
+One run each.
+
 ## What this does and doesn't show
 
 - **It shows** that on overlapping work, fanout kept `main` free of conflicts and breakage, with no integration step afterwards, at about the same Claude cost: $0.50–$0.92 against $0.59–$0.63.

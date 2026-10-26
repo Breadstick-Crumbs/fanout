@@ -11,6 +11,17 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "name": "fanout: tell a new session what the other sessions in this repo are doing",
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/skills/fanout/fanout.mjs\" session-start"
+          }
+        ]
+      }
     ]
   }
 }

@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync, spawnSync, spawn } from "node:child_process";
-import { readState, writeState, liveClaims, isLive, judgePrompt, REF } from "../skills/fanout/claims.mjs";
+import { readState, writeState, liveClaims, isLive, judgePrompt, REF, activeCheckouts, claimsActive, taskFromTranscript } from "../skills/fanout/claims.mjs";
 
 const FANOUT = join(import.meta.dirname, "../skills/fanout/fanout.mjs");
 // A fake claude for the task judge: a session is the same work when its task and the new one share the word
@@ -89,41 +89,146 @@ test("no judge call when no other session has a claim", () => {
   assert.equal(judgeCalls(), before);
 });
 
-test("with claims on, the edit guard makes a session claim first, refuses others' files, and records new ones", () => {
-  const { root, a, b } = repo();
-  assert.equal(guard(a, "src/money.mjs").status, 0, "claims off: the guard does nothing");
-  assert.equal(fan(root, ["init"]).status, 0);
-  const first = guard(a, "src/money.mjs");
-  assert.equal(first.status, 2);
-  assert.match(first.stderr, /hasn't claimed its task yet[\s\S]*claim <short-name>/);
-  fan(a, ["claim", "currency", "format prices", "src/money.mjs"]);
-  assert.equal(guard(a, "src/money.mjs").status, 0);
-  assert.equal(guard(a, "src/format.mjs").status, 0);
-  assert.deepEqual(readState(root).claims.currency.files, ["src/money.mjs", "src/format.mjs"]); // added on first edit
-  fan(b, ["claim", "receipt", "print receipts", "src/receipt.mjs"]);
-  const taken = guard(b, "src/format.mjs");
-  assert.equal(taken.status, 2);
-  assert.match(taken.stderr, /src\/format\.mjs is claimed by session "currency" \(branch a: format prices\)/);
-  assert.equal(guard(b, "build/out.js").status, 0, "ignored files are left alone");
+// A Claude Code transcript with the user's request, as hooks get it.
+const transcript = (request) => {
+  const f = join(mkdtempSync(join(tmpdir(), "fanout-tr-")), "t.jsonl");
+  writeFileSync(f, [{ type: "user", message: { role: "user", content: `<system-reminder>ignore me</system-reminder>${request}` } },
+    { type: "assistant", message: { content: [{ type: "text", text: "on it" }] } },
+    { type: "user", message: { content: [{ type: "tool_result", content: "ok" }] } }].map((x) => JSON.stringify(x)).join("\n") + "\n");
+  return f;
+};
+const guardT = (cwd, file, request, extra) => spawnSync(process.execPath, [FANOUT, "guard"], { cwd, encoding: "utf8", env: env(extra),
+  input: JSON.stringify({ cwd, transcript_path: request ? transcript(request) : undefined, tool_input: { file_path: join(cwd, file) } }) });
+
+test("claims switch on by themselves with two or more active checkouts; git config forces them either way", () => {
+  const { root, a } = repo();
+  assert.equal(activeCheckouts(root), 3);
+  assert.ok(claimsActive(root));
+  execFileSync("git", ["config", "fanout.claims", "false"], { cwd: root });
+  assert.ok(!claimsActive(a));
+  assert.equal(guardT(a, "x.txt", "add a dark mode toggle").status, 0);
+  assert.equal(readState(root).head, null, "off: nothing is written");
+  const solo = mkdtempSync(join(tmpdir(), "fanout-solo-"));
+  execFileSync("git", ["init", "-q"], { cwd: solo });
+  assert.ok(!claimsActive(solo), "one checkout: off");
+  assert.ok(activeCheckouts(root, Date.now() + 25 * 3600e3) === 0, "a day later nothing counts as active");
 });
 
-test("with claims on, the git hook holds any agent to them at commit time", () => {
+test("a Claude Code session's first edit claims its task from the user's request; the same work elsewhere is stopped", () => {
+  const { root, a, b } = repo();
+  assert.equal(guardT(a, "settings.js", "add a dark mode toggle to the settings page").status, 0);
+  const c = readState(root).claims.a;
+  assert.equal(c.task, "add a dark mode toggle to the settings page"); // tags and tool results left out
+  assert.deepEqual(c.edits, ["settings.js"]);
+  const before = judgeCalls();
+  const dup = guardT(b, "theme.css", "users want a dark theme they can switch on", { FAKE_SAME_IF: "dark" });
+  assert.equal(dup.status, 2, dup.stdout + dup.stderr);
+  assert.match(dup.stderr, /same work as another session's:\n {2}a \(branch a\): add a dark mode toggle/);
+  assert.match(dup.stderr, /--distinct/);
+  assert.equal(judgeCalls(), before + 1);
+  // It stays stopped, without asking the judge again.
+  assert.equal(guardT(b, "theme.css", "users want a dark theme they can switch on", { FAKE_SAME_IF: "dark" }).status, 2);
+  assert.equal(judgeCalls(), before + 1);
+  assert.match(fan(root, ["claims"]).stdout, /^b \(stopped: same work as a\)/m);
+  // Told it's different, it goes ahead.
+  assert.equal(fan(b, ["start", "only the colour tokens for a theme", "--distinct", "tokens, not the toggle"]).status, 0);
+  assert.equal(guardT(b, "theme.css").status, 0);
+});
+
+test("files claimed by name are locked; a file another session is also editing is allowed with a note, once", () => {
+  const { root, a, b } = repo();
+  fan(a, ["claim", "currency", "format prices", "src/money.mjs"]);
+  assert.equal(guardT(a, "package.json").status, 0);
+  fan(b, ["start", "print receipts"]);
+  const locked = guardT(b, "src/money.mjs");
+  assert.equal(locked.status, 2);
+  assert.match(locked.stderr, /src\/money\.mjs is claimed by session "currency" \(branch a: format prices\)/);
+  const shared = guardT(b, "package.json");
+  assert.equal(shared.status, 0, shared.stderr);
+  const ctx = JSON.parse(shared.stdout).hookSpecificOutput;
+  assert.equal(ctx.hookEventName, "PreToolUse");
+  assert.match(ctx.additionalContext, /package\.json is also being changed by session "currency" \(branch a: format prices\)/);
+  assert.equal(guardT(b, "package.json").stdout, "", "told once");
+  assert.equal(guardT(b, "build/out.js").status, 0, "ignored files are left alone");
+  assert.deepEqual(readState(root).claims.b.edits, ["package.json"]);
+});
+
+test("the git hook holds any agent to claims at commit time: locked files refused, shared ones noted", () => {
   const { root, a, b } = repo();
   fan(root, ["init"]);
   fan(a, ["claim", "currency", "format prices", "money.txt"]);
-  writeFileSync(join(b, "money.txt"), "mine");
-  execFileSync("git", ["add", "-A"], { cwd: b });
+  writeFileSync(join(b, "money.txt"), "mine"); execFileSync("git", ["add", "-A"], { cwd: b });
   const c = spawnSync("git", ["commit", "-qm", "b"], { cwd: b, encoding: "utf8", env: env() });
   assert.notEqual(c.status, 0);
   assert.match(c.stderr, /money\.txt is claimed by session "currency"/);
-  // An unclaimed session can't commit either until it claims its task.
-  assert.match(spawnSync("git", ["commit", "-qm", "b"], { cwd: b, encoding: "utf8", env: env() }).stderr, /claimed by session "currency"/);
-  execFileSync("git", ["reset", "-q"], { cwd: b });
+  execFileSync("git", ["reset", "-q"], { cwd: b }); execFileSync("git", ["checkout", "--", "."], { cwd: b }); execFileSync("git", ["clean", "-fq"], { cwd: b });
+  // A session with no claim (Codex, no hooks) gets one at its first commit, with no task.
   writeFileSync(join(b, "other.txt"), "x"); execFileSync("git", ["add", "other.txt"], { cwd: b });
-  assert.match(spawnSync("git", ["commit", "-qm", "b"], { cwd: b, encoding: "utf8", env: env() }).stderr, /hasn't claimed its task yet/);
-  fan(b, ["claim", "other", "the other thing"]);
   assert.equal(spawnSync("git", ["commit", "-qm", "b"], { cwd: b, encoding: "utf8", env: env() }).status, 0);
-  assert.deepEqual(readState(root).claims.other.files, ["other.txt"]);
+  assert.deepEqual(readState(root).claims.b.edits, ["other.txt"]);
+});
+
+test("a new session is told at start what the others are doing", () => {
+  const { a, b } = repo();
+  const start = (cwd) => spawnSync(process.execPath, [FANOUT, "session-start"], { cwd, encoding: "utf8", env: env(), input: JSON.stringify({ cwd }) });
+  assert.equal(start(b).stdout, "", "nobody else yet: nothing said");
+  fan(a, ["claim", "currency", "format prices", "src/money.mjs"]);
+  const ctx = JSON.parse(start(b).stdout).hookSpecificOutput;
+  assert.equal(ctx.hookEventName, "SessionStart");
+  assert.match(ctx.additionalContext, /- currency \(branch a\): format prices \[claimed files: src\/money\.mjs\]/);
+  assert.equal(start(a).stdout, "", "its own claim isn't news");
+  const hooks = JSON.parse(readFileSync(join(import.meta.dirname, "../hooks/hooks.json"), "utf8")).hooks;
+  assert.match(hooks.SessionStart[0].hooks[0].command, /fanout\.mjs" session-start$/);
+});
+
+test("fanout done tests this branch merged with the other sessions' commits, and says whose merge broke it", () => {
+  const { root, a, b } = repo();
+  const g = (cwd, ...x) => execFileSync("git", x, { cwd, stdio: "ignore" });
+  // The test fails when both a.txt and b.txt say "x".
+  writeFileSync(join(root, "t.mjs"), `import { existsSync, readFileSync } from "node:fs"; const r = (f) => existsSync(f) && readFileSync(f, "utf8"); if (r("a.txt") === "x" && r("b.txt") === "x") process.exit(1);`);
+  g(root, "add", "-A"); g(root, "commit", "-qm", "test"); g(root, "config", "fanout.test", "node t.mjs");
+  for (const w of [a, b]) g(w, "merge", "-q", "main");
+  fan(a, ["start", "write a"]); fan(b, ["start", "write b"]);
+  writeFileSync(join(a, "a.txt"), "x"); g(a, "add", "-A"); g(a, "commit", "-qm", "a");
+  assert.match(fan(a, ["done"]).stdout, /fanout done: a works with nothing else yet/);
+  writeFileSync(join(b, "b.txt"), "y"); g(b, "add", "-A"); g(b, "commit", "-qm", "b");
+  const ok = fan(b, ["done"]);
+  assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+  assert.match(ok.stdout, /fanout done: b works with a on main \(`node t\.mjs` passes\)/);
+  writeFileSync(join(b, "b.txt"), "x"); g(b, "commit", "-qam", "b2");
+  const broke = fan(b, ["done"]);
+  assert.equal(broke.status, 1);
+  assert.match(broke.stdout, /BROKE after b/);
+  assert.match(broke.stdout, /merging b after a breaks/);
+});
+
+test("fanout init writes the two commands into AGENTS.md, replacing its own block on a rerun", () => {
+  const { root } = repo();
+  writeFileSync(join(root, "AGENTS.md"), "# Project\n\nUse tabs.\n");
+  fan(root, ["init"]); fan(root, ["init"]);
+  const text = readFileSync(join(root, "AGENTS.md"), "utf8");
+  assert.match(text, /^# Project\n\nUse tabs\.\n\n<!-- fanout -->/);
+  assert.equal(text.split("<!-- fanout -->").length, 2, "one block");
+  assert.match(text, /fanout\.mjs" start "<your task in one line>"/);
+  assert.match(text, /fanout\.mjs" done/);
+  assert.equal(execFileSync("git", ["config", "fanout.claims"], { cwd: root, encoding: "utf8" }).trim(), "true");
+});
+
+test("bare fanout shows every session, its claim and its changes", () => {
+  const { root, a } = repo();
+  fan(a, ["start", "format prices"]);
+  writeFileSync(join(a, "y.txt"), "1");
+  const r = spawnSync(process.execPath, [FANOUT], { cwd: root, encoding: "utf8", env: env() });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^a: 1 file\(s\) changed \(1 uncommitted\) \[claimed: a, format prices\]/m);
+});
+
+test("taskFromTranscript takes the latest real request, not tool results or short replies", () => {
+  const f = join(mkdtempSync(join(tmpdir(), "fanout-tr-")), "t.jsonl");
+  writeFileSync(f, [{ type: "user", message: { content: "fix the login redirect loop on /login" } }, { type: "user", message: { content: [{ type: "tool_result", content: "x" }] } },
+    { type: "user", isMeta: true, message: { content: "Caveat: the messages below were generated by the user" } }, { type: "user", message: { content: [{ type: "text", text: "yes" }] } }].map((x) => JSON.stringify(x)).join("\n"));
+  assert.equal(taskFromTranscript(f), "fix the login redirect loop on /login");
+  assert.equal(taskFromTranscript(join(tmpdir(), "missing.jsonl")), "");
 });
 
 test("a claim ends when its branch is deleted, merged, or idle for a day", () => {

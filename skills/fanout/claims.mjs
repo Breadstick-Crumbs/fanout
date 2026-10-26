@@ -1,8 +1,14 @@
 // Claims: which session is doing what, kept in git so every session of a repo sees them at once.
-//   fanout init                                   turn claims on for this repo (git config fanout.claims=true, git hook)
-//   fanout claim <name> "<task>" [files...] [--exposes a,b] [--distinct "how it differs"]
+//   fanout start "<task>" [files...]              claim this session's task (agents without hooks: AGENTS.md says so)
+//   fanout done                                   test this branch merged with the other sessions' work (fanout.mjs)
+//   fanout claim <name> "<task>" [files...] [--exposes a,b] [--distinct "how it differs"]   files named here are locked
 //   fanout claims [--all]                         live claims (--all: expired ones too)
 //   fanout release <name> [--to <branch>]         end a claim, or hand it to another branch
+//   fanout init                                   claims on for good, git hook, AGENTS.md block
+//
+// Claims are on by themselves in a repo with two or more checkouts used in the last day (claimsActive). In
+// Claude Code nothing has to be run: the session-start hook tells a session what the others are doing, and
+// on its first edit the guard claims its task for it, with the user's request as the task (autoClaim).
 //
 // The state is a commit on refs/fanout/state whose tree holds one JSON file per claim (claim-<name>.json),
 // written with git plumbing: no checkout, nothing in anyone's diff. Every worktree of a repo shares its refs,
@@ -11,11 +17,11 @@
 // at once can't lose one.
 //
 // A session is its checkout's branch. With claims on, the edit guard and the git hook refuse a file another
-// session's live claim covers, require a session to claim its task before its first edit, and add each new
-// file a session edits to its claim. A new task is checked against the live ones for the same work
-// (taskOverlap) before it is accepted.
+// session claimed by name, warn about one another session is also editing, and record each file a session
+// edits. Every new task is checked against the live ones for the same work (taskOverlap) before it's accepted.
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, statSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { matches } from "./fanout.mjs";
 
 export const REF = "refs/fanout/state";
@@ -28,6 +34,45 @@ const git = (cwd, args, input) => {
 const IDENT = ["-c", "user.name=fanout", "-c", "user.email=fanout@local"];
 
 export const claimsOn = (cwd) => git(cwd, ["config", "--get", "fanout.claims"]).out.trim() === "true";
+
+// Claims switch on by themselves where sessions run in parallel: a repo with two or more checkouts (the main
+// one and worktrees) used in the last day. `git config fanout.claims true|false` forces them on or off. A
+// checkout counts as used when its index or HEAD changed (git touches the index on every status, add and
+// commit); fanout's own lanes and rehearse copy don't count. Reads file times only: the guard runs on every edit.
+export function activeCheckouts(cwd, now = Date.now()) {
+  const common = git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).out.trim();
+  if (!common) return 0;
+  const mtime = (p) => { try { return statSync(p).mtimeMs; } catch { return 0; } };
+  const dirs = [common];
+  try { for (const d of readdirSync(join(common, "worktrees"))) {
+    const wt = join(common, "worktrees", d);
+    let to = ""; try { to = readFileSync(join(wt, "gitdir"), "utf8"); } catch { /* none */ }
+    if (!/[\\/]\.fanout[\\/]/.test(to)) dirs.push(wt);
+  } } catch { /* no worktrees */ }
+  return dirs.filter((d) => Math.max(mtime(join(d, "index")), mtime(join(d, "HEAD"))) > now - IDLE_HOURS * 3600 * 1000).length;
+}
+export function claimsActive(cwd) {
+  const v = git(cwd, ["config", "--get", "fanout.claims"]).out.trim();
+  return v === "true" ? true : v === "false" ? false : activeCheckouts(cwd) >= 2;
+}
+
+// What the user asked this session for: the latest user message of at least a few words in its Claude Code
+// transcript (hooks get its path). Tool results and fanout's own notes aren't user messages; tags such as
+// <system-reminder> blocks are dropped. Used as the task of a claim made for a session on its first edit.
+export function taskFromTranscript(path) {
+  let lines;
+  try { lines = readFileSync(path, "utf8").split("\n"); } catch { return ""; }
+  let task = "";
+  for (const l of lines) {
+    if (!l.includes('"user"')) continue;
+    let j; try { j = JSON.parse(l); } catch { continue; }
+    if (j.type !== "user" || j.isMeta) continue;
+    const c = j.message?.content, text = typeof c === "string" ? c : Array.isArray(c) ? c.filter((x) => x.type === "text").map((x) => x.text).join("\n") : "";
+    const clean = text.replace(/<([a-z][\w-]*)[^>]*>[\s\S]*?<\/\1>/gi, "").replace(/\s+/g, " ").trim();
+    if (clean.length >= 15) task = clean;
+  }
+  return task.slice(0, 600);
+}
 export const slugName = (s) => String(s).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
 export const branchOf = (cwd) => git(cwd, ["branch", "--show-current"]).out.trim() || null;
 
@@ -86,9 +131,13 @@ export function liveClaims(cwd, base) {
   return Object.values(claims).filter((c) => isLive(cwd, c, base));
 }
 
+// A claim's files and exposes are locks: no other session may change them. Its edits are the files it has
+// changed so far, recorded as it goes: another session may change them too (both may need package.json), and
+// is told who else is.
 const covers = (c, rel) => [...(c.files ?? []), ...(c.exposes ?? [])].some((g) => matches(g, rel));
-// The live claim of another branch covering rel, if any.
+// The live claim of another branch locking rel, if any.
 export const claimedByOther = (claims, branch, rel) => claims.find((c) => c.branch !== branch && covers(c, rel)) ?? null;
+export const editedByOthers = (claims, branch, rel) => claims.filter((c) => c.branch !== branch && (c.edits ?? []).includes(rel));
 
 // ---------- task overlap ----------
 // A model call compares the new task with every live one (judge). Measured with bench/task-overlap.mjs on
@@ -171,7 +220,7 @@ export function claimCmd(cwd, argv, base, script) {
   const others = live.filter((c) => c.branch !== branch);
   const clash = [...files, ...exposes].flatMap((f) => others.filter((c) => [...(c.files ?? []), ...(c.exposes ?? [])].some((g) => matches(g, f) || matches(f, g))).map((c) => `${f} (claimed by ${c.name} on ${c.branch})`));
   if (clash.length) { console.error(`fanout claim: these are already claimed:\n  ${clash.join("\n  ")}\nLeave them to that session, or ask it to release them.`); return 1; }
-  if (!distinct && !(mine && mine.task === task)) {
+  if (!distinct && !(mine && mine.task === task && !mine.refusedAs)) {
     const o = taskOverlap(task, others, cwd);
     if (o.same.length) {
       console.error(`fanout claim: this looks like the same work as:\n${o.same.map((c) => `  ${c.name} (branch ${c.branch}, ${ago(c.updated ?? c.at)} ago): ${c.task}`).join("\n")}${o.why ? `\n  (${o.why})` : ""}\n`
@@ -185,8 +234,9 @@ export function claimCmd(cwd, argv, base, script) {
   const w = writeState(cwd, (claims) => {
     for (const c of Object.values(claims)) if (!isLive(cwd, c, base)) delete claims[c.name]; // prune expired ones
     const cur = claims[name];
+    // A fresh claim clears an earlier refusal (refusedAs) for this session.
     claims[name] = { name, task, branch, path, files: [...new Set([...(cur?.files ?? []), ...files])], exposes: [...new Set([...(cur?.exposes ?? []), ...exposes])],
-      start: cur?.start ?? start, at: cur?.at ?? now, updated: now, ...(distinct ? { distinct } : {}) };
+      edits: cur?.edits ?? [], start: cur?.start ?? start, at: cur?.at ?? now, updated: now, ...(distinct ? { distinct } : {}) };
   }, `fanout: claim ${name}`);
   if (!w.ok) { console.error("fanout claim: couldn't write the claim (the state ref kept changing); try again."); return 1; }
   console.log(`claimed ${name} for ${branch}: ${task}${files.length ? ` (${files.join(", ")})` : ""}`);
@@ -194,12 +244,40 @@ export function claimCmd(cwd, argv, base, script) {
   return 0;
 }
 
+// fanout start "<task>" [files...]: claim this session's task without picking a name (its claim, or one named
+// after its branch). For agents told about fanout in AGENTS.md; Claude Code sessions are claimed on their own.
+export function startCmd(cwd, argv, base, script) {
+  const branch = branchOf(cwd);
+  if (!branch) { console.error("fanout start: check out a branch first."); return 2; }
+  const mine = liveClaims(cwd, base).filter((c) => c.branch === branch).sort((a, b) => Date.parse(b.updated ?? b.at) - Date.parse(a.updated ?? a.at))[0];
+  return claimCmd(cwd, [mine?.name ?? slugName(branch), ...argv], base, script);
+}
+
+// Claude Code sessions, on their first edit: the claim is made for them, with the user's request as the task,
+// and checked against the others like any claim. A session doing work another already claimed is stopped,
+// and stays stopped (refusedAs) until it claims something else or says how its work differs.
+export function autoClaim(cwd, branch, task, base, live) {
+  const others = live.filter((c) => c.branch !== branch);
+  const o = taskOverlap(task, others, cwd);
+  const name = slugName(branch), now = new Date().toISOString();
+  const claim = { name, task: task.slice(0, 300), branch, path: git(cwd, ["rev-parse", "--show-toplevel"]).out.trim(), files: [], exposes: [], edits: [],
+    start: git(cwd, ["rev-parse", "HEAD"]).out.trim(), at: now, updated: now, auto: true, ...(o.same.length ? { refusedAs: o.same.map((c) => c.name), why: o.why } : {}) };
+  writeState(cwd, (claims) => { if (claims[name]?.branch === branch) return false; claims[name] = claim; }, `fanout: claim ${name} (first edit)`);
+  return claim;
+}
+export const refusalText = (c, live, script) => {
+  const same = live.filter((x) => (c.refusedAs ?? []).includes(x.name));
+  return `this session's task looks like the same work as another session's:\n${same.map((x) => `  ${x.name} (branch ${x.branch}): ${x.task}`).join("\n") || `  ${c.refusedAs.join(", ")}`}${c.why ? `\n  (${c.why})` : ""}\n`
+    + `Don't do it twice: tell the user which session already has it. If the user wants a different part, claim that: node "${script}" start "<what you'll do instead>". If it really is different work: node "${script}" start "${c.task.slice(0, 80).replace(/"/g, "'")}" --distinct "<how it differs>"`;
+};
+
 export function showClaims(cwd, base, all) {
   const { claims } = readState(cwd);
   const list = Object.values(claims).map((c) => ({ ...c, live: isLive(cwd, c, base) })).filter((c) => all || c.live);
   if (!list.length) { console.log(all ? "No claims." : "No live claims."); return 0; }
   for (const c of list.sort((a, b) => (a.branch < b.branch ? -1 : 1)))
-    console.log(`${c.name}${c.live ? "" : " (expired)"}  ${c.branch}  ${ago(c.updated ?? c.at)} ago  ${c.task || "(no task)"}${c.files?.length ? `\n  files: ${c.files.join(", ")}` : ""}${c.exposes?.length ? `\n  exposes: ${c.exposes.join(", ")}` : ""}`);
+    console.log(`${c.name}${c.live ? "" : " (expired)"}${c.refusedAs ? ` (stopped: same work as ${c.refusedAs.join(", ")})` : ""}  ${c.branch}  ${ago(c.updated ?? c.at)} ago  ${c.task || "(no task)"}`
+      + `${c.files?.length ? `\n  files: ${c.files.join(", ")}` : ""}${c.exposes?.length ? `\n  exposes: ${c.exposes.join(", ")}` : ""}${c.edits?.length ? `\n  editing: ${c.edits.join(", ")}` : ""}`);
   return 0;
 }
 
@@ -219,22 +297,28 @@ export function releaseCmd(cwd, argv) {
   return 0;
 }
 
-// The block AGENTS.md / CLAUDE.md gets, so any agent knows the rules before the hooks have to stop it.
-export const agentsBlock = (script) => `<!-- fanout claims -->
-## Working alongside other sessions (fanout)
+// The block fanout init puts in AGENTS.md, for agents without fanout's hooks (Codex and others): two commands,
+// with this machine's path to the fanout script.
+const BLOCK_START = "<!-- fanout -->", BLOCK_END = "<!-- /fanout -->";
+export const agentsBlock = (script) => `${BLOCK_START}
+## Other sessions may be working here too (fanout)
 
-Other agent sessions may be working in this repo at the same time. Before you change anything:
-1. \`node "${script}" claims\` to see what the others are doing. Don't start work another session has claimed.
-2. \`node "${script}" claim <short-name> "<what you're doing>" [files you'll change]\` to claim your task. If it says the work is already claimed, pick other work or coordinate; don't do it twice.
-3. Edit only files no other session has claimed. Files you edit are added to your claim.
-When you're finished and merged, your claim ends by itself; \`node "${script}" release <short-name>\` ends it early.
-<!-- /fanout claims -->`;
+- Before you change anything, run \`node "${script}" start "<your task in one line>"\`. It shows what the other sessions are doing and claims your task. If it says another session already has that work, don't do it: tell the user which one has it.
+- When you've committed, run \`node "${script}" done\`. It tests your branch merged with the other sessions' work and says if one breaks the other.
+${BLOCK_END}`;
 
+// Turns claims on for good (not only when two sessions are active), installs the git hook, and writes the
+// AGENTS.md block (replacing an earlier one) so agents without hooks know the two commands.
 export function initCmd(cwd, script, installHook, argv) {
   git(cwd, ["config", "fanout.claims", "true"]);
   const hook = installHook(cwd, argv.includes("--force"));
-  console.log(`Claims are on for this repo. Sessions must claim a task before their first edit, and can't edit files another session has claimed.`);
+  const root = git(cwd, ["rev-parse", "--show-toplevel"]).out.trim(), file = join(root, "AGENTS.md");
+  let text = ""; try { text = readFileSync(file, "utf8"); } catch { /* new file */ }
+  const block = agentsBlock(script), i = text.indexOf(BLOCK_START), j = text.indexOf(BLOCK_END);
+  text = i >= 0 && j > i ? text.slice(0, i) + block + text.slice(j + BLOCK_END.length) : `${text}${text && !text.endsWith("\n") ? "\n" : ""}${text ? "\n" : ""}${block}\n`;
+  writeFileSync(file, text);
+  console.log(`Claims are on for this repo. Each session's task is claimed before its first edit; work another session already has is refused.`);
   if (hook) console.log("(The git hook wasn't installed, so only Claude Code sessions are held to claims; see above.)");
-  console.log(`\nAdd this to AGENTS.md and/or CLAUDE.md so agents know before they're stopped:\n\n${agentsBlock(script)}`);
+  console.log(`Wrote the instructions for agents without fanout's hooks (Codex and others) to AGENTS.md. Commit it so every session sees it.`);
   return 0;
 }

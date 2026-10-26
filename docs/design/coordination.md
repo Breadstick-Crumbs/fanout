@@ -1,6 +1,8 @@
 # Design: claims, shared state and messages
 
-Status: step 1 (claims, with the task check) built in v0.23; the rest is a draft for review.
+Status: step 1 (claims, with the task check) built in v0.23, made zero-setup in v0.24 (below); the rest is a draft for review.
+
+**v0.24, zero setup.** Claims switch on by themselves in a repo with two or more checkouts used in the last day (`git config fanout.claims` overrides). In Claude Code a session runs no command: the session-start hook tells it what the others are doing, and its first edit claims its task from the user's latest request in the transcript (the hook input carries the transcript path), with the same Sonnet check; a refused session stays stopped until it claims something else or says how its work differs. Files a session edits are recorded as *edits*, which other sessions may still change (they're told who else is, once); only files claimed by name are locked, since two sessions often both need `package.json`. Agents without hooks get two commands in `AGENTS.md` (`fanout init` writes it): `start "<task>"` and `done`, which tests the branch merged with the other claimed branches' commits (rehearse on any branch names). Checked with real Sonnet sessions that had no fanout instructions: the duplicate session stopped both when it started after the other and when both started at once.
 
 ## Goal
 

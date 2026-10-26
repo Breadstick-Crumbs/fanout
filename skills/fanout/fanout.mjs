@@ -13,7 +13,8 @@ import { readFileSync, writeFileSync, appendFileSync, mkdirSync, chmodSync, exis
 import { execFileSync, spawnSync } from "node:child_process";
 import { resolve, relative, isAbsolute, join, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { claimsOn, branchOf, liveClaims, claimedByOther, writeState, claimCmd, showClaims, releaseCmd, initCmd } from "./claims.mjs";
+import { claimsActive, branchOf, liveClaims, claimedByOther, editedByOthers, writeState, autoClaim, refusalText, taskFromTranscript,
+  claimCmd, startCmd, showClaims, releaseCmd, initCmd } from "./claims.mjs";
 
 const SESSION_KEYS = ["owns", "after", "exposes", "uses", "done", "task", "check", "agent", "model"];
 const PLAN_KEYS = ["test", "regen"];
@@ -219,7 +220,7 @@ const defaultPlan = (cwd) => resolve(mainRoot(cwd), ".fanout", "plan.md");
 // A session's "check:" is a command proving its own done: (a grep, a curl, a script). The test alone can
 // pass on code that doesn't do the job (a lint can't see a dead link or a missing switch), so once all
 // branches merge and pass, each session's check runs on the merged code; a failure names that session.
-export function rehearse(order, { cwd, base = "main", test, regen = [], checks = [], tail = 20 }) {
+export function rehearse(order, { cwd, base = "main", test, regen = [], checks = [], tail = 20, prefix = BRANCH_PREFIX }) {
   const log = [], root = mainRoot(cwd), wt = join(root, ".fanout", "rehearse");
   let testRuns = 0;
   const sh = (cmd) => { if (cmd === test) testRuns++; return spawnSync(cmd, { cwd: wt, shell: true, encoding: "utf8" }); };
@@ -233,7 +234,7 @@ export function rehearse(order, { cwd, base = "main", test, regen = [], checks =
   try {
     const merged = [[base, g("rev-parse", "HEAD").trim()]]; // [name, commit]: merged[k] = state after k merges
     for (const name of order) {
-      const branch = BRANCH_PREFIX + name;
+      const branch = prefix + name; // fanout/<name>, or any branch with prefix ""
       try { git(["rev-parse", "--verify", "--quiet", branch], root); }
       catch { log.push(`SKIP ${name}: no branch ${branch}`); continue; }
       try { g("merge", "--no-ff", "--no-edit", branch); }
@@ -442,7 +443,7 @@ export function checkoutOverlap(cwd, base, { activeHours = 24 } = {}) {
 function showOverlap(cwd, base, all) {
   const { checkouts, pairs, idle } = checkoutOverlap(cwd, base, { activeHours: all ? null : 24 });
   const skipped = idle ? ` (${idle} older checkout(s) with no recent work skipped; --all shows them)` : "";
-  const claims = liveClaims(cwd, base), on = claimsOn(cwd);
+  const claims = liveClaims(cwd, base), on = claimsActive(cwd);
   const claimOf = (branch) => claims.filter((c) => c.branch === branch).map((c) => `claimed: ${c.name}, ${c.task || "no task"}`).join("; ") || (on ? "no claim" : "");
   if (!checkouts.length) {
     console.log(`No active checkout has changes against ${base}${skipped}.`);
@@ -466,8 +467,9 @@ function showOverlap(cwd, base, all) {
 const explicitPlan = (argv) => (argv[1] && !argv[1].startsWith("--") ? argv[1] : null);
 
 function main(argv) {
-  const cmd = argv[0];
+  const cmd = argv[0] ?? "overlap"; // bare `fanout`: every session, claim and overlap at once
   if (cmd === "guard") return guard(argv);
+  if (cmd === "session-start") return sessionStart();
   if (cmd === "run") return import("./run.mjs").then((m) => m.cli(argv.slice(1)));
   const cwd = resolve(arg(argv, "--cwd", process.cwd()));
   if (cmd === "precommit") return precommit(cwd);
@@ -476,17 +478,22 @@ function main(argv) {
   if (cmd === "overlap") return showOverlap(cwd, arg(argv, "--base") ?? repoDefaultBranch(cwd), argv.includes("--all"));
   if (cmd === "log") return showLog(cwd, Number(arg(argv, "--last", "20")));
   const SCRIPT = norm(fileURLToPath(import.meta.url));
+  if (cmd === "start") return startCmd(cwd, argv.slice(1), arg(argv, "--base") ?? defaultBase(cwd), SCRIPT);
+  if (cmd === "done") return doneCmd(cwd, argv);
   if (cmd === "claim") return claimCmd(cwd, argv.slice(1), arg(argv, "--base") ?? defaultBase(cwd), SCRIPT);
   if (cmd === "claims") return showClaims(cwd, arg(argv, "--base") ?? defaultBase(cwd), argv.includes("--all"));
   if (cmd === "release") return releaseCmd(cwd, argv.slice(1));
   if (cmd === "init") return initCmd(cwd, SCRIPT, installHook, argv);
   if (!["check", "verify", "rehearse"].includes(cmd)) {
     const help = cmd === "--help" || cmd === "-h" || cmd === "help";
-    (help ? console.log : console.error)(`usage: fanout <command>
-  run ["goal" | --goal-file f] [--yes]   the whole fan-out: plan, agents, rehearse, fix, merge (fanout run --help)
-  overlap [--base <branch>] [--all]       no plan needed: which checkouts change the same files, would they conflict
-  init                                    turn on claims for this repo: sessions claim their task and files before editing
-  claim <name> "<task>" [files...]        claim a task (refused if another session is doing the same work)
+    (help ? console.log : console.error)(`usage: fanout [command]
+  (no command)                            every session in this repo, what each has claimed and changed, and overlaps
+  start "<task>" [files...]               claim this session's task (refused if another session has the same work)
+  done                                    test this branch merged with the other sessions' work
+  run ["goal" | --goal-file f] [--yes]   split a job across agents: plan, agents, rehearse, fix, merge (fanout run --help)
+  overlap [--base <branch>] [--all]       same as no command
+  init                                    claims on for good in this repo (they also switch on by themselves with 2+ active sessions)
+  claim <name> "<task>" [files...]        claim a task by name; the files named are locked for other sessions
   claims [--all]                          what every session has claimed
   release <name> [--to <branch>]          end a claim, or hand it over
   check [plan.md]                         is the plan safe? prints the merge order
@@ -563,7 +570,7 @@ function guard() {
   try { input = JSON.parse(readFileSync(0, "utf8")); } catch { return 0; }
   const targets = editTargets(input.tool_input);
   if (!targets.length) return 0;
-  const cwd = input.cwd ?? process.cwd();
+  const cwd = input.cwd ?? process.cwd(), notes = [];
   // The session comes from the checkout the file is in, not the agent's cwd, so a subagent or
   // parallel session working from the main checkout is still held to its lane's plan.
   const why = targets.map((t) => {
@@ -577,32 +584,80 @@ function guard() {
     // A fanout run's lane follows its plan; any other checkout follows the claims, where they're on.
     const ctx = loadSession(dir);
     if (ctx) return blockReason(ctx.sessions, ctx.s, ctx.regen, rel);
-    return claimsOn(root) ? claimReason(root, [rel]) : null;
+    if (!claimsActive(root)) return null;
+    const r = claimReason(root, [rel], { transcript: input.transcript_path });
+    notes.push(...r.notes);
+    return r.block;
   }).filter(Boolean);
   why.forEach((w) => console.error("fanout: " + w));
-  return why.length ? 2 : 0;
+  if (why.length) return 2;
+  // Allowed, with a note for the agent (a file another session is also changing).
+  if (notes.length) console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: notes.join("\n") } }));
+  return 0;
 }
 
-// With claims on: why this checkout's session may not change these files, or null. A file another session's
-// live claim covers is refused; a session with no claim must claim its task first (that is what lets a
-// second session asking for the same work be told); a new file is added to the session's latest claim.
-// Ignored files (build output, node_modules) and fanout's own folder are left alone.
-export function claimReason(root, rels) {
+// With claims on: { block, notes } for this checkout's session changing these files. A session with no
+// claim yet gets one (autoClaim: the user's request from its transcript as the task, checked for the same
+// work as another session's); a session whose task was refused as duplicate work is stopped. A file another
+// session claimed by name is refused; one another session is also editing is allowed with a note, the
+// first time. Each file is recorded in the session's edits. Ignored files (build output, node_modules) and
+// fanout's own folder are left alone.
+export function claimReason(root, rels, { transcript } = {}) {
   const files = rels.filter((f) => !f.startsWith(".fanout/") && spawnSync("git", ["check-ignore", "-q", "--", f], { cwd: root }).status !== 0);
   const branch = branchOf(root);
-  if (!files.length || !branch) return null;
-  const live = liveClaims(root, defaultBase(root)), script = norm(fileURLToPath(import.meta.url));
+  if (!files.length || !branch) return { block: null, notes: [] };
+  const base = defaultBase(root), live = liveClaims(root, base), script = norm(fileURLToPath(import.meta.url));
+  let mine = live.filter((c) => c.branch === branch).sort((a, b) => Date.parse(b.updated ?? b.at) - Date.parse(a.updated ?? a.at))[0];
+  if (!mine) mine = autoClaim(root, branch, transcript ? taskFromTranscript(transcript) : "", base, live);
+  if (mine.refusedAs?.length) return { block: refusalText(mine, live, script), notes: [] };
   const taken = files.map((f) => [f, claimedByOther(live, branch, f)]).filter(([, c]) => c);
-  if (taken.length) return taken.map(([f, c]) => `${f} is claimed by session "${c.name}" (branch ${c.branch}: ${c.task || "no task given"}). Leave it to that session: work on something else, or coordinate with it. If that session is finished or abandoned: node "${script}" release ${c.name}`).join("\n");
-  const mine = live.filter((c) => c.branch === branch).sort((a, b) => Date.parse(b.updated ?? b.at) - Date.parse(a.updated ?? a.at));
-  if (!mine.length) return `claims are on in this repo, and this session (branch ${branch}) hasn't claimed its task yet. First see what the others are doing: node "${script}" claims\nThen claim yours: node "${script}" claim <short-name> "<what you're doing>" [files you'll change]`;
-  const add = files.filter((f) => !mine.some((c) => [...(c.files ?? []), ...(c.exposes ?? [])].some((g) => matches(g, f))));
-  if (add.length) writeState(root, (claims) => {
-    const c = claims[mine[0].name];
+  if (taken.length) return { block: taken.map(([f, c]) => `${f} is claimed by session "${c.name}" (branch ${c.branch}: ${c.task || "no task given"}). Leave it to that session: work on something else, or coordinate with it. If that session is finished or abandoned: node "${script}" release ${c.name}`).join("\n"), notes: [] };
+  const fresh = files.filter((f) => !(mine.edits ?? []).includes(f));
+  const notes = fresh.flatMap((f) => { const o = editedByOthers(live, branch, f); return o.length ? [`fanout: ${f} is also being changed by ${o.map((c) => `session "${c.name}" (branch ${c.branch}: ${c.task || "no task given"})`).join(" and ")}. Keep your change to it small and compatible with theirs.`] : []; });
+  if (fresh.length) writeState(root, (claims) => {
+    const c = claims[mine.name];
     if (!c) return false;
-    c.files = [...new Set([...(c.files ?? []), ...add])]; c.updated = new Date().toISOString();
-  }, `fanout: ${mine[0].name} edits ${add.join(", ")}`);
-  return null;
+    c.edits = [...new Set([...(c.edits ?? []), ...fresh])]; c.updated = new Date().toISOString();
+  }, `fanout: ${mine.name} edits ${fresh.join(", ")}`);
+  return { block: null, notes };
+}
+
+// SessionStart hook (Claude Code): tells a new session what the others in this repo are doing, before it
+// plans anything. Prints nothing when claims are off or nobody else has claimed anything.
+function sessionStart() {
+  let input = {};
+  try { input = JSON.parse(readFileSync(0, "utf8")); } catch { return 0; }
+  const cwd = input.cwd ?? process.cwd();
+  let root;
+  try { root = git(["rev-parse", "--show-toplevel"], cwd).trim(); } catch { return 0; }
+  if (loadSession(root) || !claimsActive(root)) return 0;
+  const branch = branchOf(root), others = liveClaims(root, defaultBase(root)).filter((c) => c.branch !== branch && !c.refusedAs);
+  if (!others.length) return 0;
+  const text = `fanout: other sessions are working in this repo right now:\n${others.slice(0, 12).map((c) => `- ${c.name} (branch ${c.branch}): ${c.task || "no task given"}${c.files?.length ? ` [claimed files: ${c.files.join(", ")}]` : ""}`).join("\n")}\n`
+    + `Don't do their work. Your task is claimed for you on your first edit, and refused if another session already has the same work.`;
+  console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text } }));
+  return 0;
+}
+
+// fanout done: this branch's commits merged with every other session's that has a live claim, on a scratch
+// copy, and the test run once (rehearse, bisecting only on failure). Says whose merge broke it.
+function doneCmd(cwd, argv) {
+  const root = mainRoot(cwd), branch = branchOf(cwd), base = arg(argv, "--base") ?? defaultBase(cwd);
+  if (!branch || branch === base) { console.error(`fanout done: run it in a session's own branch (not ${base}), after committing.`); return 2; }
+  let test = arg(argv, "--test") ?? (spawnSync("git", ["config", "--get", "fanout.test"], { cwd, encoding: "utf8" }).stdout ?? "").trim();
+  try { if (!test) test = planSetting(readFileSync(defaultPlan(cwd), "utf8"), "test"); } catch { /* no plan */ }
+  try { if (!test && JSON.parse(readFileSync(join(root, "package.json"), "utf8")).scripts?.test) test = "npm test"; } catch { /* no package.json */ }
+  const ahead = (b) => Number(spawnSync("git", ["rev-list", "--count", `${base}..${b}`], { cwd: root, encoding: "utf8" }).stdout) || 0;
+  const others = [...new Set(liveClaims(root, base).filter((c) => c.branch !== branch && c.branch !== base && ahead(c.branch)).sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).map((c) => c.branch))];
+  if (git(["status", "--porcelain", "--untracked-files=no"], cwd).trim()) console.log("fanout done: you have uncommitted changes; only commits are tested. Commit first for a full check.");
+  if (!ahead(branch)) { console.error(`fanout done: ${branch} has no commits on top of ${base} yet.`); return 2; }
+  const { ok, log } = rehearse([...others, branch], { cwd: root, base, test, prefix: "" });
+  log.forEach((l) => console.log(l));
+  const head = log.find((l) => /^(BROKE after|CONFLICT merging|REGEN FAILED after) /.test(l)) ?? "", who = head.match(/(?:after|merging) (\S+?):?(?:\s|$)/)?.[1];
+  if (ok) console.log(`fanout done: ${branch} works with ${others.length ? others.join(", ") : "nothing else yet (no other session has commits)"} on ${base}${test ? ` (\`${test}\` passes)` : " (no test command: merges only; set one with git config fanout.test \"<cmd>\")"}.`);
+  else if (who === branch) console.log(`fanout done: merging ${branch} after ${others.join(", ") || base} breaks (above). Fix it on your branch.`);
+  else if (who) console.log(`fanout done: it already breaks at ${who}, before your branch is merged (above): that session's work, not yours.`);
+  return ok ? 0 : 1;
 }
 
 // git pre-commit hook: the same rules on staged files, so agents outside Claude Code are held to the plan
@@ -611,9 +666,11 @@ function precommit(cwd) {
   const ctx = loadSession(cwd);
   const staged = git(["diff", "--cached", "--name-only"], cwd).split("\n").filter(Boolean);
   if (!ctx) {
-    const why = claimsOn(cwd) ? claimReason(cwd, staged) : null;
-    if (why) why.split("\n").forEach((w) => console.error("fanout: " + w));
-    return why ? 1 : 0;
+    if (!claimsActive(cwd)) return 0;
+    const { block, notes } = claimReason(cwd, staged);
+    notes.forEach((n) => console.error(n));
+    if (block) block.split("\n").forEach((w) => console.error("fanout: " + w));
+    return block ? 1 : 0;
   }
   const why = staged.map((f) => blockReason(ctx.sessions, ctx.s, ctx.regen, f)).filter(Boolean);
   why.forEach((w) => console.error("fanout: " + w));
