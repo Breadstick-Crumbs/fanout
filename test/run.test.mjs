@@ -537,3 +537,21 @@ test("fanout run --help prints the options and starts nothing, even with a plan 
 test("the plan's test and check commands are allowed for session agents, as written", () => {
   assert.deepEqual(allowCommands(["bash tools/check-theme.sh", "", undefined, `node -e "x"`, "a, b"]), ["Bash(bash tools/check-theme.sh)"]);
 });
+
+test("plan commands run in sh syntax on every platform (Git's bash on Windows): a check with ! passes", () => {
+  useFake();
+  const repo = mkRepo("test: node -e 0\n\n## a\nowns: a.txt\ntask: a\ncheck: ! grep -q nothing-here a.txt && test -f a.txt\n");
+  const r = runCli(repo);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /rehearse: all branches merge and pass together/);
+});
+
+test("a fix round that changes nothing stops the run instead of trying again", () => {
+  useFake();
+  const repo = mkRepo("test: node -e 0\n\n## a\nowns: a.txt\ntask: a\ncheck: ! test -f a.txt\n");
+  const r = runCli(repo);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /stopped: a's fix agent changed nothing, so the same failure would come back/);
+  assert.equal(calls().filter((c) => c.args.includes("--resume")).length, 1, "one fix round, not --fixes 2");
+  assert.match(runLog(repo), /"result":"stopped: a fix changed nothing"/);
+});

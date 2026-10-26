@@ -369,3 +369,68 @@ test("the judge is asked to reason before it decides, about every live session",
   assert.match(p, /^- ui: \(no task given\)$/m);
   assert.match(p, /"reason": .*"same": true\|false/);
 });
+
+const noticeT = (cwd, tool, file, extra) => spawnSync(process.execPath, [FANOUT, "notice"], { cwd, encoding: "utf8", env: env(extra), input: JSON.stringify({ cwd, tool_name: tool, tool_input: file ? { file_path: join(cwd, file) } : { command: "ls" } }) });
+const noticeText = (r) => (r.stdout ? JSON.parse(r.stdout).reason : "");
+
+test("a session is told, once, when another commits changes to a file it has read; work merged into the base counts too", () => {
+  const { root, a, b } = repo();
+  const g = (cwd, ...x) => execFileSync("git", x, { cwd, stdio: "ignore" });
+  fan(a, ["start", "print receipts"]); fan(b, ["start", "prices in cents"]);
+  assert.equal(noticeT(a, "Read", "x.txt").stdout, "", "nothing changed elsewhere yet");
+  writeFileSync(join(b, "x.txt"), "2"); writeFileSync(join(b, "y.txt"), "new"); g(b, "add", "-A"); g(b, "commit", "-qm", "b work");
+  const t = noticeText(noticeT(a, "Bash"));
+  assert.match(t, /Session "b" \(branch b: prices in cents\) committed change x\.txt, which this session has read or edited/);
+  assert.match(t, /^\+2$/m, "with the diff");
+  assert.doesNotMatch(t, /y\.txt/, "only files this session uses");
+  assert.match(t, /git merge b/);
+  assert.equal(noticeT(a, "Bash").stdout, "", "told once");
+  assert.equal(noticeT(a, "Read", "y.txt").stdout !== "", true, "a file read later that the other changed is news");
+  writeFileSync(join(b, "x.txt"), "3"); g(b, "commit", "-qam", "more");
+  assert.match(noticeText(noticeT(a, "Bash")), /^\+3$/m, "a newer commit to the same file is news again");
+  assert.equal(noticeT(b, "Bash").stdout, "", "a session isn't told about its own commits");
+  // Merged into main (b's claim ends): main's new commits are noticed by a session that branched before.
+  const { root: r2, a: a2, b: b2 } = repo();
+  fan(a2, ["start", "print receipts"]);
+  noticeT(a2, "Read", "x.txt");
+  writeFileSync(join(r2, "x.txt"), "9"); g(r2, "commit", "-qam", "merged work");
+  assert.match(noticeText(noticeT(a2, "Bash")), /New commits on main \(work merged since this session started\) change x\.txt/);
+  assert.equal(noticeT(a2, "Bash", null, { FANOUT_NOTICES: "off" }).stdout, "", "FANOUT_NOTICES=off silences it");
+  void root; void b2;
+});
+
+test("notices stay silent where claims are off", () => {
+  const { a, b } = repo();
+  const g = (cwd, ...x) => execFileSync("git", x, { cwd, stdio: "ignore" });
+  g(a, "config", "fanout.claims", "false");
+  noticeT(a, "Read", "x.txt");
+  writeFileSync(join(b, "x.txt"), "2"); g(b, "commit", "-qam", "b");
+  assert.equal(noticeT(a, "Bash").stdout, "");
+});
+
+test("edits made through the shell are claimed after the fact: the task, a duplicate, a locked file", () => {
+  const { root, a, b } = repo();
+  const transcript = (t) => { const f = join(dir, `t-${Math.random()}.jsonl`); writeFileSync(f, JSON.stringify({ type: "user", message: { content: t } }) + "\n"); return f; };
+  const bashT = (cwd, task, extra) => spawnSync(process.execPath, [FANOUT, "notice"], { cwd, encoding: "utf8", env: env(extra), input: JSON.stringify({ cwd, tool_name: "Bash", tool_input: { command: "python edit.py" }, transcript_path: transcript(task) }) });
+  assert.equal(bashT(a, "add a dark mode toggle to the settings page").stdout, "", "no change, no claim");
+  assert.equal(readState(root).claims.a, undefined);
+  writeFileSync(join(a, "settings.js"), "dark");
+  assert.equal(bashT(a, "add a dark mode toggle to the settings page").status, 0);
+  assert.equal(readState(root).claims.a.task, "add a dark mode toggle to the settings page");
+  assert.deepEqual(readState(root).claims.a.edits, ["settings.js"]);
+  writeFileSync(join(b, "theme.css"), "night");
+  const dup = bashT(b, "users want a dark theme they can switch on", { FAKE_SAME_IF: "dark" });
+  const out = JSON.parse(dup.stdout);
+  assert.equal(out.decision, "block");
+  assert.match(out.reason, /that command changed files, and this session's task looks like the same work as another session's:\n {2}a \(branch a\)/);
+  assert.match(out.reason, /Undo your change/);
+  // A file claimed by name, changed from the shell in another session.
+  fan(a, ["claim", "money", "format prices", "money.txt"]);
+  const { root: r2, a: a2, b: b2 } = repo();
+  fan(a2, ["claim", "money", "format prices", "money.txt"]);
+  writeFileSync(join(b2, "money.txt"), "mine");
+  const locked = JSON.parse(bashT(b2, "print receipts for orders").stdout);
+  assert.match(locked.reason, /money\.txt is claimed by session "money"/);
+  assert.equal(bashT(b2, "print receipts for orders").stdout, "", "reported once");
+  void r2;
+});

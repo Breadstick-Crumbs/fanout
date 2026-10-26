@@ -21,7 +21,7 @@
 // edits. Every new task is checked against the live ones for the same work (taskOverlap) before it's accepted.
 import { spawnSync } from "node:child_process";
 import { existsSync, statSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { matches } from "./fanout.mjs";
 
@@ -40,8 +40,7 @@ export const claimsOn = (cwd) => git(cwd, ["config", "--get", "fanout.claims"]).
 // one and worktrees) used in the last day. `git config fanout.claims true|false` forces them on or off. A
 // checkout counts as used when its index or HEAD changed (git touches the index on every status, add and
 // commit); fanout's own lanes and rehearse copy don't count. Reads file times only: the guard runs on every edit.
-export function activeCheckouts(cwd, now = Date.now()) {
-  const common = git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).out.trim();
+export function activeCheckouts(cwd, now = Date.now(), common = git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).out.trim()) {
   if (!common) return 0;
   const mtime = (p) => { try { return statSync(p).mtimeMs; } catch { return 0; } };
   const dirs = [common];
@@ -51,6 +50,40 @@ export function activeCheckouts(cwd, now = Date.now()) {
     if (!/[\\/]\.fanout[\\/]/.test(to)) dirs.push(wt);
   } } catch { /* no worktrees */ }
   return dirs.filter((d) => Math.max(mtime(join(d, "index")), mtime(join(d, "HEAD"))) > now - IDLE_HOURS * 3600 * 1000).length;
+}
+// The same facts for a hook that runs after every tool call, from git's own files instead of git: each git call
+// took about 60ms on Windows, and the hook needed six (400ms per tool call). { root, gitDir, common, branch,
+// claims, notices } or null outside a repo. Only the repository's own config is read for fanout.* settings.
+export function repoInfo(cwd) {
+  let dir = cwd;
+  for (;;) {
+    const dot = join(dir, ".git");
+    if (existsSync(dot)) {
+      let gitDir = dot;
+      try { if (!statSync(dot).isDirectory()) gitDir = resolve(dir, readFileSync(dot, "utf8").match(/^gitdir:\s*(.+)$/m)[1].trim()); } catch { return null; }
+      let common = gitDir;
+      try { common = resolve(gitDir, readFileSync(join(gitDir, "commondir"), "utf8").trim()); } catch { /* the main checkout */ }
+      let head = "", config = "";
+      try { head = readFileSync(join(gitDir, "HEAD"), "utf8"); } catch { /* none */ }
+      try { config = readFileSync(join(common, "config"), "utf8"); } catch { /* none */ }
+      const section = config.match(/^\[fanout\][^\n]*\n((?:(?!\[)[^\n]*\n?)*)/m)?.[1] ?? "";
+      const setting = (k) => section.match(new RegExp(`^\\s*${k}\\s*=\\s*(\\S+)`, "mi"))?.[1]?.toLowerCase();
+      const branch = head.match(/^ref: refs\/heads\/(.+)$/m)?.[1]?.trim() ?? null;
+      const c = setting("claims");
+      return { root: dir, gitDir, common, branch, claims: c === "true" ? true : c === "false" ? false : activeCheckouts(dir, Date.now(), common) >= 2, notices: setting("notices") !== "false" };
+    }
+    const up = dirname(dir);
+    if (up === dir) return null;
+    dir = up;
+  }
+}
+// Newest change to any branch tip (loose refs or packed-refs): when it hasn't moved, no session has committed.
+export function refsStamp(common) {
+  let t = 0;
+  const walk = (d) => { try { for (const e of readdirSync(d, { withFileTypes: true })) { const p = join(d, e.name); if (e.isDirectory()) walk(p); else t = Math.max(t, statSync(p).mtimeMs); } } catch { /* none */ } };
+  walk(join(common, "refs", "heads"));
+  try { t = Math.max(t, statSync(join(common, "packed-refs")).mtimeMs); } catch { /* none */ }
+  return t;
 }
 export function claimsActive(cwd) {
   const v = git(cwd, ["config", "--get", "fanout.claims"]).out.trim();
@@ -257,6 +290,58 @@ export function taskOverlap(task, others, cwd) {
   const j = judge(task, others, cwd);
   if (!j) return { same: [], by: "unchecked" };
   return { same: others.filter((c) => j.same.includes(c.name)), why: j.why, by: "judge", costUsd: j.costUsd };
+}
+
+// ---------- notices ----------
+// A running session is told when another session commits changes to a file it has read or edited: its own
+// checkout still has the old code, and a clean merge can break anyway (two parallel patches that each pass
+// alone, Xia et al. 2026: a message describing the other change recovered 82% of such breaks). The base branch
+// counts as a session too, so work merged into it while this session runs is noticed the same way.
+// Runs after every tool call (PostToolUse), so the common case costs no git call at all: no branch tip has moved
+// (refsStamp) and the file just read or edited isn't one another session changed (the lists kept from the last
+// check). What this session has read, and what it was told about each branch, live in a file in its own git dir
+// (not on the shared ref: a write per Read would be a write for every session to see).
+const NOTICE_DIFF_LINES = 60;
+// Returns the notice text ("" when there's nothing new). read: a file this tool call read; edited: files it changed.
+export function notices(root, gitDir, branch, base, { read, edited = [], common = gitDir } = {}) {
+  const file = join(gitDir, "fanout-notices.json"), stamp = refsStamp(common);
+  let st; try { st = JSON.parse(readFileSync(file, "utf8")); } catch { st = { reads: [], changed: {}, told: {} }; }
+  const save = () => writeFileSync(file, JSON.stringify(st));
+  const touched = [read, ...edited].filter(Boolean), newRead = read && !st.reads.includes(read);
+  if (newRead) st.reads.push(read);
+  if (stamp === st.stamp && !touched.some((f) => Object.values(st.changed).some((c) => c.files.includes(f)))) { if (newRead) save(); return ""; }
+  st.stamp = stamp;
+  const tips = {};
+  for (const l of git(root, ["for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads"]).out.split("\n")) { const [b, t] = l.split(" "); if (b && b !== branch) tips[b] = t; }
+  const live = liveClaims(root, base), mineClaim = live.find((c) => c.branch === branch);
+  const mine = new Set([...st.reads, ...(mineClaim?.edits ?? []), ...edited]);
+  const sessions = [...live.filter((c) => c.branch !== branch), ...(base && base !== branch && tips[base] ? [{ branch: base, name: base, base: true }] : [])];
+  const out = [], changedNow = {};
+  for (const c of sessions) {
+    const tip = tips[c.branch];
+    if (!tip) continue;
+    // Every file the other side changed since this session's code split from it (kept for the fast path), of
+    // those this session uses, minus what it was already told at this tip; a newer tip makes them news again.
+    const prev = st.changed[c.branch];
+    if (prev?.tip === tip) changedNow[c.branch] = prev;
+    else {
+      const from = git(root, ["merge-base", "HEAD", tip]).out.trim();
+      changedNow[c.branch] = { tip, from, files: from && from !== tip ? git(root, ["diff", "--name-only", from, tip]).out.split("\n").filter(Boolean) : [] };
+    }
+    const { from, files } = changedNow[c.branch], told = st.told[c.branch] ?? { tip: null, files: [] };
+    const sinceTold = told.tip && told.tip !== tip ? git(root, ["diff", "--name-only", told.tip, tip]).out.split("\n") : [];
+    const hits = files.filter((f) => mine.has(f)), fresh = hits.filter((f) => !told.files.includes(f) || sinceTold.includes(f));
+    st.told[c.branch] = { tip, files: [...new Set([...told.files.filter((f) => !sinceTold.includes(f)), ...hits])] };
+    if (!fresh.length) continue;
+    const diff = git(root, ["diff", from, tip, "--", ...fresh]).out.split("\n");
+    const shown = diff.slice(0, NOTICE_DIFF_LINES).join("\n") + (diff.length > NOTICE_DIFF_LINES ? `\n... (${diff.length - NOTICE_DIFF_LINES} more lines: git diff ${from.slice(0, 9)} ${c.branch} -- ${fresh.join(" ")})` : "");
+    const who = c.base ? `New commits on ${c.branch} (work merged since this session started)` : `Session "${c.name}" (branch ${c.branch}${c.task ? `: ${c.task.slice(0, 120)}` : ""}) committed`;
+    out.push(`fanout: ${who} change ${fresh.join(", ")}, which this session has read or edited. Your checkout still has the old version:\n${shown}\n`
+      + `If your work depends on this code, build against the new version: bring it in (git merge ${c.branch}) or ask the user, rather than writing code that only works with the old one.`);
+  }
+  st.changed = changedNow;
+  save();
+  return out.join("\n\n");
 }
 
 // ---------- commands ----------

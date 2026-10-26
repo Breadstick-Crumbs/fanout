@@ -449,6 +449,26 @@ One run each.
 
 One run per row.
 
+### Notices between sessions (v0.26)
+
+A session is now told when another session (or the base branch) commits changes to a file it has read or edited, with the diff, by a `PostToolUse` hook. The test was built so that a break is certain unless the session hears of the other's change: two headless Sonnet sessions in one repo with the plugin's hooks and nothing about fanout in their tasks. b changes `formatPrice(cents)` to `formatPrice(cents, currency)`, which throws without a currency, and commits after about 20–35s. a builds a receipt on `formatPrice` (60–90s) and commits. Then both branches are merged on main and a hidden check renders a EUR receipt. One run per row:
+
+| Arm | Runs | b committed before a finished | Notice reached a | a acted on it | Hidden check passed | Cost per run |
+|---|---|---|---|---|---|---|
+| No notices | 3 | 1 | - | - | 0 | $0.07 |
+| Notice as added context | 3 | 3 | 3 | 0 | 0 | $0.08–0.10 |
+| Same, sessions edit only through the shell | 2 | 1 | 1 | 0 | 0 | $0.08–0.14 |
+| Notice as hook feedback (`decision: block`) | 3 | 3 | 3 | 3 | 2 | $0.08–0.09 |
+
+- **Sent as added context, the notice was delivered every time and ignored every time.** a never mentioned it, and committed code calling the old `formatPrice`.
+- **Sent as hook feedback, a acted on it every time.** Twice it wrote the receipt to pass the cart's currency, and the merged code passed. Once it didn't commit and told the user its code would break against the other branch's pending change, which counts as a fail here but is the right call. So notices go out as feedback.
+- **Notices only help when the other session commits first.** With no notices, a finished before b committed in 2 of 3 runs, so no notice could have reached it. Claims and `fanout done` cover that order.
+- Small and constructed (one pair of tasks, 11 runs), like the paper's constructed tier: it shows the mechanism works, not how often real sessions need it.
+
+**Why it couldn't have worked on slgtme before:** in the desktop app's auto mode, sessions edit through the shell (Python, heredocs, `cat >>`), and the guard only watched Edit and Write. slgtme had five active checkouts and no claim was ever written. Shell edits now go through the same rules after each shell command (`git status` and the branch's commits): the first change claims the task, and a duplicate task or a locked file is reported back as feedback, telling the agent to undo. The shell-only arm above was claimed this way. The hook costs about 140–250ms per tool call on Windows when nothing has changed (it reads git's files directly rather than calling git), and about 300ms after a shell command.
+
+**A Windows bug the same project found:** `fanout run` ran `check:` and `test:` lines through `cmd.exe`, so a check starting `! grep` failed whatever the code did. On slgtme that stopped a two-session run after two fix rounds that changed nothing ($1.19 and $1.22, $4.26 in all). Plan commands now run in Git's bash on Windows, and a fix round that changes nothing stops the run instead of trying again.
+
 ## What this does and doesn't show
 
 - **It shows** that on overlapping work, fanout kept `main` free of conflicts and breakage, with no integration step afterwards, at about the same Claude cost: $0.50–$0.92 against $0.59–$0.63.

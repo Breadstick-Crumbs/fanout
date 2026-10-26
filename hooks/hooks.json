@@ -12,6 +12,18 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "Read|Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell",
+        "hooks": [
+          {
+            "name": "fanout: tell this session when another commits changes to files it has read or edited",
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/skills/fanout/fanout.mjs\" notice"
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [

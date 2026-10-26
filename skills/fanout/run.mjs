@@ -23,7 +23,7 @@ import { createInterface } from "node:readline/promises";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { parsePlan, parseRegen, planSetting, check, rehearse, blockReason, mainRoot, appendLog, matches, ownsFile, contractOwner, failureLines } from "./fanout.mjs";
+import { parsePlan, parseRegen, planSetting, check, rehearse, blockReason, mainRoot, appendLog, matches, ownsFile, contractOwner, failureLines, runPlanCmd } from "./fanout.mjs";
 import { draftPlan, jsExports } from "./draft.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -39,6 +39,8 @@ const sh = (cmd, cwd) => {
   const r = spawnSync(cmd, { cwd, shell: true, encoding: "utf8" });
   return { ok: r.status === 0, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 };
+// The plan's own commands (test:, check:, regen) run in sh syntax, in Git's bash on Windows (planShell).
+const psh = (cmd, cwd) => { const r = runPlanCmd(cmd, cwd); return { ok: r.status === 0, out: `${r.stdout ?? ""}${r.stderr ?? ""}` }; };
 const q = (s) => (WIN ? `"${s}"` : `'${s.replaceAll("'", `'\\''`)}'`);
 
 // Binaries can be swapped (tests point these at a fake agent).
@@ -239,7 +241,7 @@ export function bringIn(wt, order, name, regen) {
     if (git(wt, "merge", "--no-ff", "--no-edit", "-m", `fanout: merge ${o} into ${name} to fix against it`, b).ok) merged.push(o);
     else { git(wt, "merge", "--abort"); conflicted.push(o); }
   }
-  if (merged.length) for (const g of regen) sh(g.cmd, wt);
+  if (merged.length) for (const g of regen) psh(g.cmd, wt);
   return { merged, conflicted };
 }
 
@@ -294,7 +296,7 @@ export function earlyTest(wt, order, name, regen, test) {
   const before = git(wt, "rev-parse", "HEAD").out.trim();
   const { merged, conflicted } = bringIn(wt, order, name, regen);
   if (!merged.length) return null;
-  const r = sh(test, wt);
+  const r = psh(test, wt);
   // A pass leaves nothing to fix: the branch goes back to the session's own commits (rehearse merges them
   // all anyway), without what the test and the regen wrote. A failure keeps the merges for the fix.
   if (r.ok) { git(wt, "reset", "-q", "--hard", before); git(wt, "clean", "-fdq"); }
@@ -385,9 +387,9 @@ Goal: ${goal}`;
 
 // After the contracts are written: rebuild generated files and run the plan's test on the base branch.
 export function contractsReady(root, text) {
-  for (const g of parseRegen(text)) sh(g.cmd, root);
+  for (const g of parseRegen(text)) psh(g.cmd, root);
   const test = planSetting(text, "test");
-  return test ? sh(test, root) : { ok: true, out: "" };
+  return test ? psh(test, root) : { ok: true, out: "" };
 }
 
 // maxSessions: above about four agents writing at once, one account's agents slow each other down
@@ -619,9 +621,9 @@ export async function cli(argv) {
     const fix = track("fix", s.name, await runAgent({ agent: agentFor(s), cwd: wt[s.name], model: modelFor(s), budget, allow: [test, s.check], resume: session[s.name], prompt: report,
       fallbackPrompt: brief(s, sessions, regen, test, `${specNote(s)}\n${report}`, root, { shortTests }) }));
     session[s.name] = fix.sessionId ?? session[s.name];
-    commitLane(wt[s.name], sessions, s, regen, `fanout: fix ${s.name}`);
+    const fixed = commitLane(wt[s.name], sessions, s, regen, `fanout: fix ${s.name}`);
     setLive(s.name, { state: "fixed", since: null });
-    log(`${s.name}: ${fix.error ? `fix agent failed (${fix.error}); rehearse will check it` : `fixed in ${fix.seconds}s`}`);
+    log(`${s.name}: ${fix.error ? `fix agent failed (${fix.error}); rehearse will check it` : fixed.committed ? `fixed in ${fix.seconds}s` : `fix agent changed nothing (${fix.seconds}s); rehearse will check it`}`);
   };
   const startRounds = (ready) => ready.forEach((s) => rounds.push(earlyRound(s).catch((e) => log(`${s.name}: early test failed to run (${e.message})`)).then(() => startRounds(tracker.settle(s.name)))));
   live.phase = "sessions"; writeLive();
@@ -674,7 +676,14 @@ export async function cli(argv) {
       fallbackPrompt: brief(s, sessions, regen, test, `${specNote(s)}\n${report}`, root, { shortTests }) });
     session[name] = fix.sessionId ?? session[name];
     track("fix", name, fix);
-    commitLane(wt[name], sessions, s, regen, `fanout: fix ${name}`);
+    const fixed = commitLane(wt[name], sessions, s, regen, `fanout: fix ${name}`);
+    // A fix that changes nothing would only meet the same failure again: on a real project two fix rounds in a
+    // row ($1.19, $1.22) changed nothing, as the failing check couldn't run at all (cmd.exe given sh syntax).
+    if (!fixed.committed && !fix.error) {
+      console.log(r.log.join("\n"));
+      log(`stopped: ${name}'s fix agent changed nothing${fixed.reverted.length ? ` it may change (reverted: ${fixed.reverted.join(", ")})` : ""}, so the same failure would come back. The cause may be outside its files, or in the test or check itself (above). Its work is in .fanout/lanes/${name}.`);
+      return finish(1, `stopped: ${name} fix changed nothing`);
+    }
     setLive(name, { state: "fixed", since: null });
   }
 
@@ -690,9 +699,9 @@ export async function cli(argv) {
     const m = git(root, "merge", "--no-ff", "--no-edit", "-m", `fanout: merge ${name}`, `fanout/${name}`);
     if (!m.ok) { git(root, "merge", "--abort"); console.error(`fanout run: merging ${name} into ${base} conflicted, though rehearse passed. Is ${base} changed?\n${tail(m.out)}`); return finish(1, "merge conflict"); }
   }
-  for (const g of regen) if (g.cmd) sh(g.cmd, root);
+  for (const g of regen) if (g.cmd) psh(g.cmd, root);
   commitPaths(root, fanoutPaths(changedPaths(root), [], regen), "fanout: regenerate");
-  const final = test ? sh(test, root) : { ok: true };
+  const final = test ? psh(test, root) : { ok: true };
   if (test) testRuns++;
   for (const s of sessions) { git(root, "worktree", "remove", "--force", wt[s.name]); git(root, "branch", "-D", `fanout/${s.name}`); }
   phase("merge");

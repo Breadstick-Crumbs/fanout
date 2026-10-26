@@ -14,7 +14,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { resolve, relative, isAbsolute, join, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { claimsActive, claimsOn, branchOf, liveClaims, claimedByOther, editedByOthers, writeState, autoClaim, refusalText, taskFromTranscript, recheckClaim, selfCheckText,
-  claimCmd, startCmd, showClaims, releaseCmd, initCmd } from "./claims.mjs";
+  notices, repoInfo, claimCmd, startCmd, showClaims, releaseCmd, initCmd } from "./claims.mjs";
 
 const SESSION_KEYS = ["owns", "after", "exposes", "uses", "done", "task", "check", "agent", "model"];
 const PLAN_KEYS = ["test", "regen"];
@@ -192,6 +192,12 @@ export function mainRoot(cwd) {
   catch { return cwd; }
 }
 // The branch the main checkout is on (master, trunk, ...), else main if the repo has it.
+// defaultBase without a git call, from the main checkout's HEAD file (for the hook that runs on every tool call).
+function mainBranch(common) {
+  let b = null;
+  try { b = readFileSync(join(common, "HEAD"), "utf8").match(/^ref: refs\/heads\/(.+)$/m)?.[1]?.trim(); } catch { /* none */ }
+  return b && !b.startsWith(BRANCH_PREFIX) ? b : "main";
+}
 function defaultBase(cwd) {
   try {
     const b = git(["branch", "--show-current"], mainRoot(cwd)).trim();
@@ -220,10 +226,26 @@ const defaultPlan = (cwd) => resolve(mainRoot(cwd), ".fanout", "plan.md");
 // A session's "check:" is a command proving its own done: (a grep, a curl, a script). The test alone can
 // pass on code that doesn't do the job (a lint can't see a dead link or a missing switch), so once all
 // branches merge and pass, each session's check runs on the merged code; a failure names that session.
+// The shell for the plan's own commands (test:, check:, regen), which are written in sh syntax (`!`, `&&`, quotes).
+// On Windows Node's shell is cmd.exe, which can't run them: on a real project a check starting `! grep` failed
+// every time, whatever the code, and two fix rounds ($2.41) were spent on it. So there they run in Git's own bash
+// (found from git, not PATH, where bash.exe may be WSL's); cmd.exe only if it isn't there. FANOUT_SHELL overrides.
+let planShellFound;
+export function planShell() {
+  if (process.env.FANOUT_SHELL) return process.env.FANOUT_SHELL;
+  if (process.platform !== "win32") return true;
+  if (planShellFound === undefined) {
+    const exec = (spawnSync("git", ["--exec-path"], { encoding: "utf8" }).stdout ?? "").trim(); // <Git>/mingw64/libexec/git-core
+    planShellFound = exec ? [join(exec, "..", "..", "..", "bin", "bash.exe"), join(exec, "..", "..", "..", "usr", "bin", "bash.exe")].find(existsSync) ?? true : true;
+  }
+  return planShellFound;
+}
+export const runPlanCmd = (cmd, cwd) => spawnSync(cmd, { cwd, shell: planShell(), encoding: "utf8" });
+
 export function rehearse(order, { cwd, base = "main", test, regen = [], checks = [], tail = 20, prefix = BRANCH_PREFIX }) {
   const log = [], root = mainRoot(cwd), wt = join(root, ".fanout", "rehearse");
   let testRuns = 0;
-  const sh = (cmd) => { if (cmd === test) testRuns++; return spawnSync(cmd, { cwd: wt, shell: true, encoding: "utf8" }); };
+  const sh = (cmd) => { if (cmd === test) testRuns++; return runPlanCmd(cmd, wt); };
   const tailOf = (r) => failureLines(`${r.stdout ?? ""}${r.stderr ?? ""}`, tail);
   const g = (...a) => execFileSync("git", ["-c", "user.name=fanout", "-c", "user.email=fanout@local", ...a],
     { cwd: wt, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -470,6 +492,7 @@ function main(argv) {
   const cmd = argv[0] ?? "overlap"; // bare `fanout`: every session, claim and overlap at once
   if (cmd === "guard") return guard(argv);
   if (cmd === "session-start") return sessionStart();
+  if (cmd === "notice") return noticeHook();
   if (cmd === "run") return import("./run.mjs").then((m) => m.cli(argv.slice(1)));
   const cwd = resolve(arg(argv, "--cwd", process.cwd()));
   if (cmd === "precommit") return precommit(cwd);
@@ -649,6 +672,56 @@ function sessionStart() {
     + `Don't do their work. Your task is claimed for you on your first edit, and refused if another session already has the same work.`;
   console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text } }));
   return 0;
+}
+
+// PostToolUse hook (Claude Code): with claims on, tells the session when another session (or the base branch)
+// has committed changes to a file it has read or edited (claims.mjs, notices). Silent otherwise.
+function noticeHook() {
+  let input = {};
+  try { input = JSON.parse(readFileSync(0, "utf8")); } catch { return 0; }
+  const cwd = input.cwd ?? process.cwd(), info = repoInfo(cwd);
+  if (!info?.branch || !info.claims || info.branch.startsWith(BRANCH_PREFIX) || process.env.FANOUT_NOTICES === "off") return 0;
+  const { root, gitDir, common, branch } = info;
+  const tool = input.tool_name ?? input.toolName ?? "", ti = input.tool_input ?? input.toolInput ?? {};
+  const rel = (p) => { const f = norm(relative(root, isAbsolute(p) ? p : resolve(cwd, p))); return f.startsWith("..") ? null : f; };
+  const read = tool === "Read" && ti.file_path ? rel(ti.file_path) : null, base = mainBranch(common);
+  const edited = /^(Write|Edit|MultiEdit|NotebookEdit)$/.test(tool) ? editTargets(ti).map(rel).filter(Boolean) : [];
+  // Edits made through the shell never reach the edit guard. In the desktop app's auto mode sessions edit that
+  // way (python, heredocs, cat >>): on a real project with five active checkouts, no session was ever claimed.
+  // So after a shell command, files it changed (uncommitted, or committed on this branch) go through the same
+  // claim rules after the fact: the first claims the task, a duplicate or a locked file is reported back.
+  let block = null;
+  const extra = [];
+  if (/^(Bash|PowerShell)$/.test(tool)) {
+    const r = shellEdits(root, gitDir, base);
+    if (r.length) {
+      const c = claimReason(root, r, { transcript: input.transcript_path ?? input.transcriptPath });
+      block = c.block; extra.push(...c.notes); edited.push(...r);
+    }
+  }
+  const text = [...extra, info.notices ? notices(root, gitDir, branch, base, { read, edited, common }) : ""].filter(Boolean).join("\n\n");
+  if (block) console.log(JSON.stringify({ decision: "block", reason: `fanout: that command changed files, and ${block}\nUndo your change to these files.` + (text ? `\n\n${text}` : "") }));
+  // As feedback the agent must answer, not as added context: with real Sonnet sessions, a notice sent as context
+  // reached the session 4 times and was ignored every time; sent this way it was acted on 3 times out of 3.
+  else if (text) console.log(JSON.stringify({ decision: "block", reason: text }));
+  return 0;
+}
+
+// Files this checkout has changed that weren't seen at the last check: uncommitted ones, and ones committed on
+// its branch since it split from the base. Kept in its git dir, so a shell command that changes nothing costs
+// two git calls and no write.
+function shellEdits(root, gitDir, base) {
+  const file = join(gitDir, "fanout-shell-edits.json");
+  let seen = [];
+  try { seen = JSON.parse(readFileSync(file, "utf8")); } catch { /* first time */ }
+  const dirty = spawnSync("git", ["status", "--porcelain", "-z", "--untracked-files=all"], { cwd: root, encoding: "utf8" }).stdout ?? "";
+  const parts = dirty.split("\0"), files = [];
+  for (let i = 0; i < parts.length; i++) { if (parts[i].length < 4) continue; files.push(parts[i].slice(3)); if (/^[RC]/.test(parts[i])) i++; } // a rename's old path follows it
+  const committed = spawnSync("git", ["diff", "--name-only", `${base}...HEAD`], { cwd: root, encoding: "utf8" }).stdout ?? "";
+  const all = [...new Set([...files, ...committed.split("\n")].map((f) => norm(f.trim())).filter((f) => f && !f.startsWith(".fanout/") && !f.startsWith(".claude/")))];
+  const fresh = all.filter((f) => !seen.includes(f));
+  if (fresh.length) writeFileSync(file, JSON.stringify([...seen, ...fresh]));
+  return fresh;
 }
 
 // fanout done: this branch's commits merged with every other session's that has a live claim, on a scratch
