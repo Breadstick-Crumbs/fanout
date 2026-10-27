@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync, spawnSync, spawn } from "node:child_process";
@@ -378,6 +378,26 @@ test("the judge is asked to reason before it decides, about every live session",
 
 const noticeT = (cwd, tool, file, extra) => spawnSync(process.execPath, [FANOUT, "notice"], { cwd, encoding: "utf8", env: env(extra), input: JSON.stringify({ cwd, tool_name: tool, tool_input: file ? { file_path: join(cwd, file) } : { command: "ls" } }) });
 const noticeText = (r) => (r.stdout ? JSON.parse(r.stdout).reason : "");
+
+test("claims and notices recognize hook paths through a directory alias", (t) => {
+  const { root, a, b } = repo(), alias = join(mkdtempSync(join(tmpdir(), "fanout-alias-")), "checkout");
+  try { symlinkSync(a, alias, process.platform === "win32" ? "junction" : "dir"); }
+  catch (e) { if (["EPERM", "EACCES", "ENOSYS", "ENOTSUP"].includes(e.code)) return t.skip(e.message); throw e; }
+  assert.equal(fan(b, ["claim", "prices", "prices in cents", "locked/**"]).status, 0);
+  const locked = guard(alias, "locked/new/a.ts");
+  assert.equal(locked.status, 2, locked.stdout + locked.stderr);
+  assert.match(locked.stderr, /claimed by session "prices"/);
+  assert.equal(guard(alias, "new/nested/a.ts").status, 0);
+  assert.ok(Object.values(readState(root).claims).some((c) => c.branch === "a" && c.edits.includes("new/nested/a.ts")));
+  assert.equal(noticeT(alias, "Read", "x.txt").stdout, "");
+  writeFileSync(join(a, "edited.txt"), "local"); noticeT(alias, "Edit", "edited.txt");
+  writeFileSync(join(b, "x.txt"), "2"); writeFileSync(join(b, "edited.txt"), "other");
+  execFileSync("git", ["add", "-A"], { cwd: b, stdio: "ignore" });
+  execFileSync("git", ["commit", "-qm", "prices"], { cwd: b, stdio: "ignore" });
+  const text = noticeText(noticeT(alias, "Bash"));
+  assert.match(text, /change edited\.txt, x\.txt/);
+  assert.match(text, /You changed edited\.txt too/);
+});
 
 test("a session is told, once, when another commits changes to a file it has read; work merged into the base counts too", () => {
   const { root, a, b } = repo();

@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync, execFileSync } from "node:child_process";
-import { writeFileSync, mkdtempSync, mkdirSync, existsSync, readFileSync } from "node:fs";
+import { writeFileSync, mkdtempSync, mkdirSync, existsSync, readFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parsePlan, parseRegen, matches, check, verify, editTargets } from "../skills/fanout/fanout.mjs";
 
@@ -133,6 +133,29 @@ test("guard: blocks out-of-lane edits on a fanout/<name> branch, silent elsewher
   assert.equal(bad.status, 2);
   assert.match(bad.stderr, /does not own other\/a\.ts/);
   assert.equal(call(join(tmpdir(), "elsewhere.txt")).status, 0);
+});
+
+test("guard recognizes directory aliases for existing files and new paths", (t) => {
+  const d = dir(), alias = join(dir(), "alias");
+  const g = (...a) => execFileSync("git", a, { cwd: d, encoding: "utf8" });
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(d, "x.txt"), "1"); g("add", "-A"); g("commit", "-qm", "init");
+  mkdirSync(join(d, ".fanout"));
+  writeFileSync(join(d, ".fanout/plan.md"), "## s\nowns: mine/**\n");
+  g("checkout", "-qb", "fanout/s");
+  try { symlinkSync(d, alias, process.platform === "win32" ? "junction" : "dir"); }
+  catch (e) { if (["EPERM", "EACCES", "ENOSYS", "ENOTSUP"].includes(e.code)) return t.skip(e.message); throw e; }
+  assert.ok(relative(g("rev-parse", "--show-toplevel").trim(), join(alias, "x.txt")).startsWith(".."));
+  const call = (file, cwd = d, patch = false) => run(["guard"], { cwd: d, input: JSON.stringify({ cwd,
+    tool_input: patch ? { command: `*** Begin Patch\n*** Add File: ${file}\n+hi\n*** End Patch\n` } : { file_path: file } }) });
+  for (const file of ["x.txt", "other/new/a.ts", "..hidden/a.ts"]) {
+    const bad = call(join(alias, file));
+    assert.equal(bad.status, 2, bad.stdout + bad.stderr);
+    assert.match(bad.stderr, /does not own/);
+  }
+  assert.equal(call("other/new/a.ts", alias, true).status, 2);
+  assert.equal(call(join(alias, "mine/new/a.ts")).status, 0);
+  assert.equal(call(join(dir(), "outside.ts")).status, 0);
 });
 
 test("guard finds the lane from the edited file, even when the agent's cwd is the main checkout", () => {

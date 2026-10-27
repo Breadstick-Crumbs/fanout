@@ -294,7 +294,7 @@ Even when you don't split the work, `rehearse` and the edit guard cost nothing t
 
 **Limits:**
 - Evidence so far comes from the project's own fixtures, a few runs each, and one real project. `fanout log` keeps the record from real use so it can be checked.
-- Tested on Windows and Linux (CI), not yet on macOS.
+- Tested on Linux, macOS and Windows in CI.
 - It keeps sessions' work apart, not their environments: ports and database servers are shared. Gitignored files like `.env` reach fanout's own checkouts only when listed in `.worktreeinclude`.
 - A session's first edit waits about 15 seconds for the same-work check.
 - Two sessions on the same branch count as one session.

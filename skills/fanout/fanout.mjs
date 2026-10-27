@@ -664,6 +664,25 @@ export function editTargets(toolInput = {}) {
   return [...patch.matchAll(/^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$/gm)].map((m) => m[1].trim());
 }
 
+// Git and hooks can spell the same directory differently (symlinks, junctions, Windows short names).
+// Resolve the nearest existing ancestor so new files and directories work too.
+function physicalPath(path) {
+  let dir = path;
+  for (;;) {
+    try { return resolve(realpathSync.native(dir), relative(dir, path)); }
+    catch {
+      const parent = dirname(dir);
+      if (parent === dir) return path;
+      dir = parent;
+    }
+  }
+}
+
+function hookRelative(root, path) {
+  const rel = norm(relative(physicalPath(root), physicalPath(path)));
+  return rel === ".." || rel.startsWith("../") || isAbsolute(rel) ? null : rel;
+}
+
 // The plan and this checkout's session, or null when not on a fanout/<name> branch with a plan.
 function loadSession(cwd) {
   const name = currentSession(cwd);
@@ -691,8 +710,8 @@ function guard() {
     while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
     let root;
     try { root = git(["rev-parse", "--show-toplevel"], dir).trim(); } catch { return null; } // not a repo
-    const rel = norm(relative(root, abs));
-    if (rel.startsWith("..")) return null; // outside the repo: not our business
+    const rel = hookRelative(root, abs);
+    if (rel === null) return null; // outside the repo: not our business
     // A fanout run's lane follows its plan; any other checkout follows the claims, where they're on.
     const ctx = loadSession(dir);
     if (ctx) return blockReason(ctx.sessions, ctx.s, ctx.regen, rel);
@@ -777,7 +796,7 @@ function noticeHook() {
   if (!info?.branch || !info.claims || info.branch.startsWith(BRANCH_PREFIX) || process.env.FANOUT_NOTICES === "off") return 0;
   const { root, gitDir, common, branch } = info;
   const tool = input.tool_name ?? input.toolName ?? "", ti = input.tool_input ?? input.toolInput ?? {};
-  const rel = (p) => { const f = norm(relative(root, isAbsolute(p) ? p : resolve(cwd, p))); return f.startsWith("..") ? null : f; };
+  const rel = (p) => hookRelative(root, isAbsolute(p) ? p : resolve(cwd, p));
   const read = tool === "Read" && ti.file_path ? rel(ti.file_path) : null, base = mainBranch(common);
   const edited = /^(Write|Edit|MultiEdit|NotebookEdit)$/.test(tool) ? editTargets(ti).map(rel).filter(Boolean) : [];
   // Edits made through the shell never reach the edit guard. In the desktop app's auto mode sessions edit that
