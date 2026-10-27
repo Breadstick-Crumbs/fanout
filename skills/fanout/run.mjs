@@ -579,8 +579,8 @@ export async function cli(argv) {
       const exists = git(root, "rev-parse", "--verify", "--quiet", `fanout/${s.name}`).ok;
       const r = exists ? git(root, "worktree", "add", "-q", wt[s.name], `fanout/${s.name}`) : git(root, "worktree", "add", "-q", "-b", `fanout/${s.name}`, wt[s.name], base);
       if (!r.ok) { console.error(`fanout run: can't create the worktree for ${s.name}:\n${r.out}`); return finish(1, "worktree failed"); }
-      const copied = copyIncludes(root, wt[s.name]);
-      if (copied.length && !copiedTold++) log(`copied into each session's folder (.worktreeinclude): ${copied.slice(0, 8).join(", ")}${copied.length > 8 ? ` and ${copied.length - 8} more` : ""}`);
+      const { copied, failed } = copyIncludes(root, wt[s.name]);
+      if ((copied.length || failed.length) && !copiedTold++) log(`copied into each session's folder (.worktreeinclude): ${copied.slice(0, 8).join(", ") || "nothing"}${copied.length > 8 ? ` and ${copied.length - 8} more` : ""}${failed.length ? `; could not copy: ${failed.slice(0, 8).join(", ")}` : ""}`);
     }
   }
   log(`starting ${sessions.length} sessions: ${sessions.map((s) => `${s.name} (${agentFor(s)})`).join(", ")}`);

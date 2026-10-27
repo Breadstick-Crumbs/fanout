@@ -292,6 +292,35 @@ test("rehearse: gitignored files the tests need are named when missing, and copi
   assert.equal(readFileSync(join(d, ".env"), "utf8"), "KEY=1\n", "the checkout's own file is left alone");
 });
 
+test(".worktreeinclude: folder names with or without a slash, at any depth; a failed copy is reported; long lists in batches", async () => {
+  const { worktreeIncludes, copyIncludes } = await import("../skills/fanout/fanout.mjs");
+  const d = dir();
+  const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(d, ".gitignore"), "secrets\ndata/\npkg/x/cache/\nnode_modules/\nlong/\n");
+  writeFileSync(join(d, "x.txt"), "1"); g("add", "-A"); g("commit", "-qm", "init");
+  const put = (f, s = "x") => { mkdirSync(join(d, f, ".."), { recursive: true }); writeFileSync(join(d, f), s); };
+  put("secrets/key.txt"); put("data/db.txt"); put("pkg/x/cache/c.bin"); put("node_modules/m/.env");
+  const inc = (...p) => { writeFileSync(join(d, ".worktreeinclude"), p.join("\n") + "\n"); return worktreeIncludes(d).sort(); };
+  assert.deepEqual(inc("secrets"), ["secrets/key.txt"], "no trailing slash");
+  assert.deepEqual(inc("data"), ["data/db.txt"]);
+  assert.deepEqual(inc("**/cache/"), ["pkg/x/cache/c.bin"], "at any depth");
+  assert.deepEqual(inc("cache"), ["pkg/x/cache/c.bin"]);
+  assert.deepEqual(inc("data/**", "!data/db.txt"), [], "negation is git's");
+  assert.deepEqual(inc(".env"), [], "an ignored folder no pattern names isn't searched");
+  // A copy that fails (here the target's folder is a file) is reported and the rest still copied.
+  const wt = dir(); writeFileSync(join(wt, "secrets"), "a file where the folder should be");
+  writeFileSync(join(d, ".worktreeinclude"), "secrets\ndata\n");
+  const r = copyIncludes(d, wt);
+  assert.deepEqual(r.copied, ["data/db.txt"]);
+  assert.match(r.failed.join(), /^secrets\/key\.txt \(E[A-Z]+\)$/);
+  // More ignored paths than fit on one Windows command line.
+  const many = Array.from({ length: 400 }, (_, i) => `long/${String(i).padStart(4, "0")}-${"n".repeat(60)}.env`);
+  for (const f of many) put(f);
+  writeFileSync(join(d, ".gitignore"), "secrets\ndata/\npkg/x/cache/\nnode_modules/\nlong/*\n"); // files, not one folder
+  assert.equal(inc("*.env").length, 400);
+});
+
 test("rehearse: reports a textual conflict and the files", () => {
   const d = dir();
   const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });

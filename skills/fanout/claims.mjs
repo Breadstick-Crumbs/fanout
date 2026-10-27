@@ -172,30 +172,46 @@ export function mergedTree(cwd, a, b) {
   return (r.status === 0 || r.status === 1) && /^[0-9a-f]{40,64}$/.test(tree) ? { tree, clean: r.status === 0 } : null;
 }
 
+// Whether merging head into the base tip would leave the base's tree unchanged. Both are commit ids, so the
+// answer never changes: kept for the life of the process (a hook checks every claim several times per call).
+const inBase = new Map();
+// The base's tip, commit time and tree, worked out once per pass over the claims, not once per claim.
+const baseOf = (cwd, base) => {
+  if (!base) return null;
+  const tip = git(cwd, ["rev-parse", "--verify", "--quiet", base]).out.trim();
+  let time, tree;
+  return tip && { tip,
+    time: () => (time ??= (Number(git(cwd, ["log", "-1", "--format=%ct", tip]).out.trim()) || 0) * 1000),
+    tree: () => (tree ??= git(cwd, ["rev-parse", `${tip}^{tree}`]).out.trim()) };
+};
+
 // A claim ends when its branch is gone, when its branch has moved and is now merged into the base, or
 // after IDLE_HOURS with no commit on the branch and no claim update. Merged also covers a squash or rebase
 // merge, where the base got the branch's changes as new commits and the branch never becomes its ancestor:
-// merging it would leave the base unchanged. Unlike deleting a branch, ending a claim loses no work, so
-// changes being in the base is enough; ancestry isn't needed. Checked only once the base has a commit newer
-// than the branch's last one, so a working session costs no merge here.
-export function isLive(cwd, c, base, now = Date.now()) {
+// merging it would leave the base unchanged. Unlike deleting a branch, ending a claim loses no work, so the
+// changes being in the base is enough. Either way the branch can be "merged" while its session still works:
+// one that merged another session's branch (as a notice tells it to) and edits on holds only that branch's
+// commits once it reaches the base. So a merged claim ends only when it has been quiet since the base got
+// there and its checkout has nothing uncommitted. Checked only then, so a working session costs no merge here.
+export function isLive(cwd, c, base, now = Date.now(), b = baseOf(cwd, base)) {
   const head = git(cwd, ["rev-parse", "--verify", "--quiet", `refs/heads/${c.branch}`]).out.trim();
   if (!head) return false;
   if (c.path && !existsSync(c.path)) return false;
-  const time = (ref) => (Number(git(cwd, ["log", "-1", "--format=%ct", ref]).out.trim()) || 0) * 1000;
-  const lastCommit = time(head);
-  if (base && c.branch !== base && head !== c.start) {
-    if (git(cwd, ["merge-base", "--is-ancestor", head, base]).ok) return false;
-    if (time(base) >= lastCommit) {
-      const m = mergedTree(cwd, base, head);
-      if (m?.clean && m.tree === git(cwd, ["rev-parse", `${base}^{tree}`]).out.trim()) return false;
+  const lastCommit = (Number(git(cwd, ["log", "-1", "--format=%ct", head]).out.trim()) || 0) * 1000, touched = Date.parse(c.updated ?? c.at) || 0;
+  if (b && c.branch !== base && head !== c.start && b.time() >= Math.max(lastCommit, touched)) {
+    const key = `${b.tip}:${head}`;
+    if (!inBase.has(key)) {
+      let merged = git(cwd, ["merge-base", "--is-ancestor", head, b.tip]).ok;
+      if (!merged) { const m = mergedTree(cwd, b.tip, head); merged = !!m?.clean && m.tree === b.tree(); }
+      inBase.set(key, merged);
     }
+    if (inBase.get(key) && !(c.path && git(c.path, ["status", "--porcelain"]).out.trim())) return false;
   }
-  return Math.max(lastCommit, Date.parse(c.updated ?? c.at) || 0) > now - IDLE_HOURS * 3600 * 1000;
+  return Math.max(lastCommit, touched) > now - IDLE_HOURS * 3600 * 1000;
 }
 export function liveClaims(cwd, base) {
-  const { claims } = readState(cwd);
-  return Object.values(claims).filter((c) => isLive(cwd, c, base));
+  const { claims } = readState(cwd), b = baseOf(cwd, base);
+  return Object.values(claims).filter((c) => isLive(cwd, c, base, Date.now(), b));
 }
 
 // A claim's files and exposes are locks: no other session may change them. Its edits are the files it has
@@ -369,13 +385,14 @@ export function notices(root, gitDir, branch, base, { read, edited = [], common 
     const { from, files } = changedNow[c.branch], told = st.told[c.branch] ?? { tip: null, files: [] };
     const sinceTold = told.tip && told.tip !== tip ? git(root, ["diff", "--name-only", told.tip, tip]).out.split("\n") : [];
     let hits = all ? files : files.filter((f) => mine.has(f));
+    let fresh = hits.filter((f) => !told.files.includes(f) || sinceTold.includes(f));
     // Only what merging their branch would change here is news. A change this checkout already has (their
     // branch was squash- or rebase-merged into the base, and this session has the base's version) isn't.
-    if (hits.length) {
+    // Checked only when something is new, since this runs whenever any branch moves.
+    if (fresh.length) {
       const m = mergedTree(root, "HEAD", tip);
-      if (m) { const would = new Set(git(root, ["diff", "--name-only", "HEAD", m.tree]).out.split("\n")); hits = hits.filter((f) => would.has(f)); }
+      if (m) { const would = new Set(git(root, ["diff", "--name-only", "HEAD", m.tree]).out.split("\n")); hits = hits.filter((f) => would.has(f)); fresh = fresh.filter((f) => would.has(f)); }
     }
-    const fresh = hits.filter((f) => !told.files.includes(f) || sinceTold.includes(f));
     st.told[c.branch] = { tip, files: [...new Set([...told.files.filter((f) => !sinceTold.includes(f)), ...hits])] };
     if (!fresh.length) continue;
     logEvent(root, { kind: "notice", via: all ? "inbox" : "hook", session: branch, from: c.branch, files: fresh, ...(all ? { yours: fresh.filter((f) => mine.has(f)) } : {}) }, common);
@@ -434,7 +451,8 @@ export function claimCmd(cwd, argv, base, script) {
   const start = git(cwd, ["rev-parse", "HEAD"]).out.trim(), now = new Date().toISOString();
   const path = git(cwd, ["rev-parse", "--show-toplevel"]).out.trim();
   const w = writeState(cwd, (claims) => {
-    for (const c of Object.values(claims)) if (!isLive(cwd, c, base)) delete claims[c.name]; // prune expired ones
+    const b = baseOf(cwd, base);
+    for (const c of Object.values(claims)) if (!isLive(cwd, c, base, Date.now(), b)) delete claims[c.name]; // prune expired ones
     const cur = claims[name];
     // A fresh claim clears an earlier refusal (refusedAs) for this session. unchecked: no model compared it.
     claims[name] = { name, task, branch, path, files: [...new Set([...(cur?.files ?? []), ...files])], exposes: [...new Set([...(cur?.exposes ?? []), ...exposes])],
@@ -530,7 +548,7 @@ export const refusalText = (c, live, script) => {
 
 export function showClaims(cwd, base, all) {
   const { claims } = readState(cwd);
-  const list = Object.values(claims).map((c) => ({ ...c, live: isLive(cwd, c, base) })).filter((c) => all || c.live);
+  const b = baseOf(cwd, base), list = Object.values(claims).map((c) => ({ ...c, live: isLive(cwd, c, base, Date.now(), b) })).filter((c) => all || c.live);
   if (!list.length) { console.log(all ? "No claims." : "No live claims."); return 0; }
   for (const c of list.sort((a, b) => (a.branch < b.branch ? -1 : 1)))
     console.log(`${c.name}${c.live ? "" : " (expired)"}${c.refusedAs ? ` (stopped: same work as ${c.refusedAs.join(", ")})` : ""}  ${c.branch}  ${ago(c.updated ?? c.at)} ago  ${c.task || "(no task)"}`

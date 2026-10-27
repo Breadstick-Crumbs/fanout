@@ -153,6 +153,7 @@ test("files claimed by name are locked; a file another session is also editing i
   const ctx = JSON.parse(shared.stdout).hookSpecificOutput;
   assert.equal(ctx.hookEventName, "PreToolUse");
   assert.match(ctx.additionalContext, /package\.json is also being changed by session "currency" \(branch a: format prices\)/);
+  assert.match(ctx.additionalContext, /git log HEAD\.\.a -- "package\.json"/, "the path is quoted, so a name with spaces still works pasted");
   assert.equal(guardT(b, "package.json").stdout, "", "told once");
   assert.equal(guardT(b, "build/out.js").status, 0, "ignored files are left alone");
   assert.deepEqual(readState(root).claims.b.edits, ["package.json"]);
@@ -427,6 +428,22 @@ test("a claim ends when its branch is squash-merged into the base, and its locke
   writeFileSync(join(b, "src/money.mjs"), "export const m = 2;\n"); g(b, "commit", "-qam", "more money");
   fan(b, ["claim", "currency", "format prices", "src/money.mjs"]);
   assert.match(fan(a, ["claims"]).stdout, /currency/, "a branch with changes main doesn't have is live");
+});
+
+test("a session that merged another's branch keeps its claim when that branch reaches the base, while it still works", () => {
+  const { root, a, b } = repo();
+  const g = (cwd, ...x) => execFileSync("git", x, { cwd, stdio: "ignore" });
+  fan(a, ["start", "print receipts"]); fan(b, ["start", "prices in cents"]);
+  writeFileSync(join(b, "x.txt"), "2"); g(b, "commit", "-qam", "cents");
+  g(a, "merge", "-q", "--no-edit", "b"); // as the notice tells it to; a's branch now holds only b's work
+  writeFileSync(join(a, "receipt.txt"), "wip"); // a's own work, not committed yet
+  g(root, "merge", "-q", "--no-ff", "--no-edit", "b");
+  assert.match(fan(root, ["claims"]).stdout, /print receipts/, "uncommitted work in its checkout: still live");
+  g(a, "add", "-A"); g(a, "commit", "-qm", "receipt");
+  assert.match(fan(root, ["claims"]).stdout, /print receipts/, "its own commit isn't in the base: still live");
+  // Its work merged too and the checkout clean: now it ends.
+  g(root, "merge", "--squash", "a"); g(root, "commit", "-qm", "receipt (squashed)");
+  assert.doesNotMatch(fan(root, ["claims"]).stdout, /print receipts/);
 });
 
 test("a notice skips changes this checkout already has, as after a squash merge", () => {

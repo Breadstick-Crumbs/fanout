@@ -249,24 +249,40 @@ export const runPlanCmd = (cmd, cwd) => spawnSync(cmd, { cwd, shell: planShell()
 // checkout's ignored files and the ignored folders a pattern names: walking all of node_modules took 9-10s on a
 // real project, this about 0.2s.
 const gitZ = (cwd, args) => (spawnSync("git", ["--literal-pathspecs", args[0], "-z", ...args.slice(1)], { cwd, encoding: "utf8", maxBuffer: 64 << 20 }).stdout ?? "").split("\0").filter(Boolean);
+// Whether a .worktreeinclude pattern can match inside an ignored folder ("pkg/cache/"). A pattern with no
+// slash but a trailing one ("secrets", "cache/", "**/cache/") matches a name at any depth; one with a slash
+// is a path from the repo root ("config/secrets.json", "data/**").
+const reaches = (pat, dir) => {
+  const p = pat.replace(/^!/, "").replace(/^\/+/, ""), rest = p.replace(/^(\*\*\/)+/, "").replace(/\/+$/, ""), d = dir.replace(/\/+$/, "");
+  if (!rest.includes("/")) return d.split("/").some((seg) => matches(rest, seg));
+  if (rest !== p.replace(/\/+$/, "")) return d.split("/").includes(rest.split("/")[0]); // **/a/b: a named in the folder's path
+  return rest.startsWith(`${d}/`) || rest === d || matches(rest, d) || d.startsWith(`${rest}/`);
+};
 export function worktreeIncludes(root) {
   let pats;
   try { pats = readFileSync(join(root, ".worktreeinclude"), "utf8").split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#")); } catch { return []; }
-  const named = pats.map((p) => p.replace(/^!?\/?(\*\*\/)?/, ""));
   const where = gitZ(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory"])
-    .filter((f) => !f.endsWith("/") || named.some((p) => p.startsWith(f)));
+    .filter((f) => !f.endsWith("/") || pats.some((p) => reaches(p, f)));
+  // In batches short enough for Windows' command line (32,767 characters), whatever the path lengths.
   const out = [];
-  for (let i = 0; i < where.length; i += 200) out.push(...gitZ(root, ["ls-files", "--others", "--ignored", "--exclude-from=.worktreeinclude", "--", ...where.slice(i, i + 200)]));
+  for (let i = 0; i < where.length;) {
+    const batch = [];
+    for (let len = 0; i < where.length && (!batch.length || len + where[i].length < 8000);) { len += where[i].length + 1; batch.push(where[i++]); }
+    out.push(...gitZ(root, ["ls-files", "--others", "--ignored", "--exclude-from=.worktreeinclude", "--", ...batch]));
+  }
   return out;
 }
+// A file that can't be copied (a dangling symlink, one locked on Windows) is reported, not fatal.
 export function copyIncludes(root, wt) {
-  const files = worktreeIncludes(root);
-  for (const f of files) {
+  const copied = [], failed = [];
+  for (const f of worktreeIncludes(root)) {
     const to = join(wt, f);
-    if (!existsSync(to)) { mkdirSync(dirname(to), { recursive: true }); copyFileSync(join(root, f), to); }
+    try { if (!existsSync(to)) { mkdirSync(dirname(to), { recursive: true }); copyFileSync(join(root, f), to); } copied.push(f); }
+    catch (e) { failed.push(`${f} (${e.code ?? e.message})`); }
   }
-  return files;
+  return { copied, failed };
 }
+const listed = (xs) => `${xs.slice(0, 8).join(", ")}${xs.length > 8 ? ` and ${xs.length - 8} more` : ""}`;
 // Gitignored files in the checkout that a scratch copy lacks: the likely cause when the base fails only there.
 // Files only: an ignored folder (node_modules/) is still found by walking up, since the copy sits in .fanout/.
 const missingIgnored = (root, wt) => gitZ(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory"]).filter((f) => !f.endsWith("/") && !existsSync(join(wt, f)));
@@ -283,8 +299,9 @@ export function rehearse(order, { cwd, base = "main", test, regen = [], checks =
   git(["worktree", "add", "--detach", wt, base], root);
   let ok = true;
   try {
-    const copied = copyIncludes(root, wt);
-    if (copied.length) log.push(`COPIED from your checkout (.worktreeinclude): ${copied.slice(0, 8).join(", ")}${copied.length > 8 ? ` and ${copied.length - 8} more` : ""}`);
+    const { copied, failed } = copyIncludes(root, wt);
+    if (copied.length) log.push(`COPIED from your checkout (.worktreeinclude): ${listed(copied)}`);
+    if (failed.length) log.push(`COULD NOT COPY (.worktreeinclude): ${listed(failed)}`);
     const merged = [[base, g("rev-parse", "HEAD").trim()]]; // [name, commit]: merged[k] = state after k merges
     for (const name of order) {
       const branch = prefix + name; // fanout/<name>, or any branch with prefix ""
@@ -724,7 +741,7 @@ It shows what the other sessions are doing; if one already has your work, don't 
   const fresh = files.filter((f) => !(mine.edits ?? []).includes(f));
   // Says what goes wrong and what to run: "keep your change small and compatible" left two one-line additions at
   // the same spot conflicting in 3 of 3 runs; this wording, 0 of 3 (bench/RESULTS.md, "The shared-file note").
-  notes.push(...fresh.flatMap((f) => { const o = editedByOthers(live, branch, f); return o.length ? [`fanout: ${f} is also being changed by ${o.map((c) => `session "${c.name}" (branch ${c.branch}: ${c.task || "no task given"})`).join(" and ")}. Two branches that change lines near each other in one file conflict when merged, even one-line additions. Before you commit, check for their committed changes to it (${o.map((c) => `git log HEAD..${c.branch} -- ${f}`).join("; ")}); if there are any, merge their branch first and resolve the conflict, so the merged code keeps both changes.`] : []; }));
+  notes.push(...fresh.flatMap((f) => { const o = editedByOthers(live, branch, f); return o.length ? [`fanout: ${f} is also being changed by ${o.map((c) => `session "${c.name}" (branch ${c.branch}: ${c.task || "no task given"})`).join(" and ")}. Two branches that change lines near each other in one file conflict when merged, even one-line additions. Before you commit, check for their committed changes to it (${o.map((c) => `git log HEAD..${c.branch} -- "${f}"`).join("; ")}); if there are any, merge their branch first and resolve the conflict, so the merged code keeps both changes.`] : []; }));
   if (fresh.length) writeState(root, (claims) => {
     const c = claims[mine.name];
     if (!c) return false;
