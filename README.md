@@ -203,7 +203,7 @@ How sessions you open yourself (any agent, any worktree) keep out of each other'
 - **Codex in a worktree can't commit from its sandbox** (it can't write the worktree's git index, which sits outside the folder). That's Codex's limit, not fanout's. The commit-time rule applies when Codex can commit: in the main checkout, or with the sandbox loosened.
 - **Grok Build** runs Claude Code-style hooks, and fanout's guard accepts its field names, so its edits should be checked as they happen (not tried here: no Grok account).
 
-**What claims are:** a small record per session (its task, branch, locked files and the files it has changed) on a git ref, `refs/fanout/state`. Every worktree of the repo sees a new claim at once, and none of it shows up in anyone's diff. A claim ends when its branch merges, its worktree is removed, or after a day with no activity.
+**What claims are:** a small record per session (its task, branch, locked files and the files it has changed) on a git ref, `refs/fanout/state`. Every worktree of the repo sees a new claim at once, and none of it shows up in anyone's diff. A claim ends when its branch merges (a squash or rebase merge counts: once main has its changes), its worktree is removed, or after a day with no activity.
 
 ```bash
 fanout                    # every session: what it's doing, what it changed, overlaps

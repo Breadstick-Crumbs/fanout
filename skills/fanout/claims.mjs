@@ -164,14 +164,33 @@ export function writeState(cwd, mutate, msg = "fanout: claims") {
   return { ok: false, written: false };
 }
 
+// The tree merging b into a would make, written as objects only (no checkout or ref changes), and whether it
+// merged without a conflict; null if git can't (older than 2.38).
+export function mergedTree(cwd, a, b) {
+  const r = spawnSync("git", ["merge-tree", "--write-tree", "--no-messages", a, b], { cwd, encoding: "utf8" });
+  const tree = (r.stdout ?? "").split("\n")[0].trim();
+  return (r.status === 0 || r.status === 1) && /^[0-9a-f]{40,64}$/.test(tree) ? { tree, clean: r.status === 0 } : null;
+}
+
 // A claim ends when its branch is gone, when its branch has moved and is now merged into the base, or
-// after IDLE_HOURS with no commit on the branch and no claim update.
+// after IDLE_HOURS with no commit on the branch and no claim update. Merged also covers a squash or rebase
+// merge, where the base got the branch's changes as new commits and the branch never becomes its ancestor:
+// merging it would leave the base unchanged. Unlike deleting a branch, ending a claim loses no work, so
+// changes being in the base is enough; ancestry isn't needed. Checked only once the base has a commit newer
+// than the branch's last one, so a working session costs no merge here.
 export function isLive(cwd, c, base, now = Date.now()) {
   const head = git(cwd, ["rev-parse", "--verify", "--quiet", `refs/heads/${c.branch}`]).out.trim();
   if (!head) return false;
   if (c.path && !existsSync(c.path)) return false;
-  if (base && c.branch !== base && head !== c.start && git(cwd, ["merge-base", "--is-ancestor", head, base]).ok) return false;
-  const lastCommit = (Number(git(cwd, ["log", "-1", "--format=%ct", head]).out.trim()) || 0) * 1000;
+  const time = (ref) => (Number(git(cwd, ["log", "-1", "--format=%ct", ref]).out.trim()) || 0) * 1000;
+  const lastCommit = time(head);
+  if (base && c.branch !== base && head !== c.start) {
+    if (git(cwd, ["merge-base", "--is-ancestor", head, base]).ok) return false;
+    if (time(base) >= lastCommit) {
+      const m = mergedTree(cwd, base, head);
+      if (m?.clean && m.tree === git(cwd, ["rev-parse", `${base}^{tree}`]).out.trim()) return false;
+    }
+  }
   return Math.max(lastCommit, Date.parse(c.updated ?? c.at) || 0) > now - IDLE_HOURS * 3600 * 1000;
 }
 export function liveClaims(cwd, base) {
@@ -349,7 +368,14 @@ export function notices(root, gitDir, branch, base, { read, edited = [], common 
     }
     const { from, files } = changedNow[c.branch], told = st.told[c.branch] ?? { tip: null, files: [] };
     const sinceTold = told.tip && told.tip !== tip ? git(root, ["diff", "--name-only", told.tip, tip]).out.split("\n") : [];
-    const hits = all ? files : files.filter((f) => mine.has(f)), fresh = hits.filter((f) => !told.files.includes(f) || sinceTold.includes(f));
+    let hits = all ? files : files.filter((f) => mine.has(f));
+    // Only what merging their branch would change here is news. A change this checkout already has (their
+    // branch was squash- or rebase-merged into the base, and this session has the base's version) isn't.
+    if (hits.length) {
+      const m = mergedTree(root, "HEAD", tip);
+      if (m) { const would = new Set(git(root, ["diff", "--name-only", "HEAD", m.tree]).out.split("\n")); hits = hits.filter((f) => would.has(f)); }
+    }
+    const fresh = hits.filter((f) => !told.files.includes(f) || sinceTold.includes(f));
     st.told[c.branch] = { tip, files: [...new Set([...told.files.filter((f) => !sinceTold.includes(f)), ...hits])] };
     if (!fresh.length) continue;
     logEvent(root, { kind: "notice", via: all ? "inbox" : "hook", session: branch, from: c.branch, files: fresh, ...(all ? { yours: fresh.filter((f) => mine.has(f)) } : {}) }, common);

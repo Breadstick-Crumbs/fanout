@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync, spawnSync, spawn } from "node:child_process";
@@ -412,6 +412,35 @@ test("a session that changed the same file is told the branches will conflict, n
   assert.match(t, /You changed x\.txt too, so your branches will conflict there when merged/);
   assert.match(t, /Before you commit, merge their branch \(git merge b\)/);
   assert.doesNotMatch(t, /If your work depends on this code/);
+});
+
+test("a claim ends when its branch is squash-merged into the base, and its locked files are free again", () => {
+  const { root, a, b } = repo();
+  const g = (cwd, ...x) => execFileSync("git", x, { cwd, stdio: "ignore" });
+  fan(b, ["claim", "currency", "format prices", "src/money.mjs"]);
+  mkdirSync(join(b, "src")); writeFileSync(join(b, "src/money.mjs"), "export const m = 1;\n"); g(b, "add", "-A"); g(b, "commit", "-qm", "money");
+  assert.match(fan(a, ["claims"]).stdout, /currency/, "live while unmerged");
+  g(root, "merge", "--squash", "b"); g(root, "commit", "-qm", "money (squashed)");
+  assert.doesNotMatch(fan(a, ["claims"]).stdout, /currency/, "ended: merging b would change nothing on main");
+  fan(a, ["start", "print receipts"]);
+  assert.equal(guard(a, "src/money.mjs").status, 0, "the file it locked can be edited");
+  writeFileSync(join(b, "src/money.mjs"), "export const m = 2;\n"); g(b, "commit", "-qam", "more money");
+  fan(b, ["claim", "currency", "format prices", "src/money.mjs"]);
+  assert.match(fan(a, ["claims"]).stdout, /currency/, "a branch with changes main doesn't have is live");
+});
+
+test("a notice skips changes this checkout already has, as after a squash merge", () => {
+  const { root, a, b } = repo();
+  const g = (cwd, ...x) => execFileSync("git", x, { cwd, stdio: "ignore" });
+  fan(a, ["start", "print receipts"]); fan(b, ["start", "prices in cents"]);
+  noticeT(a, "Read", "x.txt");
+  writeFileSync(join(b, "x.txt"), "2"); g(b, "commit", "-qam", "cents");
+  g(root, "merge", "--squash", "b"); g(root, "commit", "-qm", "cents (squashed)");
+  g(a, "merge", "-q", "--no-edit", "main");
+  writeFileSync(join(b, "y.txt"), "new"); g(b, "add", "-A"); g(b, "commit", "-qm", "more"); // b stays live
+  assert.equal(noticeT(a, "Bash").stdout, "", "a already has b's change to x.txt");
+  writeFileSync(join(b, "x.txt"), "3"); g(b, "commit", "-qam", "dollars");
+  assert.match(noticeText(noticeT(a, "Bash")), /change x\.txt[\s\S]*^\+3$/m, "a change it doesn't have is still news");
 });
 
 test("notices stay silent where claims are off", () => {
