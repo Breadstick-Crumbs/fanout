@@ -264,6 +264,34 @@ test("rehearse: tests already failing on main, and flaky tests, blame no branch"
   assert.doesNotMatch(flaky.stdout, /BROKE after/);
 });
 
+test("rehearse: gitignored files the tests need are named when missing, and copied when listed in .worktreeinclude", () => {
+  const d = dir();
+  const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
+  g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
+  writeFileSync(join(d, ".git/info/exclude"), ".fanout/\n");
+  writeFileSync(join(d, ".gitignore"), ".env\nconfig/\nnode_modules/\n");
+  writeFileSync(join(d, "test.mjs"), `import { readFileSync } from "node:fs";\nif (!readFileSync(".env", "utf8").includes("KEY=1") || !readFileSync("config/secrets.json", "utf8")) process.exit(1);\n`);
+  g("add", "-A"); g("commit", "-qm", "init");
+  for (const l of ["a", "b"]) {
+    g("checkout", "-q", "main"); g("checkout", "-qb", "fanout/" + l);
+    writeFileSync(join(d, l + ".ok"), l); g("add", "-A"); g("commit", "-qm", l);
+  }
+  g("checkout", "-q", "main");
+  writeFileSync(join(d, ".env"), "KEY=1\n"); mkdirSync(join(d, "config")); writeFileSync(join(d, "config/secrets.json"), "{}");
+  mkdirSync(join(d, "node_modules/x"), { recursive: true }); writeFileSync(join(d, "node_modules/x/.env"), "not this one");
+  mkdirSync(join(d, ".fanout"));
+  writeFileSync(join(d, ".fanout/plan.md"), "test: node test.mjs\n## a\nowns: a.ok\n## b\nowns: b.ok\n");
+  const missing = run(["rehearse"], { cwd: d });
+  assert.equal(missing.status, 1);
+  assert.match(missing.stdout, /BASE FAILS: .* in fanout's scratch copy .* the copy may lack gitignored files it needs: \.env\. List the ones it needs in \.worktreeinclude/);
+  writeFileSync(join(d, ".worktreeinclude"), "# copied into worktrees\n.env\nconfig/secrets.json\n");
+  const copied = run(["rehearse"], { cwd: d });
+  assert.equal(copied.status, 0, copied.stdout + copied.stderr);
+  assert.match(copied.stdout, /COPIED from your checkout \(\.worktreeinclude\): \.env, config\/secrets\.json\n/, "a file inside an ignored folder a pattern names; not node_modules/x/.env");
+  assert.match(copied.stdout, /All branches merge and pass together/);
+  assert.equal(readFileSync(join(d, ".env"), "utf8"), "KEY=1\n", "the checkout's own file is left alone");
+});
+
 test("rehearse: reports a textual conflict and the files", () => {
   const d = dir();
   const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });

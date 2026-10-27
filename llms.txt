@@ -25,7 +25,7 @@ For small changes, one agent is faster and cheaper.
 - `fanout overlap`: which checkouts are changing the same files, and would they conflict
 - `fanout check`: is the plan safe; prints the merge order
 - `fanout verify`: in a session's folder, anything outside its lane
-- `fanout rehearse`: merge every branch on a scratch copy, test once
+- `fanout rehearse`: merge every branch on a scratch copy, test once (gitignored files the tests need, such as `.env`, are copied in when listed in `.worktreeinclude`, the file Claude Code uses for its worktrees)
 - `fanout install-git-hook`: enforce the plan on every commit, for any agent
 - `fanout status`: sessions, costs, past runs
 

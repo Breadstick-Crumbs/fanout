@@ -23,7 +23,7 @@ import { createInterface } from "node:readline/promises";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { parsePlan, parseRegen, planSetting, check, rehearse, blockReason, mainRoot, appendLog, matches, ownsFile, contractOwner, failureLines, runPlanCmd } from "./fanout.mjs";
+import { parsePlan, parseRegen, planSetting, check, rehearse, blockReason, mainRoot, appendLog, matches, ownsFile, contractOwner, failureLines, runPlanCmd, copyIncludes } from "./fanout.mjs";
 import { draftPlan, jsExports } from "./draft.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -573,11 +573,14 @@ export async function cli(argv) {
   sh(`node "${SCRIPT}" install-git-hook`, root);
   git(root, "worktree", "prune");
   const wt = Object.fromEntries(sessions.map((s) => [s.name, join(root, ".fanout", "lanes", s.name)]));
+  let copiedTold = 0;
   for (const s of sessions) {
     if (!existsSync(wt[s.name])) {
       const exists = git(root, "rev-parse", "--verify", "--quiet", `fanout/${s.name}`).ok;
       const r = exists ? git(root, "worktree", "add", "-q", wt[s.name], `fanout/${s.name}`) : git(root, "worktree", "add", "-q", "-b", `fanout/${s.name}`, wt[s.name], base);
       if (!r.ok) { console.error(`fanout run: can't create the worktree for ${s.name}:\n${r.out}`); return finish(1, "worktree failed"); }
+      const copied = copyIncludes(root, wt[s.name]);
+      if (copied.length && !copiedTold++) log(`copied into each session's folder (.worktreeinclude): ${copied.slice(0, 8).join(", ")}${copied.length > 8 ? ` and ${copied.length - 8} more` : ""}`);
     }
   }
   log(`starting ${sessions.length} sessions: ${sessions.map((s) => `${s.name} (${agentFor(s)})`).join(", ")}`);

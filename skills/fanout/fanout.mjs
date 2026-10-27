@@ -9,7 +9,7 @@
 //   fanout status [--base <branch>]                     one table: each session's branch, commits, files, worktree, verify flags, agent state and cost (fanout run), last run and rehearse
 //   fanout overlap [--base <branch>] [--all]            every active checkout (any worktree, any session) and its changes, files changed in more than one, dry-run merge
 //   fanout log [--last 20]                          past runs and rehearsals from .fanout/log.jsonl: time, cost, fixes, test runs
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync, chmodSync, existsSync, realpathSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, chmodSync, existsSync, realpathSync, readdirSync, copyFileSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { resolve, relative, isAbsolute, join, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -242,6 +242,35 @@ export function planShell() {
 }
 export const runPlanCmd = (cmd, cwd) => spawnSync(cmd, { cwd, shell: planShell(), encoding: "utf8" });
 
+// A fresh worktree has only tracked files, so a project whose tests read a gitignored .env or local database
+// fails there though it passes in the checkout. Claude Code copies the gitignored files listed in
+// .worktreeinclude (.gitignore syntax) into its worktrees; fanout reads the same file for its own (rehearse's
+// scratch copy, fanout run's lanes), so it's set up once for both. Git matches the patterns, but only over the
+// checkout's ignored files and the ignored folders a pattern names: walking all of node_modules took 9-10s on a
+// real project, this about 0.2s.
+const gitZ = (cwd, args) => (spawnSync("git", ["--literal-pathspecs", args[0], "-z", ...args.slice(1)], { cwd, encoding: "utf8", maxBuffer: 64 << 20 }).stdout ?? "").split("\0").filter(Boolean);
+export function worktreeIncludes(root) {
+  let pats;
+  try { pats = readFileSync(join(root, ".worktreeinclude"), "utf8").split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith("#")); } catch { return []; }
+  const named = pats.map((p) => p.replace(/^!?\/?(\*\*\/)?/, ""));
+  const where = gitZ(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory"])
+    .filter((f) => !f.endsWith("/") || named.some((p) => p.startsWith(f)));
+  const out = [];
+  for (let i = 0; i < where.length; i += 200) out.push(...gitZ(root, ["ls-files", "--others", "--ignored", "--exclude-from=.worktreeinclude", "--", ...where.slice(i, i + 200)]));
+  return out;
+}
+export function copyIncludes(root, wt) {
+  const files = worktreeIncludes(root);
+  for (const f of files) {
+    const to = join(wt, f);
+    if (!existsSync(to)) { mkdirSync(dirname(to), { recursive: true }); copyFileSync(join(root, f), to); }
+  }
+  return files;
+}
+// Gitignored files in the checkout that a scratch copy lacks: the likely cause when the base fails only there.
+// Files only: an ignored folder (node_modules/) is still found by walking up, since the copy sits in .fanout/.
+const missingIgnored = (root, wt) => gitZ(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory"]).filter((f) => !f.endsWith("/") && !existsSync(join(wt, f)));
+
 export function rehearse(order, { cwd, base = "main", test, regen = [], checks = [], tail = 20, prefix = BRANCH_PREFIX }) {
   const log = [], root = mainRoot(cwd), wt = join(root, ".fanout", "rehearse");
   let testRuns = 0;
@@ -254,6 +283,8 @@ export function rehearse(order, { cwd, base = "main", test, regen = [], checks =
   git(["worktree", "add", "--detach", wt, base], root);
   let ok = true;
   try {
+    const copied = copyIncludes(root, wt);
+    if (copied.length) log.push(`COPIED from your checkout (.worktreeinclude): ${copied.slice(0, 8).join(", ")}${copied.length > 8 ? ` and ${copied.length - 8} more` : ""}`);
     const merged = [[base, g("rev-parse", "HEAD").trim()]]; // [name, commit]: merged[k] = state after k merges
     for (const name of order) {
       const branch = prefix + name; // fanout/<name>, or any branch with prefix ""
@@ -302,7 +333,11 @@ export function rehearse(order, { cwd, base = "main", test, regen = [], checks =
         if (probe(hi).pass) {
           log.push(`FLAKY: \`${test}\` failed, then passed on a rerun of the same code (after ${merged[hi][0]}). No branch is blamed; fix or quarantine the flaky test.`, bad.lines[1]);
         } else if (!(b = baseRun()).pass) {
-          log.push(`BASE FAILS: \`${test}\` already fails on ${base} before any branch is merged. Fix ${base} first.`, b.lines[1]);
+          // A base that passes in the checkout and fails here is usually a gitignored file the copy lacks (.env):
+          // name the ones missing, or "fix main" sends the user after code that's fine.
+          const missing = missingIgnored(root, wt);
+          log.push(`BASE FAILS: \`${test}\` already fails on ${base} before any branch is merged, in fanout's scratch copy (${norm(relative(root, wt))}). Fix ${base} first.`
+            + (missing.length ? ` If it passes in your checkout, the copy may lack gitignored files it needs: ${missing.slice(0, 6).join(", ")}${missing.length > 6 ? ", ..." : ""}. List the ones it needs in .worktreeinclude (one per line, .gitignore syntax; Claude Code's worktrees use the same file) and fanout copies them in.` : ""), b.lines[1]);
         } else log.push(...bad.lines);
         ok = false;
       }

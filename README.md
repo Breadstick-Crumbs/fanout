@@ -228,6 +228,7 @@ Tried with real Sonnet sessions and nothing about fanout in their instructions: 
 | Branches merge cleanly but break together | `rehearse` reports `BROKE after money` with the failing output. |
 | A real merge conflict | `rehearse` reports `CONFLICT merging b: x.txt` before `main`. |
 | A flaky test, or tests that already fail on `main` | `rehearse` reruns before blaming anyone and reports `FLAKY` or `BASE FAILS` instead of pointing at an innocent branch. |
+| Tests that need `.env` or another gitignored file | `rehearse` names the files its scratch copy is missing. List them in `.worktreeinclude` and they're copied in. |
 | An agent without hooks (Cursor, scripts) | The git pre-commit hook refuses the commit. |
 
 | A session agent... | `fanout run`... |
@@ -331,13 +332,24 @@ With one session, no: claims stay off and `fanout run` only acts on branches nam
 - **Hooks (Claude Code):** before an edit (the guard), after a tool call (claims for shell edits, and notices), and at session start. Each is `node fanout.mjs <hook>` on your machine, reading git.
 - **Sent to a model:** only for the same-work check, through your own signed-in `claude` CLI (or `codex`). It sends your latest request to the session (up to 600 characters), plus the other live sessions' tasks and the files they claimed. `FANOUT_CLAIM_JUDGE=off` turns the check off; sessions then get the list and compare the tasks themselves.
 - **Nothing else:** no telemetry, no server.
-- **Written:** claims on the git ref `refs/fanout/state`; the event log and per-checkout state in `.git/`; `fanout run`'s plan and lanes in `.fanout/` (git-ignored). The git hook is installed only by `fanout init` or `fanout install-git-hook`.
+- **Written:** claims on the git ref `refs/fanout/state`; the event log and per-checkout state in `.git/`; `fanout run`'s plan and lanes in `.fanout/` (git-ignored), with copies of the files `.worktreeinclude` lists. The git hook is installed only by `fanout init` or `fanout install-git-hook`.
 
 **Will it burn tokens?**
 The same-work check costs about $0.012, once per session. Everything else fanout checks is a plain script with no AI call, and a failure report is a few lines, not a full log. Running several agents does cost more than one, so split work only when it's big enough. Planning is the largest single cost of a `fanout run`: a goal written as sections skips most of it, and inside Claude Code your own session plans for free. Sessions on a cheaper model (`--session-model haiku`) cut a run's cost about 4× on our benchmark, but lost a hidden test or two.
 
 **Can I mix Claude Code and Codex?**
 Yes. Sessions are just git branches: give a session `agent: codex` in the plan, or let `fanout run --mix` choose. Codex sessions took 2–3× as long as Claude ones on our benchmark, so mixing saves Claude spend and quota rather than time.
+
+**My tests need `.env` (or a local database file). Does that work?**
+Yes, with one file. fanout tests in fresh git checkouts, which have only tracked files, so list the gitignored files your project needs in `.worktreeinclude` at the repo root, one per line in `.gitignore` syntax:
+
+```
+.env
+.env.local
+config/secrets.json
+```
+
+They're copied from your checkout into `rehearse`'s scratch copy (fresh on every run) and into each `fanout run` session's folder. Only files that match and are gitignored are copied, never tracked ones. Claude Code reads the same file for its own worktrees, including the desktop app's parallel sessions, so you set it up once. Without it, a run that fails only because a file is missing says so and names the file. A database server on localhost is shared by every session, as it is today; fanout doesn't isolate it.
 
 **What if two tasks need the same file?**
 Give it to one session. If others depend on it, make it a contract (`exposes` / `uses`). If it's generated, list it under `regen`.
