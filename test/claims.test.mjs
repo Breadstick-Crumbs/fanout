@@ -259,6 +259,9 @@ test("a claim ends when its branch is deleted, merged, or idle for a day", () =>
   // Merged: a commit on the branch, merged into main.
   writeFileSync(join(a, "m.txt"), "1"); g(a, "add", "-A"); g(a, "commit", "-qm", "m"); g(root, "merge", "-q", "--no-edit", "a");
   assert.ok(!isLive(root, c, "main"));
+  // Commit times are whole seconds: a claim updated later in the same second as the merge is still quiet.
+  const merged = Number(execFileSync("git", ["log", "-1", "--format=%ct", "main"], { cwd: root, encoding: "utf8" })) * 1000;
+  assert.ok(!isLive(root, { ...c, at: new Date(merged + 999).toISOString(), updated: undefined }, "main", merged + 999), "same second as the merge");
   // Idle: no commit and no update for over a day.
   const old = new Date(Date.now() - 25 * 3600e3).toISOString();
   g(root, "branch", "idle");

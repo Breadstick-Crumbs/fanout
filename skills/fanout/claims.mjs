@@ -198,7 +198,9 @@ export function isLive(cwd, c, base, now = Date.now(), b = baseOf(cwd, base)) {
   if (!head) return false;
   if (c.path && !existsSync(c.path)) return false;
   const lastCommit = (Number(git(cwd, ["log", "-1", "--format=%ct", head]).out.trim()) || 0) * 1000, touched = Date.parse(c.updated ?? c.at) || 0;
-  if (b && c.branch !== base && head !== c.start && b.time() >= Math.max(lastCommit, touched)) {
+  // Commit times are whole seconds and claim times milliseconds: compare whole seconds, or a claim updated
+  // in the same second as the base's commit looks newer than it (on a fast machine, every time).
+  if (b && c.branch !== base && head !== c.start && b.time() >= Math.max(lastCommit, Math.floor(touched / 1000) * 1000)) {
     const key = `${b.tip}:${head}`;
     if (!inBase.has(key)) {
       let merged = git(cwd, ["merge-base", "--is-ancestor", head, b.tip]).ok;
