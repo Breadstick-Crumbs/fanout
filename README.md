@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-<p align="center"><b>Run several Claude Code and Codex sessions on one repo.<br>They don't do the same work twice, and each one hears when another's commit changes its code.</b></p>
+<p align="center"><b>Parallel coding agents, merged without breaking main.<br>Each branch passes on its own, then the merge fails. fanout catches that before you merge.</b></p>
 
 <p align="center">
   <a href="https://github.com/Breadstick-Crumbs/fanout/actions/workflows/test.yml"><img src="https://github.com/Breadstick-Crumbs/fanout/actions/workflows/test.yml/badge.svg" alt="tests"></a>
@@ -18,13 +18,14 @@
 <p align="center"><img src="assets/demo.svg" alt="fanout demo: night-theme is told dark-mode already has the same work and builds nothing; receipt is told another session changed formatPrice and builds on the new version" width="100%"></p>
 <p align="center"><sub>Recorded with <code>fanout demo</code>: real Claude Code sessions, with nothing about fanout in their tasks.</sub></p>
 
-You open a second session to get more done. An hour later, both have built a dark mode, or one renamed a function the other was calling and the merge breaks. fanout sits underneath your sessions and stops that as it happens.
+You run several agents, each in its own worktree and branch. Every branch passes its tests. Then you merge, and the build goes red: one agent renamed a function another was calling, or two built the same feature. fanout runs underneath your sessions and catches that before main, while the agents are still working, so you don't pay for the work twice.
 
 ## Highlights
 
-- **The same task, in other words, is done once.** A session about to build what another already has is stopped before its first change, and says which session has it. A model compares the tasks, so "add a dark mode toggle" and "users want a night theme" count as the same work. It got 40 of 40 held-out pairs right.
-- **Each session hears about changes it needs.** When another session commits a change to code yours has read or edited, it gets the diff and builds on the new version.
-- **Nothing to set up.** Install the plugin and keep working. It switches on when two sessions share a repo.
+- **Branches that pass alone but break together are caught before main.** fanout merges every session's branch, runs your tests, and sends any failure back to the agent that caused it. On our benchmark: 0 merge conflicts and 0 repair commits on `main`, against 2 conflicts and 4 repair commits in every run without it.
+- **Each session hears about changes it needs, while it works.** When another session commits a change to code yours has read or edited, it gets the diff and builds on the new version, instead of finding out when the build fails.
+- **The same task, in other words, is done once.** A session about to build what another already has is stopped before its first change, and says which session has it. "Add a dark mode toggle" and "users want a night theme" count as the same work: 40 of 40 held-out pairs right.
+- **Works with what you already use.** Worktrees, orchestrators and Claude's session messaging keep working; fanout adds the checks they don't do. Nothing to set up: install the plugin and it switches on when two sessions share a repo.
 - **Claude Code, Codex, or both,** plus any agent that reads `AGENTS.md`.
 - **One big job split across agents,** when you want it: `fanout run` gives each agent its own files, freezes shared interfaces, and tests every branch merged together before anything reaches `main`.
 - **No dependencies.** Node 18+ and git.
