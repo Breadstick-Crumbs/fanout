@@ -103,11 +103,12 @@ export function taskFromTranscript(path) {
     let j; try { j = JSON.parse(l); } catch { continue; }
     if (j.type !== "user" || j.isMeta) continue;
     const c = j.message?.content, text = typeof c === "string" ? c : Array.isArray(c) ? c.filter((x) => x.type === "text").map((x) => x.text).join("\n") : "";
-    const clean = text.replace(/<([a-z][\w-]*)[^>]*>[\s\S]*?<\/\1>/gi, "").replace(/\s+/g, " ").trim();
+    const clean = cleanTask(text);
     if (clean.length >= 15) task = clean;
   }
   return task.slice(0, 600);
 }
+export const cleanTask = (text) => String(text ?? "").replace(/<([a-z][\w-]*)[^>]*>[\s\S]*?<\/\1>/gi, "").replace(/\s+/g, " ").trim();
 export const slugName = (s) => String(s).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
 export const branchOf = (cwd) => git(cwd, ["branch", "--show-current"]).out.trim() || null;
 
@@ -523,21 +524,53 @@ export function autoClaim(cwd, branch, task, base, live, via = "edit") {
   let existing = null;
   writeState(cwd, (claims) => { if (claims[name]?.branch === branch) { existing = claims[name]; return false; } claims[name] = claim; }, `fanout: claim ${name} (first edit)`);
   if (existing) return waitChecked(cwd, existing);
-  const o = taskOverlap(task, others, cwd);
+  const o = prechecked(cwd, task, others) ?? taskOverlap(task, others, cwd);
   const same = o.same.filter((c) => claimsAt(c, claim)); // a newer one yields to this, not the other way round
   delete claim.checking;
   if (same.length) { claim.refusedAs = same.map((c) => c.name); claim.why = o.why; }
   writeState(cwd, (claims) => { const c = claims[name]; if (!c || c.branch !== branch) return false; delete c.checking; if (same.length) { c.refusedAs = claim.refusedAs; c.why = o.why; } }, `fanout: checked ${name}`);
-  logEvent(cwd, { kind: same.length ? "refused" : "claim", via, session: name, branch, task: claim.task, by: o.by, costUsd: o.costUsd ?? null,
+  logEvent(cwd, { kind: same.length ? "refused" : "claim", via, session: name, branch, task: claim.task, by: o.by, costUsd: o.costUsd ?? null, ...(o.early ? { early: true } : {}),
     ...(same.length ? { as: same.map((c) => c.name), asTasks: same.map((c) => c.task), why: o.why } : {}) });
   return claim;
 }
+// The same check, started when the user sends the request (UserPromptSubmit), so the first edit finds the
+// answer ready instead of waiting about 15s for the model. Kept in the session's git dir, not as a claim: a
+// session that only answers a question never edits, and a claim for it could refuse a later session doing the work.
+const PRECHECK = "fanout-precheck.json", sig = (c) => `${c.name}\n${c.task}`;
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+export function precheck(cwd, branch, task, base) {
+  const gitDir = repoInfo(cwd)?.gitDir, others = liveClaims(cwd, base).filter((c) => c.branch !== branch);
+  if (!gitDir || !task || !others.length) return;
+  // Two messages sent in a row start two of these: the same task is checked once.
+  let was; try { was = JSON.parse(readFileSync(join(gitDir, PRECHECK), "utf8")); } catch { was = null; }
+  if (was?.task === task && (was.pending ? Date.now() - was.at < 120000 : others.every((c) => was.others?.includes(sig(c))))) return;
+  const put = (x) => { try { writeFileSync(join(gitDir, PRECHECK), JSON.stringify({ task, at: Date.now(), ...x })); } catch { /* read-only */ } };
+  put({ pending: true });
+  const o = taskOverlap(task, others, cwd);
+  put({ others: others.map(sig), same: o.same.map((c) => c.name), why: o.why, by: o.by, costUsd: o.costUsd ?? null });
+}
+// Sessions that claimed since the early check are checked now, on their own.
+function prechecked(cwd, task, others) {
+  const file = join(repoInfo(cwd)?.gitDir ?? tmpdir(), PRECHECK);
+  const read = () => { try { return JSON.parse(readFileSync(file, "utf8")); } catch { return null; } };
+  let p = read();
+  if (p?.task !== task) return null;
+  while (p?.pending && Date.now() - p.at < 120000) { pause(500); p = read(); }
+  try { rmSync(file); } catch { /* gone */ }
+  if (!p || p.pending || p.by !== "judge" || Date.now() - p.at > 3600e3) return null;
+  const known = new Set(p.others), fresh = others.filter((c) => !known.has(sig(c)));
+  const o = fresh.length ? taskOverlap(task, fresh, cwd) : { same: [] };
+  if (fresh.length && o.by !== "judge") return null;
+  return { same: [...others.filter((c) => known.has(sig(c)) && p.same.includes(c.name)), ...o.same], why: [p.why, o.why].filter(Boolean).join("; "),
+    by: "judge", costUsd: (p.costUsd ?? 0) + (o.costUsd ?? 0), early: true };
+}
+
 // This session's claim, once its check is done (at most 2 minutes: the check's own timeout).
 export function waitChecked(cwd, claim, timeoutMs = 120000) {
   const end = Date.now() + timeoutMs;
   let c = claim;
   while (c?.checking && Date.now() < end) {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+    pause(500);
     c = readState(cwd).claims[claim.name] ?? null;
   }
   return c ?? claim;

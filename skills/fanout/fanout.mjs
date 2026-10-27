@@ -10,11 +10,11 @@
 //   fanout overlap [--base <branch>] [--all]            every active checkout (any worktree, any session) and its changes, files changed in more than one, dry-run merge
 //   fanout log [--last 20]                          past runs and rehearsals from .fanout/log.jsonl: time, cost, fixes, test runs
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, chmodSync, existsSync, realpathSync, readdirSync, copyFileSync } from "node:fs";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync, spawn } from "node:child_process";
 import { resolve, relative, isAbsolute, join, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { claimsActive, claimsOn, branchOf, liveClaims, claimedByOther, editedByOthers, writeState, autoClaim, refusalText, taskFromTranscript, recheckClaim, selfCheckText,
-  notices, repoInfo, logEvent, readEvents, waitChecked, claimCmd, startCmd, showClaims, releaseCmd, initCmd } from "./claims.mjs";
+  notices, repoInfo, logEvent, readEvents, waitChecked, claimCmd, startCmd, showClaims, releaseCmd, initCmd, cleanTask, precheck, readState } from "./claims.mjs";
 
 const SESSION_KEYS = ["owns", "after", "exposes", "uses", "done", "task", "check", "agent", "model"];
 const PLAN_KEYS = ["test", "regen"];
@@ -577,6 +577,8 @@ function main(argv) {
   if (cmd === "guard") return guard(argv);
   if (cmd === "session-start") return sessionStart();
   if (cmd === "notice") return noticeHook();
+  if (cmd === "prompt") return promptHook();
+  if (cmd === "precheck") return precheckCmd(argv[1]);
   if (cmd === "run") return import("./run.mjs").then((m) => m.cli(argv.slice(1)));
   if (cmd === "demo") return import("./demo.mjs").then((m) => m.demo(argv.slice(1)));
   const cwd = resolve(arg(argv, "--cwd", process.cwd()));
@@ -784,6 +786,28 @@ function sessionStart() {
     + `Don't do their work. Your task is claimed for you on your first edit, and refused if another session already has the same work.`;
   console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text } }));
   logEvent(root, { kind: "told", session: branch, others: others.slice(0, 12).map((c) => c.name), otherTasks: others.slice(0, 12).map((c) => c.task) });
+  return 0;
+}
+
+// UserPromptSubmit hook (Claude Code): starts the same-work check in the background while the session reads and
+// plans, so its first edit doesn't wait for it. Returns at once and prints nothing.
+function promptHook() {
+  let input = {};
+  try { input = JSON.parse(readFileSync(0, "utf8")); } catch { return 0; }
+  const cwd = input.cwd ?? process.cwd(), task = cleanTask(input.prompt).slice(0, 600);
+  if (task.length < 15 || !existsSync(cwd)) return 0;
+  // Every check runs in the background process too: each git call here would hold up the user's message.
+  spawn(process.execPath, [fileURLToPath(import.meta.url), "precheck", task], { cwd, detached: true, stdio: "ignore", windowsHide: true }).unref();
+  return 0;
+}
+function precheckCmd(task) {
+  let root;
+  try { root = git(["rev-parse", "--show-toplevel"], process.cwd()).trim(); } catch { return 0; }
+  const branch = branchOf(root);
+  if (!branch || loadSession(root) || !claimsActive(root)) return 0;
+  const all = Object.values(readState(root).claims);
+  if (all.some((c) => c.branch === branch)) return 0;
+  precheck(root, branch, task, defaultBase(root));
   return 0;
 }
 

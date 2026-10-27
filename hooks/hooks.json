@@ -24,6 +24,17 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "name": "fanout: start the same-work check while the session reads, so its first edit doesn't wait",
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/skills/fanout/fanout.mjs\" prompt"
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [

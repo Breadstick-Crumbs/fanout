@@ -140,6 +140,32 @@ test("a Claude Code session's first edit claims its task from the user's request
   assert.equal(guardT(b, "theme.css").status, 0);
 });
 
+test("the same-work check starts when the user sends the request, so the first edit doesn't wait for it", () => {
+  const { root, a, b } = repo();
+  const task = "users want a dark theme they can switch on", slow = { FAKE_SAME_IF: "dark", FAKE_JUDGE_DELAY_MS: "9000" };
+  const promptT = (cwd, prompt, extra) => spawnSync(process.execPath, [FANOUT, "prompt"], { cwd, encoding: "utf8", env: env(extra), input: JSON.stringify({ cwd, prompt }) });
+  const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  const before0 = judgeCalls();
+  assert.equal(promptT(b, task, slow).stdout, "");
+  pause(3000);
+  assert.equal(judgeCalls(), before0, "with no other session, nothing to check");
+  assert.equal(guardT(a, "settings.js", "add a dark mode toggle to the settings page").status, 0);
+  const before = judgeCalls(), t0 = Date.now(), p = promptT(b, task, slow);
+  promptT(b, task, slow); // a second message right after: still one check
+  assert.equal(p.status, 0); assert.equal(p.stdout, "");
+  assert.ok(Date.now() - t0 < 3000, "the prompt hook doesn't wait for the check");
+  assert.equal(readState(root).claims.b, undefined, "no claim until the session edits: a question alone claims nothing");
+  const file = join(execFileSync("git", ["rev-parse", "--absolute-git-dir"], { cwd: b, encoding: "utf8" }).trim(), "fanout-precheck.json");
+  for (const end = Date.now() + 30000; Date.now() < end && !(existsSync(file) && !JSON.parse(readFileSync(file, "utf8")).pending);) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+  const dup = guardT(b, "theme.css", task, slow);
+  assert.equal(dup.status, 2, dup.stdout + dup.stderr);
+  assert.match(dup.stderr, /same work as another session's:\n {2}a \(branch a\)/);
+  const ev = readFileSync(join(root, ".git", "fanout-events.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).findLast((e) => e.session === "b");
+  assert.equal(ev.kind, "refused"); assert.equal(ev.early, true, "the first edit used the early answer");
+  assert.equal(judgeCalls(), before + 1, "one model call in all");
+  assert.equal(existsSync(file), false, "used once");
+});
+
 test("files claimed by name are locked; a file another session is also editing is allowed with a note, once", () => {
   const { root, a, b } = repo();
   fan(a, ["claim", "currency", "format prices", "src/money.mjs"]);
@@ -195,6 +221,7 @@ test("a new session is told at start what the others are doing", () => {
   assert.equal(start(a).stdout, "", "its own claim isn't news");
   const hooks = JSON.parse(readFileSync(join(import.meta.dirname, "../hooks/hooks.json"), "utf8")).hooks;
   assert.match(hooks.SessionStart[0].hooks[0].command, /fanout\.mjs" session-start$/);
+  assert.match(hooks.UserPromptSubmit[0].hooks[0].command, /fanout\.mjs" prompt$/);
 });
 
 test("fanout done tests this branch merged with the other sessions' commits, and says whose merge broke it", () => {
