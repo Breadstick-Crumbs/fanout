@@ -465,6 +465,28 @@ A session is now told when another session (or the base branch) commits changes 
 - **Notices only help when the other session commits first.** With no notices, a finished before b committed in 2 of 3 runs, so no notice could have reached it. Claims and `fanout done` cover that order.
 - Small and constructed (one pair of tasks, 11 runs), like the paper's constructed tier: it shows the mechanism works, not how often real sessions need it.
 
+**The shared-file note: context or feedback?** When a session starts editing a file another session is editing, the edit guard sends a note as added context. Given the notice result above, this checked whether it should be feedback too. The case came from real use: four parallel sessions on one project each added a `require_once` line at the same spot in one file, and every pair conflicted when merged. Two headless Sonnet sessions, each adding a page and registering it in `app.js` with an import line and an entry line at the same spots; nothing about fanout in their tasks. Both arms used the same note, which named the risk and gave a command (`git log HEAD..<branch> -- app.js`, then merge their branch if it has commits); in the feedback arm it was held back and returned after the edit by the `PostToolUse` hook. Scored as before: b then a merged on main, then a hidden check of all pages.
+
+| Arm | Runs | Note reached a | a ran the note's check | Merged without a conflict | Hidden check passed | Cost per run |
+|---|---|---|---|---|---|---|
+| Note as added context | 3 | 3 | 3 | 2 | 1 | $0.10–0.14 |
+| Note as hook feedback | 3 | 3 | 3 | 3 | 2 | $0.11–0.14 |
+
+- **Sent as added context, the note was not ignored:** a ran the command it gave every time, unlike the commit notice above. The note comes before the edit and gives one command to run; that may be the difference. So it stays as context.
+- **The one conflict was a race:** a checked, found nothing yet, and both sessions committed in the same second. Neither arm prevents that; `fanout done` (tests the branch merged with the others) is the check for it.
+- **The other hidden-check failures weren't about the note:** in one run per arm b never committed, because its check (`node app.js /faq`) failed under Git Bash, which turns `/faq` into a Windows path.
+- When b committed first, a was also sent the commit notice (as feedback) and merged b in every such run, in both arms. With hooks on both sides, that notice already covers most of this case.
+
+Then the wording, both as added context. The note fanout had said "keep your change to it small and compatible with theirs". The b session's check now runs with `MSYS_NO_PATHCONV=1`, so Git Bash leaves `/faq` alone.
+
+| Note says | Runs | a ran a check on b's branch | Merged without a conflict | Hidden check passed | Cost per run |
+|---|---|---|---|---|---|
+| "Keep your change small and compatible" | 3 | 0 | 0 | 0 | $0.09–0.10 |
+| The risk, and the `git log` to run before committing | 3 | 3 | 3 | 3 | $0.11 |
+
+- **With the old wording a never looked at b's branch,** and every merge conflicted on `app.js`. So the note now gives the risk and the command.
+- **In 2 of those runs the commit notice of b's change to `app.js` reached a too, and a didn't merge.** That notice says "if your work depends on this code", and a's page didn't depend on b's: it doesn't say the two edits will conflict.
+
 **Agents without hooks: `fanout inbox` (v0.27).** The same receipt task in a real Codex session (`codex exec`, workspace-write sandbox, low effort), told only what `fanout init` writes to `AGENTS.md`, which now asks for `fanout inbox` before committing and before finishing. b was scripted: it claimed its task, then committed the `formatPrice` change 25s in. Codex can't commit from its worktree in its sandbox, so a's files were copied onto main after merging b, then the hidden check ran. One run per row:
 
 | b's claim says | `inbox` in AGENTS.md | Runs | a ran inbox and saw the change | Hidden check passed |

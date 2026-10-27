@@ -687,7 +687,9 @@ It shows what the other sessions are doing; if one already has your work, don't 
   }
   if (mine.refusedAs?.length) return { block: refusalText(mine, live, script), notes: [] };
   const fresh = files.filter((f) => !(mine.edits ?? []).includes(f));
-  notes.push(...fresh.flatMap((f) => { const o = editedByOthers(live, branch, f); return o.length ? [`fanout: ${f} is also being changed by ${o.map((c) => `session "${c.name}" (branch ${c.branch}: ${c.task || "no task given"})`).join(" and ")}. Keep your change to it small and compatible with theirs.`] : []; }));
+  // Says what goes wrong and what to run: "keep your change small and compatible" left two one-line additions at
+  // the same spot conflicting in 3 of 3 runs; this wording, 0 of 3 (bench/RESULTS.md, "The shared-file note").
+  notes.push(...fresh.flatMap((f) => { const o = editedByOthers(live, branch, f); return o.length ? [`fanout: ${f} is also being changed by ${o.map((c) => `session "${c.name}" (branch ${c.branch}: ${c.task || "no task given"})`).join(" and ")}. Two branches that change lines near each other in one file conflict when merged, even one-line additions. Before you commit, check for their committed changes to it (${o.map((c) => `git log HEAD..${c.branch} -- ${f}`).join("; ")}); if there are any, merge their branch first and resolve the conflict, so the merged code keeps both changes.`] : []; }));
   if (fresh.length) writeState(root, (claims) => {
     const c = claims[mine.name];
     if (!c) return false;
