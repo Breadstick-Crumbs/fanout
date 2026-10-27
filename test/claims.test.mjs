@@ -386,6 +386,7 @@ test("a session is told, once, when another commits changes to a file it has rea
   assert.match(t, /^\+2$/m, "with the diff");
   assert.doesNotMatch(t, /y\.txt/, "only files this session uses");
   assert.match(t, /git merge b/);
+  assert.match(t, /If your work depends on this code/, "only read here, so no conflict to warn about");
   assert.equal(noticeT(a, "Bash").stdout, "", "told once");
   assert.equal(noticeT(a, "Read", "y.txt").stdout !== "", true, "a file read later that the other changed is news");
   writeFileSync(join(b, "x.txt"), "3"); g(b, "commit", "-qam", "more");
@@ -399,6 +400,18 @@ test("a session is told, once, when another commits changes to a file it has rea
   assert.match(noticeText(noticeT(a2, "Bash")), /New commits on main \(work merged since this session started\) change x\.txt/);
   assert.equal(noticeT(a2, "Bash", null, { FANOUT_NOTICES: "off" }).stdout, "", "FANOUT_NOTICES=off silences it");
   void root; void b2;
+});
+
+test("a session that changed the same file is told the branches will conflict, not only if its work depends on it", () => {
+  const { a, b } = repo();
+  const g = (cwd, ...x) => execFileSync("git", x, { cwd, stdio: "ignore" });
+  fan(a, ["start", "add a contact page"]); fan(b, ["start", "add an faq page"]);
+  writeFileSync(join(a, "x.txt"), "contact"); noticeT(a, "Edit", "x.txt");
+  writeFileSync(join(b, "x.txt"), "faq"); g(b, "commit", "-qam", "faq");
+  const t = noticeText(noticeT(a, "Bash"));
+  assert.match(t, /You changed x\.txt too, so your branches will conflict there when merged/);
+  assert.match(t, /Before you commit, merge their branch \(git merge b\)/);
+  assert.doesNotMatch(t, /If your work depends on this code/);
 });
 
 test("notices stay silent where claims are off", () => {

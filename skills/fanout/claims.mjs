@@ -333,7 +333,7 @@ export function notices(root, gitDir, branch, base, { read, edited = [], common 
   const tips = {};
   for (const l of git(root, ["for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads"]).out.split("\n")) { const [b, t] = l.split(" "); if (b && b !== branch) tips[b] = t; }
   const live = liveClaims(root, base), mineClaim = live.find((c) => c.branch === branch);
-  const mine = new Set([...st.reads, ...(mineClaim?.edits ?? []), ...edited]);
+  const edits = new Set([...(mineClaim?.edits ?? []), ...edited]), mine = new Set([...st.reads, ...edits]);
   const sessions = [...live.filter((c) => c.branch !== branch), ...(base && base !== branch && tips[base] ? [{ branch: base, name: base, base: true }] : [])];
   const out = [], changedNow = {};
   for (const c of sessions) {
@@ -356,9 +356,12 @@ export function notices(root, gitDir, branch, base, { read, edited = [], common 
     const diff = git(root, ["diff", from, tip, "--", ...fresh]).out.split("\n");
     const shown = diff.slice(0, NOTICE_DIFF_LINES).join("\n") + (diff.length > NOTICE_DIFF_LINES ? `\n... (${diff.length - NOTICE_DIFF_LINES} more lines: git diff ${from.slice(0, 9)} ${c.branch} -- ${fresh.join(" ")})` : "");
     const who = c.base ? `New commits on ${c.branch} (work merged since this session started)` : `Session "${c.name}" (branch ${c.branch}${c.task ? `: ${c.task.slice(0, 120)}` : ""}) committed`;
-    const yours = fresh.filter((f) => mine.has(f));
+    const yours = fresh.filter((f) => mine.has(f)), both = fresh.filter((f) => edits.has(f));
     out.push(`fanout: ${who} change ${fresh.join(", ")}, ${all ? (yours.length ? `and you changed ${yours.join(", ")} too.` : "which your work may use.") : "which this session has read or edited."} Your checkout still has the old version:\n${shown}\n`
-      + `If your work depends on this code, build against the new version: bring it in (git merge ${c.branch}) or ask the user, rather than writing code that only works with the old one.`);
+      // "If your work depends on this code" alone: a session that added a line next to the other's in the same
+      // file judged it didn't depend on it, didn't merge, and the branches conflicted (bench/RESULTS.md).
+      + (both.length ?`You changed ${both.join(", ")} too, so your branches will conflict there when merged, even if your work doesn't depend on theirs. Before you commit, merge their branch (git merge ${c.branch}) and resolve the conflict, keeping both changes.`
+        : `If your work depends on this code, build against the new version: bring it in (git merge ${c.branch}) or ask the user, rather than writing code that only works with the old one.`));
   }
   st.changed = changedNow;
   save();

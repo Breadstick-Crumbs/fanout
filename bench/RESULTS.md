@@ -487,6 +487,15 @@ Then the wording, both as added context. The note fanout had said "keep your cha
 - **With the old wording a never looked at b's branch,** and every merge conflicted on `app.js`. So the note now gives the risk and the command.
 - **In 2 of those runs the commit notice of b's change to `app.js` reached a too, and a didn't merge.** That notice says "if your work depends on this code", and a's page didn't depend on b's: it doesn't say the two edits will conflict.
 
+Then that commit notice, with the shared-file note switched off so the notice is all a session hears. Its last line said only "if your work depends on this code, ... git merge"; now, when the session also changed the file, it says the branches will conflict there even without a dependency, and to merge before committing.
+
+| Notice's last line | Runs | Session told merged the other branch | Merged without a conflict | Hidden check passed | Cost per run |
+|---|---|---|---|---|---|
+| "If your work depends on this code" | 3 | 0 | 0 | 0 | $0.09–0.10 |
+| "You changed app.js too, so your branches will conflict" | 3 | 3 | 3 | 3 | $0.09–0.11 |
+
+- Order wasn't the same in every run: with the old line, a committed first in 2 runs, so b was the one told (after its edit, near its own commit) and didn't merge. In the one old run with the new runs' order (b first, a told), a didn't merge either.
+
 **Agents without hooks: `fanout inbox` (v0.27).** The same receipt task in a real Codex session (`codex exec`, workspace-write sandbox, low effort), told only what `fanout init` writes to `AGENTS.md`, which now asks for `fanout inbox` before committing and before finishing. b was scripted: it claimed its task, then committed the `formatPrice` change 25s in. Codex can't commit from its worktree in its sandbox, so a's files were copied onto main after merging b, then the hidden check ran. One run per row:
 
 | b's claim says | `inbox` in AGENTS.md | Runs | a ran inbox and saw the change | Hidden check passed |
