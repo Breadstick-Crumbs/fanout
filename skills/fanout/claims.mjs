@@ -109,6 +109,22 @@ export function taskFromTranscript(path) {
   return task.slice(0, 600);
 }
 export const cleanTask = (text) => String(text ?? "").replace(/<([a-z][\w-]*)[^>]*>[\s\S]*?<\/\1>/gi, "").replace(/\s+/g, " ").trim();
+// The transcript holding this hook's own task. A subagent's hooks get its parent session's transcript_path, so
+// four lanes started as subagents were each claimed with the parent's last message ("Yes, start the build") and
+// three were refused as the same work. A subagent's own transcript, starting with its brief, sits beside the
+// parent's: <session>/subagents/agent-<id>.jsonl. Found by agent_id, else by the tool call being checked.
+export function hookTranscript(input = {}) {
+  const t = input.transcript_path ?? input.transcriptPath;
+  if (!t) return t;
+  const dir = join(t.replace(/\.jsonl$/, ""), "subagents"), id = input.agent_id ?? input.agentId;
+  if (id && existsSync(join(dir, `agent-${id}.jsonl`))) return join(dir, `agent-${id}.jsonl`);
+  const call = input.tool_use_id ?? input.toolUseId;
+  if (!call) return t;
+  let files = [];
+  try { files = readdirSync(dir).filter((f) => /^agent-.*\.jsonl$/.test(f)); } catch { return t; }
+  const own = files.find((f) => { try { return readFileSync(join(dir, f), "utf8").includes(`"${call}"`); } catch { return false; } });
+  return own ? join(dir, own) : t;
+}
 export const slugName = (s) => String(s).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
 export const branchOf = (cwd) => git(cwd, ["branch", "--show-current"]).out.trim() || null;
 
@@ -519,7 +535,7 @@ export const claimsAt = (a, b) => Date.parse(a.at) < Date.parse(b.at) || (a.at =
 export function autoClaim(cwd, branch, task, base, live, via = "edit") {
   const others = live.filter((c) => c.branch !== branch);
   const name = slugName(branch), now = new Date().toISOString();
-  const claim = { name, task: task.slice(0, 300), branch, path: git(cwd, ["rev-parse", "--show-toplevel"]).out.trim(), files: [], exposes: [], edits: [],
+  const claim = { name, task: task.slice(0, 600), branch, path: git(cwd, ["rev-parse", "--show-toplevel"]).out.trim(), files: [], exposes: [], edits: [],
     start: git(cwd, ["rev-parse", "HEAD"]).out.trim(), at: now, updated: now, auto: true, comparedWith: others.map((c) => c.name), checking: true }; // tried once, whatever the outcome
   let existing = null;
   writeState(cwd, (claims) => { if (claims[name]?.branch === branch) { existing = claims[name]; return false; } claims[name] = claim; }, `fanout: claim ${name} (first edit)`);

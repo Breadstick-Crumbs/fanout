@@ -166,6 +166,25 @@ test("the same-work check starts when the user sends the request, so the first e
   assert.equal(existsSync(file), false, "used once");
 });
 
+test("subagents sharing one parent session are each claimed with their own brief, not the parent's last message", () => {
+  const { root, a, b } = repo();
+  const parent = transcript("Yes, start the build");
+  const sub = join(parent.replace(/\.jsonl$/, ""), "subagents");
+  mkdirSync(sub, { recursive: true });
+  const brief = (id, text, call) => writeFileSync(join(sub, `agent-${id}.jsonl`), [{ type: "user", isSidechain: true, message: { content: text } },
+    { type: "assistant", message: { content: [{ type: "tool_use", id: call, name: "Write", input: {} }] } }].map((x) => JSON.stringify(x)).join("\n") + "\n");
+  brief("a1", "build the cart page in lane a", "toolu_a");
+  brief("b2", "build the search page in lane b", "toolu_b");
+  const g = (cwd, file, extra) => spawnSync(process.execPath, [FANOUT, "guard"], { cwd, encoding: "utf8", env: env({ FAKE_SAME_IF: "start the build" }),
+    input: JSON.stringify({ cwd, transcript_path: parent, tool_input: { file_path: join(cwd, file) }, ...extra }) });
+  assert.equal(g(a, "cart.js", { agent_id: "a1", tool_use_id: "toolu_a" }).status, 0);
+  const r = g(b, "search.js", { tool_use_id: "toolu_b" }); // no agent_id: found by the tool call
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const { claims } = readState(root);
+  assert.equal(claims.a.task, "build the cart page in lane a");
+  assert.equal(claims.b.task, "build the search page in lane b");
+});
+
 test("files claimed by name are locked; a file another session is also editing is allowed with a note, once", () => {
   const { root, a, b } = repo();
   fan(a, ["claim", "currency", "format prices", "src/money.mjs"]);

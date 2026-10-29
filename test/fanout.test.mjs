@@ -206,6 +206,25 @@ test("guard finds the plan from a linked worktree", () => {
   assert.equal(r.status, 2);
 });
 
+test("guard finds the plan of a session working in its own worktree, beside that worktree's lanes", () => {
+  const d = dir();
+  const g = (cwd, ...a) => execFileSync("git", a, { cwd, stdio: "ignore" });
+  g(d, "init", "-q", "-b", "main"); g(d, "config", "user.email", "t@t"); g(d, "config", "user.name", "t");
+  writeFileSync(join(d, "x.txt"), "1"); g(d, "add", "-A"); g(d, "commit", "-qm", "init");
+  const wt = join(d, "wt"); // the desktop app's session worktree; the main checkout has no plan
+  g(d, "worktree", "add", "-q", "-b", "session", wt);
+  mkdirSync(join(wt, ".fanout"));
+  writeFileSync(join(wt, ".fanout/plan.md"), "## s\nowns: mine/**\n");
+  const lane = join(wt, ".fanout", "lanes", "s");
+  g(wt, "worktree", "add", "-q", "-b", "fanout/s", lane);
+  const call = (file) => run(["guard"], { cwd: wt, input: JSON.stringify({ tool_name: "Write", cwd: wt, tool_input: { file_path: file } }) });
+  assert.equal(call(join(lane, "mine", "a.ts")).status, 0);
+  const bad = call(join(lane, "other.ts"));
+  assert.equal(bad.status, 2);
+  assert.match(bad.stderr, /does not own other\.ts/);
+  assert.equal(run(["check"], { cwd: wt }).status, 0); // commands run from that worktree find it too
+});
+
 test("rehearse: clean-merging lanes that break together are pinned to the second branch", () => {
   const d = dir();
   const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
@@ -435,7 +454,10 @@ if (name === "b") writeFileSync("b.mjs", 'import { a } from "./a.mjs"\\nexport c
   writeFileSync(join(d, ".fanout/plan.md"), "test: node test.mjs\n\n## a\nowns: a.mjs\nexposes: a.mjs\ntask: export a = 1\n\n## b\nowns: b.mjs\nuses: a.mjs\ntask: export b = a + 1\n");
   // a.mjs is a contract, so it has to exist on main before the lanes start.
   writeFileSync(join(d, "a.mjs"), "export const a = 1\n"); g("add", "a.mjs"); g("commit", "-qm", "contract");
-  const ask = run(["run"], { cwd: d, input: "" });
+  // Without --yes the run still checks that claude is signed in: a stand-in that is, whatever this machine's CLI says.
+  const signedIn = join(dir(), "claude.mjs");
+  writeFileSync(signedIn, 'console.log(JSON.stringify({ loggedIn: true }))\n');
+  const ask = run(["run"], { cwd: d, input: "", env: { ...process.env, FANOUT_CLAUDE_BIN: `node "${signedIn}"` } });
   assert.equal(ask.status, 0);
   assert.match(ask.stdout, /Run again with --yes/);
   const r = run(["run", "--yes", "--agent", `node "${fake}"`], { cwd: d });

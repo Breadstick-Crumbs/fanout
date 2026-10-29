@@ -11,9 +11,9 @@
 //   fanout log [--last 20]                          past runs and rehearsals from .fanout/log.jsonl: time, cost, fixes, test runs
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, chmodSync, existsSync, realpathSync, readdirSync, copyFileSync } from "node:fs";
 import { execFileSync, spawnSync, spawn } from "node:child_process";
-import { resolve, relative, isAbsolute, join, dirname } from "node:path";
+import { resolve, relative, isAbsolute, join, dirname, basename } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
-import { claimsActive, claimsOn, branchOf, liveClaims, claimedByOther, editedByOthers, writeState, autoClaim, refusalText, taskFromTranscript, recheckClaim, selfCheckText,
+import { claimsActive, claimsOn, branchOf, liveClaims, claimedByOther, editedByOthers, writeState, autoClaim, refusalText, taskFromTranscript, hookTranscript, recheckClaim, selfCheckText,
   notices, repoInfo, logEvent, readEvents, waitChecked, claimCmd, startCmd, showClaims, releaseCmd, initCmd, cleanTask, precheck, readState } from "./claims.mjs";
 
 const SESSION_KEYS = ["owns", "after", "exposes", "uses", "done", "task", "check", "agent", "model"];
@@ -216,7 +216,17 @@ function repoDefaultBranch(cwd) {
   } catch { /* no remote HEAD */ }
   return ["main", "master"].find(has) ?? defaultBase(cwd);
 }
-const defaultPlan = (cwd) => resolve(mainRoot(cwd), ".fanout", "plan.md");
+// The plan beside this lane (lanes sit in <checkout>/.fanout/lanes/<name>), else this checkout's, else the main
+// checkout's. A session the desktop app runs in its own worktree writes the plan and lanes there: read only from
+// the main checkout, the guard didn't know the lanes, and their edits fell through to claims.
+function defaultPlan(cwd) {
+  const main = resolve(mainRoot(cwd), ".fanout", "plan.md");
+  let top;
+  try { top = resolve(git(["rev-parse", "--show-toplevel"], cwd).trim()); } catch { return main; }
+  const lanes = dirname(top), fanoutDir = dirname(lanes);
+  const near = [...(basename(lanes) === "lanes" && basename(fanoutDir) === ".fanout" ? [join(fanoutDir, "plan.md")] : []), join(top, ".fanout", "plan.md")];
+  return near.find((p) => existsSync(p)) ?? main;
+}
 
 // Merges the branches in plan order on a throwaway worktree, then rebuilds generated files and runs the
 // test command once. Only if that fails does it bisect over the merge order (about log2(n) more runs)
@@ -718,7 +728,7 @@ function guard() {
     const ctx = loadSession(dir);
     if (ctx) return blockReason(ctx.sessions, ctx.s, ctx.regen, rel);
     if (!claimsActive(root)) return null;
-    const r = claimReason(root, [rel], { transcript: input.transcript_path ?? input.transcriptPath });
+    const r = claimReason(root, [rel], { transcript: () => hookTranscript(input) });
     notes.push(...r.notes);
     return r.block;
   }).filter(Boolean);
@@ -751,7 +761,7 @@ export function claimReason(root, rels, { transcript, requireClaim = false, via 
 It shows what the other sessions are doing; if one already has your work, don't commit it.
 (A person committing by hand, not an agent: git commit --no-verify skips this check.)`, notes: [] };
   const notes = [];
-  if (!mine) mine = autoClaim(root, branch, transcript ? taskFromTranscript(transcript) : "", base, live, via);
+  if (!mine) { const t = typeof transcript === "function" ? transcript() : transcript; mine = autoClaim(root, branch, t ? taskFromTranscript(t) : "", base, live, via); }
   else if (mine.checking) mine = waitChecked(root, mine);
   else if (!mine.refusedAs) {
     // An older claim this one hasn't been compared with: one made at the same moment as it (recheckClaim).
@@ -832,7 +842,7 @@ function noticeHook() {
   if (/^(Bash|PowerShell)$/.test(tool)) {
     const r = shellEdits(root, gitDir, base);
     if (r.length) {
-      const c = claimReason(root, r, { transcript: input.transcript_path ?? input.transcriptPath, via: "shell" });
+      const c = claimReason(root, r, { transcript: () => hookTranscript(input), via: "shell" });
       block = c.block; extra.push(...c.notes); edited.push(...r);
     }
   }
