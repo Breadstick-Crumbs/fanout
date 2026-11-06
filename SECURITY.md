@@ -8,4 +8,4 @@ Supported: the latest release on `main`.
 
 ## What fanout runs
 
-fanout has no dependencies and no server. Its hooks run `node fanout.mjs <hook>` on your machine and read git. The only network call is the same-work check, made through your own signed-in `claude` or `codex` CLI; `FANOUT_CLAIM_JUDGE=off` turns it off. See [What does it run, and what leaves my machine?](README.md#faq) in the README.
+fanout has no dependencies and no server. Its hooks run `node fanout.mjs <hook>` on your machine and read git. The only network call is the same-work check, made through your own signed-in `claude` or `codex` CLI; `FANOUT_CLAIM_JUDGE=off` turns it off. See [PRIVACY.md](PRIVACY.md).

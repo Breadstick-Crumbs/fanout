@@ -334,7 +334,7 @@ With one session, no: claims stay off and `fanout run` only acts on branches nam
 **What does it run, and what leaves my machine?**
 - **Hooks (Claude Code):** before an edit (the guard), after a tool call (claims for shell edits, and notices), and at session start. Each is `node fanout.mjs <hook>` on your machine, reading git.
 - **Sent to a model:** only for the same-work check, through your own signed-in `claude` CLI (or `codex`). It sends your latest request to the session (up to 600 characters), plus the other live sessions' tasks and the files they claimed. `FANOUT_CLAIM_JUDGE=off` turns the check off; sessions then get the list and compare the tasks themselves.
-- **Nothing else:** no telemetry, no server.
+- **Nothing else:** no telemetry, no server. Details in [PRIVACY.md](PRIVACY.md).
 - **Written:** claims on the git ref `refs/fanout/state`; the event log and per-checkout state in `.git/`; `fanout run`'s plan and lanes in `.fanout/` (git-ignored), with copies of the files `.worktreeinclude` lists. The git hook is installed only by `fanout init` or `fanout install-git-hook`.
 
 **Will it burn tokens?**
