@@ -25,7 +25,7 @@ You run several agents, each in its own worktree and branch. Every branch passes
 - **Branches that pass alone but break together are caught before main.** fanout merges every session's branch, runs your tests, and sends any failure back to the agent that caused it. On our benchmark: 0 merge conflicts and 0 repair commits on `main`, against 2 conflicts and 4 repair commits in every run without it.
 - **Each session hears about changes it needs, while it works.** When another session commits a change to code yours has read or edited, it gets the diff and builds on the new version, instead of finding out when the build fails.
 - **The same task, in other words, is done once.** A session about to build what another already has is stopped before its first change, and says which session has it. "Add a dark mode toggle" and "users want a night theme" count as the same work: 40 of 40 held-out pairs right.
-- **Works with what you already use.** Worktrees, orchestrators and Claude's session messaging keep working; fanout adds the checks they don't do. Nothing to set up: install the plugin and it switches on when two sessions share a repo.
+- **Works with what you already use.** Worktrees, orchestrators and Claude's session messaging keep working; fanout adds the checks they don't do. Nothing to set up: install the plugin and it switches on when two sessions share a repo. Using Conductor, claude-squad or Paradev? [Here's how](docs/orchestrators.md).
 - **Claude Code, Codex, or both,** plus any agent that reads `AGENTS.md`.
 - **One big job split across agents,** when you want it: `fanout run` gives each agent its own files, freezes shared interfaces, and tests every branch merged together before anything reaches `main`.
 - **No dependencies.** Node 18+ and git.
@@ -313,7 +313,9 @@ Even when you don't split the work, `rehearse` and the edit guard cost nothing t
 | Spots sessions you didn't plan editing the same files | No | No | `fanout overlap` |
 | Stops two sessions doing the same task | No | No | Claims |
 
-fanout runs before your CI, not instead of it.
+fanout runs before your CI, not instead of it. It runs under orchestrators like Conductor, claude-squad and Paradev too ([setup](docs/orchestrators.md)).
+
+Conflict predictors like Clash dry-run a merge of each pair of worktrees and warn on overlapping lines. fanout does that too (`fanout overlap`), then runs your tests on all the branches merged, so it also catches merges that are clean in git and broken in the build, and work two sessions both started.
 
 ## FAQ
 
