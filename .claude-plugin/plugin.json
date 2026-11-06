@@ -4,5 +4,9 @@
   "version": "0.31.1",
   "author": { "name": "Breadstick-Crumbs" },
   "license": "MIT",
-  "repository": "https://github.com/Breadstick-Crumbs/fanout"
+  "repository": "https://github.com/Breadstick-Crumbs/fanout",
+  "homepage": "https://github.com/Breadstick-Crumbs/fanout",
+  "documentationUrl": "https://github.com/Breadstick-Crumbs/fanout#readme",
+  "supportUrl": "https://github.com/Breadstick-Crumbs/fanout/issues",
+  "privacyPolicyUrl": "https://github.com/Breadstick-Crumbs/fanout/blob/main/PRIVACY.md"
 }
