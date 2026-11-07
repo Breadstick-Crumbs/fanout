@@ -41,7 +41,21 @@ Your orchestrator shows one workspace's diff. fanout tests it merged with everyo
 npx github:Breadstick-Crumbs/fanout done
 ```
 
-It merges this branch with the other sessions' commits, runs your tests, and names whose merge broke them. To see every workspace at once, with the files two of them are both changing and whether they'd conflict:
+It merges this branch with the other sessions' commits, runs your tests, and names whose merge broke them.
+
+**From a script or an orchestrator,** add `--json`. It prints one object (`result`, `culprit`, `yours`, `mergedWith`, `failing`, `log`) and exits with a code per outcome, so the failure can go to the session that caused it:
+
+| `result` | Exit | Meaning |
+|---|---|---|
+| `ok` | 0 | This branch works merged with the others |
+| `broke`, `conflict` | 1 | This branch breaks the merged build, or conflicts |
+| `not_ready` | 2 | Not on a session's branch, or no commits yet |
+| `broke_other`, `conflict_other` | 3 | Another session's branch (`culprit`) breaks it, before this one is merged |
+| `base_fails` | 4 | The tests already fail on the base branch |
+| `duplicate` | 5 | This session's task is the same work as another's |
+| `flaky` | 6 | The tests failed, then passed on the same code |
+
+To see every workspace at once, with the files two of them are both changing and whether they'd conflict:
 
 ```bash
 npx github:Breadstick-Crumbs/fanout

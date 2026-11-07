@@ -264,6 +264,44 @@ test("fanout done tests this branch merged with the other sessions' commits, and
   assert.match(broke.stdout, /merging b after a breaks/);
 });
 
+test("fanout done --json prints one object and an exit code per outcome: ok, broke by this branch, not ready, base fails", () => {
+  const { root, a, b } = repo();
+  const g = (cwd, ...x) => execFileSync("git", x, { cwd, stdio: "ignore" });
+  const done = (cwd) => { const r = fan(cwd, ["done", "--json"]); return { status: r.status, j: JSON.parse(r.stdout) }; };
+  writeFileSync(join(root, "t.mjs"), `import { existsSync, readFileSync } from "node:fs"; const r = (f) => existsSync(f) && readFileSync(f, "utf8"); if (r("a.txt") === "x" && r("b.txt") === "x") process.exit(1);`);
+  g(root, "add", "-A"); g(root, "commit", "-qm", "test"); g(root, "config", "fanout.test", "node t.mjs");
+  for (const w of [a, b]) g(w, "merge", "-q", "main");
+  fan(a, ["start", "write a"]); fan(b, ["start", "write b"]);
+  let r = done(b);
+  assert.equal(r.status, 2); assert.equal(r.j.result, "not_ready"); assert.equal(r.j.exitCode, 2);
+  writeFileSync(join(a, "a.txt"), "x"); g(a, "add", "-A"); g(a, "commit", "-qm", "a");
+  writeFileSync(join(b, "b.txt"), "y"); g(b, "add", "-A"); g(b, "commit", "-qm", "b");
+  r = done(b);
+  assert.equal(r.status, 0, JSON.stringify(r.j));
+  assert.deepEqual([r.j.result, r.j.branch, r.j.base, r.j.mergedWith, r.j.test, r.j.culprit], ["ok", "b", "main", ["a"], "node t.mjs", null]);
+  writeFileSync(join(b, "b.txt"), "x"); g(b, "commit", "-qam", "b2");
+  r = done(b);
+  assert.equal(r.status, 1);
+  assert.deepEqual([r.j.result, r.j.culprit, r.j.yours], ["broke", "b", true]);
+  assert.ok(r.j.log.some((l) => /^BROKE after b/.test(l)));
+  // A test that fails on main whatever is merged: nobody's branch is blamed.
+  g(root, "config", "fanout.test", "node -e process.exit(1)");
+  r = done(b);
+  assert.equal(r.status, 4); assert.equal(r.j.result, "base_fails"); assert.equal(r.j.culprit, null);
+});
+
+test("doneOutcome tells this branch's break from another branch's, a conflict, a flaky test and a failing base", async () => {
+  const { doneOutcome } = await import("../skills/fanout/fanout.mjs");
+  assert.deepEqual(doneOutcome(true, ["OK after b (all 2 merged)"], "b"), { result: "ok", culprit: null, yours: false, failing: null });
+  assert.deepEqual(doneOutcome(false, ["OK after a", "BROKE after b: `npm test` exited 1", "not ok 1 - x"], "b"), { result: "broke", culprit: "b", yours: true, failing: "not ok 1 - x" });
+  assert.equal(doneOutcome(false, ["BROKE after a: `npm test` exited 1", "tail"], "b").result, "broke_other");
+  assert.deepEqual(doneOutcome(false, ["CONFLICT merging a: x.txt, y.txt"], "b"), { result: "conflict_other", culprit: "a", yours: false, failing: "x.txt, y.txt" });
+  assert.equal(doneOutcome(false, ["CONFLICT merging b: x.txt"], "b").result, "conflict");
+  assert.equal(doneOutcome(false, ["OK after a (all 2 merged)", "CHECK FAILED feature/x: `npm run check` exited 2", "tail"], "feature/x").result, "broke");
+  assert.equal(doneOutcome(false, ["FLAKY: `npm test` failed, then passed", "tail"], "b").result, "flaky");
+  assert.equal(doneOutcome(false, ["BASE FAILS: `npm test` already fails on main", "tail"], "b").result, "base_fails");
+});
+
 test("fanout init writes the two commands into AGENTS.md, replacing its own block on a rerun", () => {
   const { root } = repo();
   writeFileSync(join(root, "AGENTS.md"), "# Project\n\nUse tabs.\n");
