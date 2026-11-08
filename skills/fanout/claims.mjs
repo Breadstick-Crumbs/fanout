@@ -560,10 +560,16 @@ export function precheck(cwd, branch, task, base) {
   // Two messages sent in a row start two of these: the same task is checked once.
   let was; try { was = JSON.parse(readFileSync(join(gitDir, PRECHECK), "utf8")); } catch { was = null; }
   if (was?.task === task && (was.pending ? Date.now() - was.at < 120000 : others.every((c) => was.others?.includes(sig(c))))) return;
-  const put = (x) => { try { writeFileSync(join(gitDir, PRECHECK), JSON.stringify({ task, at: Date.now(), ...x })); } catch { /* read-only */ } };
-  put({ pending: true });
+  // A late start (a slow machine) can find the session already claimed by its first edit, which has used or
+  // skipped the early answer: checking now would cost a model call for nothing. (A claim made after this point
+  // waits for this check's answer, so it isn't asked again here.)
+  if (Object.values(readState(cwd).claims).some((c) => c.branch === branch)) return;
+  const file = join(gitDir, PRECHECK), put = (x, flag = "w") => writeFileSync(file, JSON.stringify({ task, at: Date.now(), ...x }), { flag });
+  // Created exclusively: of two started at the same moment, both can read no file above, and only one goes on.
+  if (was) try { rmSync(file); } catch { /* gone */ }
+  try { put({ pending: true }, "wx"); } catch { return; } // the other has it, or the git dir is read-only
   const o = taskOverlap(task, others, cwd);
-  put({ others: others.map(sig), same: o.same.map((c) => c.name), why: o.why, by: o.by, costUsd: o.costUsd ?? null });
+  try { put({ others: others.map(sig), same: o.same.map((c) => c.name), why: o.why, by: o.by, costUsd: o.costUsd ?? null }); } catch { /* read-only */ }
 }
 // Sessions that claimed since the early check are checked now, on their own.
 function prechecked(cwd, task, others) {

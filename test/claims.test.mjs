@@ -156,7 +156,8 @@ test("the same-work check starts when the user sends the request, so the first e
   assert.ok(Date.now() - t0 < 3000, "the prompt hook doesn't wait for the check");
   assert.equal(readState(root).claims.b, undefined, "no claim until the session edits: a question alone claims nothing");
   const file = join(execFileSync("git", ["rev-parse", "--absolute-git-dir"], { cwd: b, encoding: "utf8" }).trim(), "fanout-precheck.json");
-  for (const end = Date.now() + 30000; Date.now() < end && !(existsSync(file) && !JSON.parse(readFileSync(file, "utf8")).pending);) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+  // As long as the check itself may take (2 minutes): on a busy machine the background process can be slow to start.
+  for (const end = Date.now() + 120000; Date.now() < end && !(existsSync(file) && !JSON.parse(readFileSync(file, "utf8")).pending);) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
   const dup = guardT(b, "theme.css", task, slow);
   assert.equal(dup.status, 2, dup.stdout + dup.stderr);
   assert.match(dup.stderr, /same work as another session's:\n {2}a \(branch a\)/);
