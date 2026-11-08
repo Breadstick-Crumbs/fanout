@@ -30,7 +30,7 @@ export const REF = "refs/fanout/state";
 const IDLE_HOURS = 24;
 
 const git = (cwd, args, input) => {
-  const r = spawnSync("git", args, { cwd, encoding: "utf8", input, maxBuffer: 64 << 20 });
+  const r = spawnSync("git", args, { cwd, encoding: "utf8", input, maxBuffer: 64 << 20, windowsHide: true });
   return { ok: r.status === 0, out: r.stdout ?? "", err: r.stderr ?? "" };
 };
 const IDENT = ["-c", "user.name=fanout", "-c", "user.email=fanout@local"];
@@ -184,7 +184,7 @@ export function writeState(cwd, mutate, msg = "fanout: claims") {
 // The tree merging b into a would make, written as objects only (no checkout or ref changes), and whether it
 // merged without a conflict; null if git can't (older than 2.38).
 export function mergedTree(cwd, a, b) {
-  const r = spawnSync("git", ["merge-tree", "--write-tree", "--no-messages", a, b], { cwd, encoding: "utf8" });
+  const r = spawnSync("git", ["merge-tree", "--write-tree", "--no-messages", a, b], { cwd, encoding: "utf8", windowsHide: true });
   const tree = (r.stdout ?? "").split("\n")[0].trim();
   return (r.status === 0 || r.status === 1) && /^[0-9a-f]{40,64}$/.test(tree) ? { tree, clean: r.status === 0 } : null;
 }
@@ -284,10 +284,10 @@ const bin = (name) => process.env[`FANOUT_${name.toUpperCase()}_BIN`] || name;
 export function judgeAgent(cwd) {
   const want = process.env.FANOUT_CLAIM_JUDGE_AGENT;
   if (want === "claude" || want === "codex") return want;
-  const claude = spawnSync(`${bin("claude")} auth status`, { cwd, shell: true, encoding: "utf8", timeout: 30000 });
+  const claude = spawnSync(`${bin("claude")} auth status`, { cwd, shell: true, encoding: "utf8", timeout: 30000, windowsHide: true });
   try { if (JSON.parse((claude.stdout ?? "").slice(claude.stdout.indexOf("{"))).loggedIn === true) return "claude"; } catch { /* not there */ }
   if (process.env.ANTHROPIC_API_KEY) return "claude";
-  if (spawnSync(`${bin("codex")} login status`, { cwd, shell: true, encoding: "utf8", timeout: 30000 }).status === 0) return "codex";
+  if (spawnSync(`${bin("codex")} login status`, { cwd, shell: true, encoding: "utf8", timeout: 30000, windowsHide: true }).status === 0) return "codex";
   return null;
 }
 
@@ -298,7 +298,7 @@ function askModel(agent, prompt, cwd) {
   const model = process.env.FANOUT_CLAIM_JUDGE_MODEL;
   if (agent === "claude") {
     const r = spawnSync(`${bin("claude")} -p --model ${model || "sonnet"} --tools "" --setting-sources project,local --strict-mcp-config --output-format json`,
-      { cwd, shell: true, encoding: "utf8", input: prompt, timeout: 120000 });
+      { cwd, shell: true, encoding: "utf8", input: prompt, timeout: 120000, windowsHide: true });
     const out = r.stdout ?? "", j = JSON.parse(out.slice(out.indexOf("{")));
     return j.is_error ? null : { text: String(j.result ?? ""), costUsd: j.total_cost_usd ?? null };
   }
@@ -309,7 +309,7 @@ function askModel(agent, prompt, cwd) {
   // the benchmark after a day of heavy use: calls ran into the timeout), so the first such event ends the call.
   // Answers took 12-22s; rate-limited, Codex often goes quiet without printing the 429 at all. So one 45s try,
   // and silence past that counts as unavailable too: the agent then compares the tasks itself.
-  const r = spawnSync(process.execPath, ["-e", CODEX_WATCH, cmd], { cwd, encoding: "utf8", input: prompt, timeout: 45000 });
+  const r = spawnSync(process.execPath, ["-e", CODEX_WATCH, cmd], { cwd, encoding: "utf8", input: prompt, timeout: 45000, windowsHide: true });
   if (r.status === 3 || r.error?.code === "ETIMEDOUT" || r.signal) return { rateLimited: true };
   try { return { text: readFileSync(file, "utf8"), costUsd: null }; } catch { return null; } finally { try { rmSync(file); } catch { /* none */ } }
 }
