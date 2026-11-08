@@ -363,6 +363,16 @@ test(".worktreeinclude: folder names with or without a slash, at any depth; a fa
   assert.equal(inc("*.env").length, 400);
 });
 
+test("plan commands get FANOUT_COPY: one name per folder, safe as a database name", async () => {
+  const { runPlanCmd } = await import("../skills/fanout/fanout.mjs");
+  const a = join(dir(), "My Lane-1"), b = join(dir(), "My Lane-1");
+  mkdirSync(a); mkdirSync(b);
+  const copy = (cwd) => runPlanCmd('echo "$FANOUT_COPY"', cwd).stdout.trim();
+  assert.match(copy(a), /^my_lane_1_[0-9a-f]{6}$/);
+  assert.equal(copy(a), copy(a), "the same folder keeps its name");
+  assert.notEqual(copy(a), copy(b), "same folder name, different path");
+});
+
 test("rehearse: reports a textual conflict and the files", () => {
   const d = dir();
   const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
