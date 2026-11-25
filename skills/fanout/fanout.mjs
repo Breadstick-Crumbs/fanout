@@ -658,6 +658,7 @@ function main(argv) {
   if (cmd === "prompt") return promptHook();
   if (cmd === "precheck") return precheckCmd(argv[1]);
   if (cmd === "run") return import("./run.mjs").then((m) => m.cli(argv.slice(1)));
+  if (cmd === "jobs") return import("./jobs.mjs").then((m) => m.jobs(argv.slice(1)));
   if (cmd === "demo") return import("./demo.mjs").then((m) => m.demo(argv.slice(1)));
   const cwd = resolve(arg(argv, "--cwd", process.cwd()));
   if (cmd === "precommit") return precommit(cwd);
@@ -689,6 +690,7 @@ function main(argv) {
   inbox                                   changes other sessions committed since you last looked (agents without hooks)
   demo [--yes] [--record f.svg]           claims and notices with real Claude Code sessions in a throwaway repo (~2 min, ~$0.10)
   run ["goal" | --goal-file f] [--yes]   split a job across agents: plan, agents, rehearse, fix, merge (fanout run --help)
+  jobs <run|status|resume|abort>          run and monitor partitioned batch workers (fanout jobs --help)
   overlap [--base <branch>] [--all]       same as no command
   init                                    claims on for good in this repo (they also switch on by themselves with 2+ active sessions)
   claim <name> "<task>" [files...]        claim a task by name; the files named are locked for other sessions
