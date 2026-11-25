@@ -661,12 +661,18 @@ export async function cli(argv) {
 
       // 4. Rehearse, and send each break back to the lane that caused it
       live.phase = "rehearse"; save();
+      let rehearsedHeads;
       for (;;) {
         const r = rehearse(order, { cwd: root, base: laneBase, baseLabel: base, test, regen, checks: sessions, logs });
         checks = r.checks;
         testResult = test ? (r.testPassed === true ? "passed in rehearsal" : r.testPassed === false ? "failed in rehearsal" : "not run") : "not configured";
         testRuns += r.testRuns;
-        if (r.ok) { log("rehearse: all branches merge and pass together"); break; }
+        if (r.ok) { rehearsedHeads = r.heads; log("rehearse: all branches merge and pass together"); break; }
+        if (r.ownershipFailed) {
+          console.log(r.log.join("\n"));
+          log("stopped: repair the lane branch or update the plan before retrying.");
+          return finish(1, `OWNERSHIP FAILED ${r.ownershipFailed}`);
+        }
         const head = r.log.find((l) => /^(BROKE after|CONFLICT merging|REGEN FAILED after|CHECK FAILED) /.test(l)) ?? "";
         const name = head.match(/(?:after|merging|FAILED) ([^\s:]+)/)?.[1];
         const s = sessions.find((x) => x.name === name);
@@ -711,13 +717,19 @@ export async function cli(argv) {
         return `${agents.length} agent runs, ${t.fixes} fixes, $${t.costUsd.toFixed(2)}${t.estimatedCost ? " estimated" : ""}${t.costUnknown ? " + unknown" : ""} agent cost, ${Math.round(t.tokens / 1000)}k tokens, ${Math.round((Date.now() - t0) / 1000)}s`;
       };
       live.phase = "merge"; save();
+      const laneHead = (name) => git(root, "rev-parse", "--verify", `refs/heads/fanout/${name}`).out.trim();
+      const changedLane = order.find((name) => !rehearsedHeads.has(name) || laneHead(name) !== rehearsedHeads.get(name));
+      if (changedLane) {
+        console.error(`fanout run: fanout/${changedLane} changed during rehearsal. Run again to test its current commit.`);
+        return finish(1, "lane changed");
+      }
       if (flag("--no-merge")) { log(`ready to merge in order ${order.join(" -> ")} (${stats()})`); return finish(0, "ready to merge"); }
       if (git(buildRoot, "rev-parse", "HEAD").out.trim() !== laneBase || git(buildRoot, "branch", "--show-current").out.trim() !== base) {
         console.error(`fanout run: ${base} changed during the run; the lanes are ready for review.`);
         return finish(1, "base changed");
       }
       for (const name of order) {
-        const m = git(buildRoot, "merge", "--no-ff", "--no-edit", "-m", `fanout: merge ${name}`, `fanout/${name}`);
+        const m = git(buildRoot, "merge", "--no-ff", "--no-edit", "-m", `fanout: merge ${name}`, rehearsedHeads.get(name));
         if (!m.ok) { git(buildRoot, "merge", "--abort"); console.error(`fanout run: merging ${name} into ${base} conflicted, though rehearse passed. Is ${base} changed?\n${tail(m.out)}`); return finish(1, "merge conflict"); }
       }
       for (const g of regen) if (g.cmd) {
@@ -731,10 +743,11 @@ export async function cli(argv) {
       log(`${final.status === 0 ? "merged" : "merged, but tests fail"} into ${base}: ${order.join(" -> ")} (${stats()})`);
       if (final.status !== 0) console.log(`${failureLines(final.out)}\nFull output: ${final.logPath}`);
       if (final.status === 0) for (const s of sessions) {
-        live.sessions[s.name].head = git(wt[s.name], "rev-parse", "HEAD").out.trim();
+        live.sessions[s.name].head = rehearsedHeads.get(s.name);
       }
       const code = finish(final.status === 0 ? 0 : 1, final.status === 0 ? "merged" : "merged, tests fail");
       if (!code) for (const s of sessions) {
+        if (laneHead(s.name) !== rehearsedHeads.get(s.name)) { log(`kept ${wt[s.name]} because its branch changed after rehearsal`); continue; }
         const error = dropWorktree(root, wt[s.name], { force: true });
         if (error) console.error(`fanout run: could not remove ${wt[s.name]}: ${error}. Try fanout clean.`);
         else if (git(root, "merge-base", "--is-ancestor", `refs/heads/fanout/${s.name}`, baseRef).ok) git(root, "branch", "-D", `fanout/${s.name}`);

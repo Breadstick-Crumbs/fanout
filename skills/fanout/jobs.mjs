@@ -95,6 +95,14 @@ function show(dir, state) {
   console.log(`Logs and state: ${dir}`);
 }
 
+function reportLiveWorkers(state) {
+  const workers = state.partitions.filter((part) => pidAlive(part.pid));
+  if (!workers.length) return false;
+  console.error("fanout jobs: recorded worker PIDs are still alive. Check these processes before resuming:");
+  for (const part of workers) console.error(`  partition ${JSON.stringify(part.id)}  PID ${part.pid}`);
+  return true;
+}
+
 async function start(dir, plan, budgetMicros) {
   const unlock = lock(dir);
   try {
@@ -146,13 +154,18 @@ export async function jobs(argv) {
     const dir = join(base, target), state = load(statePath(dir));
     if (action === "status") { show(dir, state); return 0; }
     if (action === "resume") return await start(dir, load(join(dir, "plan.json")), value == null ? undefined : Number(value));
-    if (state.phase !== "running" || !pidAlive(state.pid)) { show(dir, state); return 0; }
+    if (state.phase !== "running" || !pidAlive(state.pid)) {
+      show(dir, state);
+      return reportLiveWorkers(state) ? 1 : 0;
+    }
     writeFileSync(abortPath(dir), "");
     for (let attempt = 0; attempt < 100; attempt++) {
       await delay(100);
       const latest = load(statePath(dir));
       if (latest.phase !== "running" || latest.pid !== state.pid || !pidAlive(latest.pid)) {
         show(dir, latest);
+        if (latest.pid !== state.pid && latest.phase === "running") return 1;
+        if (reportLiveWorkers(latest)) return 1;
         return latest.phase === "aborted" ? 0 : 1;
       }
     }

@@ -300,6 +300,8 @@ Request a permit for each API call, including retries. Use each permit promptly 
 
 An interrupted permit is charged at its reserved ceiling. Resume keeps those charges and the recent request history, skips completed partitions, and reruns unfinished partitions from the start. Make writes idempotent by item so reruns can safely replay partial work. The worker owns its database transactions and decides when its writes are durable.
 
+If the supervisor has exited and recorded worker PIDs are still alive, `fanout jobs abort` lists the partitions and PIDs and returns a failure. Check those processes before resuming.
+
 ## Does it work?
 
 **Sessions you open yourself** ([results](bench/RESULTS.md#claims-telling-the-same-task-from-different-work-v023)):
@@ -456,6 +458,8 @@ You can commit a shared interface before starting a run and list the file under 
 Each run prints a lane report and saves it to `.fanout/report.md`. It includes the lane's diff stat, check and test results, token usage, duration, last session ID, and any closing message the agent reports. The run log and `fanout status` show session IDs, and status also shows lane worktree and agent process health.
 
 Fanout saves stdout and stderr for tests, checks, and regeneration commands under `.fanout/logs/`, including successful rehearsals and early tests. For failures it prints an excerpt and the full log path. Use `fanout rehearse --keep` to inspect the rehearsal worktree until the next rehearsal or cleanup.
+
+Rehearsal checks the files each lane adds to the merged tree against the current plan. If a lane exceeds its ownership, Fanout prints the paths and keeps the lane for review. The final merge uses the commits that passed rehearsal.
 
 Use `fanout abort` to stop a run and its agents while keeping the lane worktrees available. `fanout clean` removes lane and rehearsal worktrees and prunes stale registrations. Add `--branches` to delete the associated lane branches or `--force` to discard local worktree changes. On Windows, if cleanup reports a locked path, close any editor, terminal or other process holding it and retry. Base selection and lane paths are relative to the checkout you invoked Fanout from, including linked worktrees.
 

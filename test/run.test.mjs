@@ -487,6 +487,52 @@ test("running again after a stop reuses branches and skips finished sessions", (
   assert.match(r.stdout, /a: already has commits/);
 });
 
+test("run and rehearse reject a reused lane's committed rename from outside its ownership", () => {
+  useFake();
+  const repo = mkRepo(PLAN_A);
+  const lane = join(repo, ".fanout", "lanes", "a");
+  git(repo, "worktree", "add", "-qb", "fanout/a", lane);
+  git(lane, "mv", "x.txt", "a.txt");
+  git(lane, "commit", "-qm", "rename outside file into lane");
+  const base = git(repo, "rev-parse", "HEAD"), head = git(lane, "rev-parse", "HEAD");
+  for (const args of [["rehearse"], ["run", "--yes"]]) {
+    const result = cli(repo, args);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /OWNERSHIP FAILED a/);
+    assert.match(result.stdout, /does not own x\.txt/);
+    assert.equal(calls().length, 0);
+    assert.equal(git(repo, "rev-parse", "HEAD"), base);
+    assert.equal(git(lane, "rev-parse", "HEAD"), head);
+    assert.ok(existsSync(join(repo, "x.txt")));
+  }
+});
+
+test("run leaves the base and lane intact if a branch advances during rehearsal", () => {
+  useFake();
+  const repo = mkRepo("test: node move-lane.mjs\n" + PLAN_A);
+  const lane = join(repo, ".fanout", "lanes", "a");
+  writeFileSync(join(repo, "move-lane.mjs"), `
+import { execFileSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+const lane = ${JSON.stringify(lane)};
+writeFileSync(join(lane, "a.txt"), "later change");
+execFileSync("git", ["-C", lane, "commit", "-qam", "advance rehearsed branch"]);
+`);
+  git(repo, "add", "move-lane.mjs");
+  git(repo, "commit", "-qm", "add test");
+  git(repo, "worktree", "add", "-qb", "fanout/a", lane);
+  writeFileSync(join(lane, "a.txt"), "first change");
+  git(lane, "add", "a.txt");
+  git(lane, "commit", "-qm", "first lane commit");
+  const base = git(repo, "rev-parse", "HEAD");
+  const result = cli(repo, ["run", "--yes"]);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /fanout\/a changed during rehearsal/);
+  assert.equal(git(repo, "rev-parse", "HEAD"), base);
+  assert.equal(git(lane, "show", "HEAD:a.txt"), "later change");
+});
+
 test("status shows each session's agent state and cost from the run's live.json", () => {
   useFake();
   const repo = mkRepo(PLAN_AB);

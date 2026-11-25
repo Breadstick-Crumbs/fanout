@@ -362,8 +362,9 @@ export function rehearse(order, { cwd, base = "main", baseLabel = base, test, re
   const blocked = drop();
   if (blocked) return { ok: false, log: [`Cannot clear ${wt}: ${blocked}`, `Logs: ${logs.folder}`], testRuns, logDir: logs.folder, checks: {} };
   git(["worktree", "add", "--detach", wt, base], root);
-  let ok = true, testPassed, probedFailure = false;
+  let ok = true, testPassed, ownershipFailed, probedFailure = false;
   const checkResults = Object.create(null);
+  const heads = new Map();
   try {
     const { copied, failed } = copyIncludes(source, wt);
     if (copied.length) log.push(`COPIED from your checkout (.worktreeinclude): ${listed(copied)}`);
@@ -371,15 +372,31 @@ export function rehearse(order, { cwd, base = "main", baseLabel = base, test, re
     const merged = [[baseLabel, g("rev-parse", "HEAD").trim()]]; // [name, commit]: merged[k] = state after k merges
     for (const name of order) {
       const branch = prefix + name; // fanout/<name>, or any branch with prefix ""
-      try { git(["rev-parse", "--verify", "--quiet", branch], root); }
+      let head;
+      try { head = git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`], root).trim(); }
       catch { log.push(`SKIP ${name}: no branch ${branch}`); continue; }
-      try { g("merge", "--no-ff", "--no-edit", branch); }
+      try { g("merge", "--no-ff", "--no-edit", head); }
       catch {
         const files = g("diff", "--name-only", "--diff-filter=U").split("\n").filter(Boolean);
         log.push(`CONFLICT merging ${name}: ${files.join(", ")}`);
         ok = false; break;
       }
-      merged.push([name, g("rev-parse", "HEAD").trim()]);
+      const result = g("rev-parse", "HEAD").trim();
+      const lane = checks.find((session) => session.name === name);
+      if (lane) {
+        // Earlier lanes are already in the scratch tree. Inspect what this merge
+        // adds, including changes introduced by a merge commit or a rename.
+        const paths = g("diff", "--name-only", "--no-renames", "-z", merged.at(-1)[1], result, "--").split("\0").filter(Boolean);
+        const denied = paths.map((path) => blockReason(checks, lane, regen, path)).filter(Boolean);
+        if (denied.length) {
+          log.push(`OWNERSHIP FAILED ${name}: committed changes exceed the plan`, ...denied);
+          ownershipFailed = name;
+          ok = false;
+          break;
+        }
+      }
+      heads.set(name, head);
+      merged.push([name, result]);
     }
     // State after the first k merges: rebuild generated files (as the real merge will), then test.
     const probe = (k) => {
@@ -438,7 +455,7 @@ export function rehearse(order, { cwd, base = "main", baseLabel = base, test, re
   }
   if (ok) log.push(test || checks.some((c) => c.check) ? "All branches merge and pass together." : "All branches merge cleanly (no test command: add `test:` to the plan).");
   log.push(`Logs: ${logs.folder}`);
-  return { ok, log, testRuns, logDir: logs.folder, checks: checkResults, testPassed };
+  return { ok, log, testRuns, logDir: logs.folder, checks: checkResults, testPassed, ownershipFailed, heads };
 }
 
 // The part of a failing run an agent needs. With TAP output (node --test when not on a terminal) the end is
@@ -732,7 +749,7 @@ function main(argv) {
     const { ok, log, testRuns } = rehearse(order, { cwd, base: baseForPlan, test: arg(argv, "--test") ?? planSetting(text, "test"), regen, checks: sessions, keep: argv.includes("--keep") });
     log.forEach((l) => console.log(l));
     appendLog(cwd, { kind: "rehearse", sessions: order.length, seconds: Math.round((Date.now() - t0) / 1000), testRuns,
-      result: ok ? "pass" : (log.find((l) => /^(BROKE|CONFLICT|REGEN FAILED|CHECK FAILED|FLAKY|BASE FAILS)/.test(l)) ?? "fail").split(":")[0] });
+      result: ok ? "pass" : (log.find((l) => /^(BROKE|CONFLICT|REGEN FAILED|CHECK FAILED|OWNERSHIP FAILED|FLAKY|BASE FAILS)/.test(l)) ?? "fail").split(":")[0] });
     return ok ? 0 : 1;
   });
   const name = arg(argv, "--session") ?? currentSession(cwd);
