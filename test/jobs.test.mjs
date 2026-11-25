@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -159,6 +159,29 @@ test("resume charges a durable reservation after the supervisor is killed", { ti
       await closed;
     }
   }
+});
+
+test("abort reports surviving worker PIDs when the job supervisor is gone", async (t) => {
+  const f = fixture(t, { cap: 10, config: {} });
+  const dir = join(f.base, "job-orphan");
+  mkdirSync(dir, { recursive: true });
+  const worker = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  const closed = new Promise((resolve, reject) => { worker.once("close", resolve); worker.once("error", reject); });
+  try {
+    writeFileSync(join(dir, "state.json"), JSON.stringify({
+      phase: "running", pid: null, budgetMicros: 10, spentMicros: 0, heldMicros: 0, uncertainMicros: 0,
+      partitions: [{ id: "east", status: "running", attempts: 1, pid: worker.pid }],
+    }));
+    const aborted = f.cli("abort", "job-orphan");
+    result(aborted, 1);
+    assert.match(aborted.stdout, /: interrupted/);
+    assert.match(aborted.stderr, new RegExp(`partition "east"  PID ${worker.pid}`));
+    assert.doesNotThrow(() => process.kill(worker.pid, 0));
+  } finally {
+    worker.kill();
+    await closed;
+  }
+  result(f.cli("abort", "job-orphan"), 0);
 });
 
 test("abort stops queued workers and resume retains the shared rate history", { timeout: 40000 }, async (t) => {

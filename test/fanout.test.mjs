@@ -266,7 +266,7 @@ test("rehearse: one test run when everything passes, a short bisect when not", (
   g("checkout", "-q", "main");
   writeFileSync(join(d, ".git/info/exclude"), ".fanout/\n");
   const runs = () => (existsSync(counter) ? readFileSync(counter, "utf8").split(";").length - 1 : 0);
-  writeFileSync(join(d, ".fanout/plan.md"), "test: node test.mjs\n## a\nowns: a.ok\n## b\nowns: b.ok\n## c\nowns: c.ok\n## d\nowns: d.ok\n");
+  writeFileSync(join(d, ".fanout/plan.md"), "test: node test.mjs\n## a\nowns: a.ok\n## b\nowns: b.ok\n## c\nowns: c.ok, c.txt\n## d\nowns: d.ok\n");
   const ok = run(["rehearse"], { cwd: d });
   assert.equal(ok.status, 0, ok.stdout + ok.stderr);
   assert.equal(runs(), 1);
