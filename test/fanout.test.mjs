@@ -5,7 +5,7 @@ import { writeFileSync, mkdtempSync, mkdirSync, existsSync, readFileSync, symlin
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parsePlan, parseRegen, matches, check, verify, editTargets } from "../skills/fanout/fanout.mjs";
+import { parsePlan, parseRegen, matches, check, verify, rehearse, editTargets } from "../skills/fanout/fanout.mjs";
 
 // Claims' same-work check calls a real CLI; no test here may reach one.
 process.env.FANOUT_CLAIM_JUDGE = "off";
@@ -373,21 +373,19 @@ test("plan commands get FANOUT_COPY: one name per folder, safe as a database nam
   assert.notEqual(copy(a), copy(b), "same folder name, different path");
 });
 
-test("rehearse: reports a textual conflict and the files", () => {
+test("rehearse: reports a textual conflict and the files when called without a lane plan", () => {
   const d = dir();
   const g = (...a) => execFileSync("git", a, { cwd: d, stdio: "ignore" });
   g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t");
   writeFileSync(join(d, "x.txt"), "1"); g("add", "-A"); g("commit", "-qm", "init");
-  mkdirSync(join(d, ".fanout"));
-  writeFileSync(join(d, ".fanout/plan.md"), "## a\nowns: a/**\n## b\nowns: b/**\n");
   for (const b of ["a", "b"]) {
     g("checkout", "-q", "main"); g("checkout", "-qb", "fanout/" + b);
     writeFileSync(join(d, "x.txt"), b); g("commit", "-qam", b);
   }
   g("checkout", "-q", "main");
-  const r = run(["rehearse"], { cwd: d });
-  assert.equal(r.status, 1);
-  assert.match(r.stdout, /CONFLICT merging b: x\.txt/);
+  const r = rehearse(["a", "b"], { cwd: d });
+  assert.equal(r.ok, false);
+  assert.match(r.log.join("\n"), /CONFLICT merging b: x\.txt/);
 });
 
 test("regen: parsed, no session may own it, guard blocks it, rehearse rebuilds it", () => {
