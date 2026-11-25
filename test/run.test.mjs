@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runAgent, brief, plannerPrompt, staggered, allowCommands, mixAgents, readyTracker, dependencies } from "../skills/fanout/run.mjs";
 import { parsePlan } from "../skills/fanout/fanout.mjs";
 import { scrub } from "../bench/scrub.mjs";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync, spawn } from "node:child_process";
 
 // Claims' same-work check calls a real CLI; no test here may reach one.
 process.env.FANOUT_CLAIM_JUDGE = "off";
@@ -19,7 +19,10 @@ writeFileSync(fake, `
 import { appendFileSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 const args = process.argv.slice(2);
 // Sign-in checks (claude auth status / codex login status) aren't agent calls, so they aren't logged.
-if (args[0] === "auth") { console.log(JSON.stringify({ loggedIn: process.env.FAKE_SIGNED_OUT !== "claude" })); process.exit(0); }
+if (args.includes("--output-format") && args[args.indexOf("--output-format") + 1] === "json") {
+  if (process.env.FAKE_SIGNED_OUT === "claude" || process.env.CLAUDE_CODE_HOST_TEST) { console.error("Not logged in"); process.exit(1); }
+  console.log(JSON.stringify({ type: "result", result: "OK" })); process.exit(0);
+}
 if (args[0] === "login") { console.log(process.env.FAKE_SIGNED_OUT === "codex" ? "Not logged in" : "Logged in"); process.exit(process.env.FAKE_SIGNED_OUT === "codex" ? 1 : 0); }
 const stdin = readFileSync(0, "utf8");
 appendFileSync(${JSON.stringify(logFile)}, JSON.stringify({ args, stdin }) + "\\n");
@@ -37,13 +40,17 @@ if (process.env.FAKE_PLAN && stdin.startsWith("Plan a parallel fan-out")) { writ
 // Another session writing in the main checkout while fanout runs.
 if (process.env.FAKE_STRAY && (who || stdin.startsWith("Plan a parallel fan-out"))) writeFileSync(process.env.FAKE_STRAY, "someone else's");
 const resuming = args.includes("--resume") || args.includes("resume");
+if (process.env.FAKE_WAIT) { writeFileSync("agent-ready", String(process.pid)); setInterval(() => {}, 1000); await new Promise(() => {}); }
+if (resuming && process.env.FAKE_FOLLOWUP) { writeFileSync("a.txt", "follow-up"); writeFileSync("x.txt", "outside"); }
 // An early-test failure report: the session fixes its file.
 if (resuming && process.env.FAKE_FIX_FILE && stdin.includes("fails there")) writeFileSync(process.env.FAKE_FIX_FILE, "fixed");
 if (resuming && process.env.FAKE_FAIL_RESUME) { console.log(JSON.stringify({ is_error: true, result: "no such session" })); process.exit(1); }
 if (process.env.FAKE_FAIL_LEAN && args.includes("--setting-sources")) { console.log(JSON.stringify({ is_error: true, result: "auth failed", num_turns: Number(process.env.FAKE_FAIL_LEAN) - 1 || undefined })); process.exit(1); }
-if (args[0] === "exec") {
+if (args.includes("exec")) {
   console.log(JSON.stringify({ type: "thread.started", thread_id: "thread-7" }));
-  console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 5, output_tokens: 2 } }));
+  console.log(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Codex finished the lane." } }));
+  console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 5, cached_input_tokens: 2, output_tokens: 2 } }));
+  if (process.env.FAKE_BUDGET_WAIT) { setInterval(() => {}, 1000); await new Promise(() => {}); }
 } else {
   console.log(JSON.stringify({ session_id: resuming ? "sess-2" : "sess-1", total_cost_usd: 0.5, usage: { input_tokens: 1, output_tokens: 2 } }));
 }
@@ -76,6 +83,164 @@ const runCli = (repo, env = {}) => spawnSync(process.execPath, [join(import.meta
 const PLAN_A = "## a\nowns: a.txt\ntask: a\n", PLAN_AB = PLAN_A + "\n## b\nowns: b.txt\ntask: b\n";
 const callsFor = (n) => calls().filter((c) => c.stdin.includes(`session "${n}"`)).length;
 const runLog = (repo) => readFileSync(join(repo, ".fanout/log.jsonl"), "utf8");
+const entry = join(import.meta.dirname, "../skills/fanout/fanout.mjs");
+const cli = (repo, argv, env = {}) => spawnSync(process.execPath, [entry, ...argv], {
+  cwd: repo, encoding: "utf8", timeout: 20000, env: { ...process.env, FANOUT_STAGGER_MS: "0", ...env },
+});
+const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+
+test("repairs an empty lane, but reports an unregistered nonempty lane without starting agents", () => {
+  useFake();
+  const repo = mkRepo(PLAN_A), lane = join(repo, ".fanout", "lanes", "a");
+  mkdirSync(lane, { recursive: true });
+  writeFileSync(join(lane, "keep.txt"), "keep me");
+  const refused = cli(repo, ["run", "--yes", "--no-merge"]);
+  assert.equal(refused.status, 1, refused.stdout + refused.stderr);
+  assert.match(refused.stderr, /invalid lane .*not a worktree/);
+  assert.equal(calls().length, 0);
+  assert.equal(readFileSync(join(lane, "keep.txt"), "utf8"), "keep me");
+  rmSync(join(lane, "keep.txt"));
+  const repaired = cli(repo, ["run", "--yes", "--no-merge"]);
+  assert.equal(repaired.status, 0, repaired.stdout + repaired.stderr);
+  assert.equal(git(lane, "branch", "--show-current"), "fanout/a");
+});
+
+test("a run uses its linked checkout and an alternate base can merge without switching it", () => {
+  useFake();
+  const main = mkRepo(PLAN_A), tree = join(main, "linked");
+  git(main, "worktree", "add", "-qb", "feature", tree);
+  writeFileSync(join(tree, "feature.txt"), "feature");
+  git(tree, "add", "feature.txt");
+  git(tree, "commit", "-qm", "feature");
+  git(tree, "branch", "target");
+  mkdirSync(join(tree, ".fanout"));
+  writeFileSync(join(tree, ".fanout", "plan.md"), PLAN_A + "uses: feature.txt\n");
+  const oldMain = git(main, "rev-parse", "main"), oldFeature = git(tree, "rev-parse", "HEAD");
+  const local = cli(tree, ["run", "--yes", "--no-merge"]);
+  assert.equal(local.status, 0, local.stdout + local.stderr);
+  assert.equal(git(tree, "show", "fanout/a:feature.txt"), "feature");
+  assert.match(runLog(tree), /"sessionId":"sess-1"/);
+  assert.match(cli(tree, ["log"]).stdout, /ready to merge/);
+  assert.equal(existsSync(join(main, ".fanout", "log.jsonl")), false);
+  writeFileSync(join(tree, "dirty.txt"), "leave this alone");
+  const alternate = cli(tree, ["run", "--yes", "--base", "target"]);
+  assert.equal(alternate.status, 0, alternate.stdout + alternate.stderr);
+  assert.equal(git(tree, "rev-parse", "HEAD"), oldFeature);
+  assert.equal(git(tree, "branch", "--show-current"), "feature");
+  assert.equal(git(main, "rev-parse", "HEAD"), oldMain);
+  assert.equal(git(tree, "show", "target:a.txt"), "x");
+  assert.equal(readFileSync(join(tree, "dirty.txt"), "utf8"), "leave this alone");
+  assert.equal(existsSync(join(tree, ".fanout", "base")), false);
+});
+
+test("dry-run previews the real command and base contract without authenticating or mutating state", () => {
+  useFake();
+  const repo = mkRepo(PLAN_A + "uses: x.txt\ncheck: no-fanout-test-tool\n");
+  const env = { CLAUDE_CODE_HOST_TEST: "secret-value" };
+  const before = git(repo, "worktree", "list", "--porcelain");
+  const dry = cli(repo, ["run", "--dry-run", "--clean-env"], env);
+  assert.equal(dry.status, 0, dry.stdout + dry.stderr);
+  assert.match(dry.stdout, /Command: .*--output-format stream-json/);
+  assert.match(dry.stdout, /unset .*CLAUDE_CODE_HOST_TEST/);
+  assert.match(dry.stdout, /--- x\.txt\r?\n1/);
+  assert.doesNotMatch(dry.stdout, /secret-value/);
+  assert.equal(calls().length, 0);
+  assert.equal(git(repo, "worktree", "list", "--porcelain"), before);
+  assert.deepEqual(readdirSync(join(repo, ".fanout")), ["plan.md"]);
+  const check = cli(repo, ["check"]);
+  assert.match(check.stdout, /frozen on base/);
+  assert.match(check.stdout, /no-fanout-test-tool.*was not found/);
+  const blocked = cli(repo, ["run", "--yes", "--no-merge"], env);
+  assert.match(blocked.stderr, /Not logged in/);
+  const clean = cli(repo, ["run", "--yes", "--no-merge", "--clean-env"], env);
+  assert.equal(clean.status, 1, clean.stdout + clean.stderr); // intentional missing check, after the agent starts
+  assert.equal(callsFor("a"), 1);
+});
+
+test("rehearsal logs successful stdout and stderr, keeps its checkout, and clean removes it", () => {
+  useFake();
+  const repo = mkRepo("test: node output.mjs\n" + PLAN_A + "check: node output.mjs\n", {
+    "output.mjs": 'console.log("test stdout"); console.error("test stderr");',
+  });
+  const run = cli(repo, ["run", "--yes", "--no-merge"]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  const rehearsal = cli(repo, ["rehearse", "--keep"]);
+  assert.equal(rehearsal.status, 0, rehearsal.stdout + rehearsal.stderr);
+  const folder = rehearsal.stdout.match(/^Logs: (.+)$/m)[1].trim();
+  for (const file of ["1-test-1.log", "2-check-a.log"]) {
+    const output = readFileSync(join(folder, file), "utf8");
+    assert.match(output, /test stdout/);
+    assert.match(output, /test stderr/);
+  }
+  assert.ok(existsSync(join(repo, ".fanout", "rehearse", "a.txt")));
+  const clean = cli(repo, ["clean", "--branches"]);
+  assert.equal(clean.status, 0, clean.stdout + clean.stderr);
+  assert.equal(existsSync(join(repo, ".fanout", "rehearse")), false);
+  assert.doesNotMatch(git(repo, "branch", "--list"), /fanout\/a/);
+});
+
+test("Codex usage is priced when configured and its live token cap stops an ongoing subprocess", () => {
+  useFake();
+  const plan = "prices:\n  demo: {in: 4, out: 8, cached_in: 1}\n" + PLAN_A + "model: demo\nagent: codex\n";
+  const stopped = mkRepo(plan);
+  const cap = cli(stopped, ["run", "--yes", "--no-merge", "--token-budget", "7"], { FAKE_BUDGET_WAIT: "1" });
+  assert.equal(cap.status, 1, cap.stdout + cap.stderr + cap.error);
+  assert.match(cap.stdout, /token budget reached/);
+  assert.equal(calls().length, 1);
+  const repo = mkRepo(plan);
+  const priced = cli(repo, ["run", "--yes", "--no-merge"]);
+  assert.equal(priced.status, 0, priced.stdout + priced.stderr);
+  const report = readFileSync(join(repo, ".fanout", "report.md"), "utf8");
+  assert.match(report, /5 input \(2 cached\), 2 output/);
+  assert.match(report, /\$0\.000030 estimated/);
+  assert.match(report, /Codex finished the lane/);
+  assert.match(report, /thread-7/);
+});
+
+test("ask resumes a merged lane by ID and commits only the owned edit", () => {
+  useFake();
+  const repo = mkRepo(PLAN_A + "agent: codex\n");
+  const run = cli(repo, ["run", "--yes"]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.equal(existsSync(join(repo, ".fanout", "lanes", "a")), false);
+  const resumed = cli(repo, ["ask", "thread-7", "Fix the output."], { FAKE_FOLLOWUP: "1" });
+  assert.equal(resumed.status, 0, resumed.stdout + resumed.stderr);
+  assert.equal(calls().at(-1).stdin, "Fix the output.");
+  assert.equal(git(repo, "show", "fanout/a:a.txt"), "follow-up");
+  assert.equal(git(repo, "show", "fanout/a:x.txt"), "1");
+  assert.equal(git(repo, "show", "main:a.txt"), "x");
+});
+
+test("abort kills running agents, records the aborted state and allows cleanup", async () => {
+  useFake();
+  const repo = mkRepo(PLAN_A);
+  const lane = join(repo, ".fanout", "lanes", "a");
+  const child = spawn(process.execPath, [entry, "run", "--yes", "--no-merge"], {
+    cwd: repo, stdio: "ignore", env: { ...process.env, FAKE_WAIT: "1", FANOUT_STAGGER_MS: "0" },
+  });
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  try {
+    for (let i = 0; i < 200 && !existsSync(join(lane, "agent-ready")); i++) await new Promise((r) => setTimeout(r, 50));
+    const pid = Number(readFileSync(join(lane, "agent-ready"), "utf8"));
+    const status = cli(repo, ["status"]);
+    assert.match(status.stdout, /working.*alive/);
+    const aborted = cli(repo, ["abort"]);
+    assert.equal(aborted.status, 0, aborted.stdout + aborted.stderr);
+    await exited;
+    const live = JSON.parse(readFileSync(join(repo, ".fanout", "live.json"), "utf8"));
+    assert.equal(live.phase, "aborted");
+    assert.equal(live.sessions.a.state, "aborted");
+    if (process.platform === "win32") assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+    const clean = cli(repo, ["clean", "--force", "--branches"]);
+    assert.equal(clean.status, 0, clean.stdout + clean.stderr);
+    assert.equal(existsSync(lane), false);
+  } finally {
+    if (child.exitCode == null && child.signalCode == null) {
+      cli(repo, ["abort"]);
+      child.kill();
+    }
+  }
+});
 
 test("claude run records session id and uses the slim tool set", async () => {
   useFake();
@@ -121,7 +286,7 @@ test("codex run records thread id and resumes it", async () => {
   assert.equal(first.inTokens, 5);
   await runAgent({ agent: "codex", cwd: dir, prompt: "just the break", resume: first.sessionId });
   const c = calls()[1];
-  assert.deepEqual(c.args.slice(-2), ["resume", "thread-7"]);
+  assert.deepEqual(c.args.slice(-3), ["resume", "thread-7", "-"]);
   assert.equal(c.stdin, "just the break");
   // Low reasoning effort by default, no tier; FANOUT_CODEX_EFFORT overrides, "default" leaves Codex's own.
   assert.ok(calls()[0].args.includes("model_reasoning_effort=low"));
@@ -333,8 +498,8 @@ test("status shows each session's agent state and cost from the run's live.json"
   assert.equal(live.sessions.b.state, "failed");
   const st = spawnSync(process.execPath, [join(import.meta.dirname, "../skills/fanout/fanout.mjs"), "status"], { cwd: repo, encoding: "utf8" });
   assert.match(st.stdout, /agent\s+cost/);
-  assert.match(st.stdout, /^a .*done\s+\$0\.50$/m);
-  assert.match(st.stdout, /^b .*failed\s+\$0\.00$/m);
+  assert.match(st.stdout, /^a .*done\s+\$0\.50\s+-\s+sess-1$/m);
+  assert.match(st.stdout, /^b .*failed\s+\?\s+-\s+-$/m);
   assert.doesNotMatch(st.stdout, /run in progress/);
 });
 
@@ -416,6 +581,10 @@ test("a session that builds on another is tested against it as soon as both are 
   const fix = calls().find((c) => c.args.includes("--resume"));
   assert.match(fix.stdin, /a finished too and is now merged into your branch, and `node t\.mjs` fails there:\nnot ok 1 - b against a/);
   assert.equal(fix.args[fix.args.indexOf("--resume") + 1], "sess-1"); // b's own session
+  assert.match(cli(repo, ["status"]).stdout, /^b .*sess-2, sess-1$/m);
+  assert.match(readFileSync(join(repo, ".fanout", "report.md"), "utf8"), /fix \(sess-2\)/);
+  const earlyLog = r.stdout.match(/^fanout: b: early test output: (.+)$/m)[1].trim();
+  assert.match(readFileSync(earlyLog, "utf8"), /not ok 1 - b against a/);
   const run = JSON.parse(runLog(repo).trim().split("\n").at(-1));
   assert.equal(run.earlyFixes, 1);
   assert.equal(run.fixes, 1);
