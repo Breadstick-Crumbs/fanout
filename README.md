@@ -257,6 +257,49 @@ fanout install-git-hook   # enforce the plan on every commit
 fanout log                # past runs and rehearsals; the last 7 days of claims, refusals and notices, and the hook's cost
 ```
 
+## Partitioned batch jobs
+
+Use `fanout jobs` when the same worker needs to process separate sets of records, such as different sites in a classifier backfill. It runs commands in the invoking directory and keeps a checkpoint for each partition. It works outside a Git checkout.
+
+```json
+{
+  "worker": { "command": "node", "args": ["classifier-worker.mjs"] },
+  "concurrency": 2,
+  "budgetMicros": 55000000,
+  "requestsPerMinute": 30,
+  "partitions": [
+    { "id": "east", "items": ["site-1", "site-4"] },
+    { "id": "west", "items": ["site-2", "site-3"] }
+  ]
+}
+```
+
+Set the request rate to match the quota available to this job. The example has a $55 total budget. Fanout rejects duplicate item IDs before starting. The default concurrency is one. Specify an executable and its argument array. On Windows, use an executable such as `node.exe` or `python.exe` to run a script.
+
+```sh
+fanout jobs run backfill.json
+fanout jobs status job-<id>
+fanout jobs abort job-<id>
+fanout jobs resume job-<id>
+fanout jobs resume job-<id> --budget-micros 65000000
+```
+
+Use the run ID printed at startup. State, partition files, and stdout and stderr for every attempt are saved under `.fanout/jobs/` in the invoking directory. Set `FANOUT_JOBS_DIR` to keep that state elsewhere. Run the control commands from the same directory or point them at the same state directory.
+
+### Worker protocol
+
+The worker reads its `{ id, items }` from the file named by `FANOUT_JOB_PARTITION_FILE`. `FANOUT_JOB_RUN_ID` stays the same across attempts. The worker and supervisor exchange one JSON object per line on stdout and stdin. Send diagnostics to stderr.
+
+| Worker sends on stdout | Worker reads on stdin |
+|---|---|
+| `{"type":"reserve","id":"request-1","maxMicros":100000}` before an API request | `{"type":"permit","id":"request-1"}` once the budget and rate allow it, or `{"type":"denied","id":"request-1","reason":"budget"}` |
+| `{"type":"settle","id":"request-1","actualMicros":73000}` after the request | `{"type":"settled","id":"request-1"}` once the actual cost is recorded |
+| `{"type":"complete"}` after the partition's writes are durable | The worker exits with code 0 to checkpoint successful completion |
+
+Request a permit for each API call, including retries. Use each permit promptly for one request and wait for settlement before requesting another. Reserve a ceiling that covers the maximum charge and use `0` for a free request. Workers must exit on budget denial or a supervisor disconnect. Fanout controls permits for participating workers in this run. API calls outside that protocol and other users of the same provider quota are outside its accounting.
+
+An interrupted permit is charged at its reserved ceiling. Resume keeps those charges and the recent request history, skips completed partitions, and reruns unfinished partitions from the start. Make writes idempotent by item so reruns can safely replay partial work. The worker owns its database transactions and decides when its writes are durable.
+
 ## Does it work?
 
 **Sessions you open yourself** ([results](bench/RESULTS.md#claims-telling-the-same-task-from-different-work-v023)):
