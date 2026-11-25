@@ -526,8 +526,8 @@ test("status: table, last results, from a lane worktree, and no plan", () => {
   for (const cwd of [d, lane]) {
     const r = run(["status"], { cwd });
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /^a\s+fanout\/a\s+1\s+2\s+yes\s+out of lane 1$/m);
-    assert.match(r.stdout, /^b\s+not started\s+-\s+-\s+no\s+-$/m);
+    assert.match(r.stdout, /^a\s+fanout\/a\s+1\s+2\s+ok\s+out of lane 1$/m);
+    assert.match(r.stdout, /^b\s+not started\s+-\s+-\s+missing\s+-$/m);
     assert.match(r.stdout, /last run: none/);
     assert.match(r.stdout, /last rehearse: 2026-01-02 03:04  pass/);
   }
